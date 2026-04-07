@@ -123,7 +123,7 @@
 - [doc/architecture_puml.puml](../architecture_puml.puml) - 系统架构图
 - [doc/data_flow.puml](../data_flow.puml) - 数据流程图
 - [doc/class_diagram.puml](../class_diagram.puml) - 类图
-- 等等...
+- 等等等...
 
 ---
 
