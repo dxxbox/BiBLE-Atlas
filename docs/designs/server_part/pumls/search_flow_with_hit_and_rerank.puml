@@ -1,0 +1,145 @@
+@startuml search_flow_with_hit_and_rerank
+title 检索流程 - 支持 enable_hit 和 rerank（分层架构）
+
+|Client|
+start
+
+repeat
+:用户输入请求描述;
+:从请求描述中提取关键字\n组成 query;
+
+:按照检索 API 格式\n组成消息;
+note right
+  消息包含：
+  - index_name
+  - query
+  - tag (可选)
+  - enable_hit (可选)
+  - top_k (可选)
+  - 其他参数...
+end note
+
+:发送 POST /api/v1/search;
+
+|API层\napp/api/v1/search_api.py|
+:接收 HTTP 请求;
+:验证请求参数\n(SearchRequest);
+
+:调用 SearchService;
+
+|Service层\nfeatures/search/search_service.py|
+
+partition "解析 query 和 TAG" {
+  :解析 query;
+  if (query 中包含 [TAG]?) then (是)
+    :提取 TAG;
+    :从配置读取 tag_to_index_mapping;
+    :根据 TAG 设定 index_name;
+  else (否)
+    :使用消息中的 index_name;
+  endif
+  
+  :将 index_name 插入到\nindex_name_set;
+}
+
+partition "解析 enable_hit" {
+  if (消息中有 enable_hit\n且为 true?) then (是)
+    :从配置读取 hit_list;
+    note right
+      hit_list 默认包含:
+      - CODE
+      - BUILD
+      - SESSION
+      - SKILL
+    end note
+    
+    :将 hit_list 中的每个 tag\n通过 tag_to_index_mapping\n转换为 kb_index;
+    
+    :将所有 kb_index\n插入到 index_name_set;
+  endif
+}
+
+partition "解析 top_k" {
+  if (消息中有 top_k?) then (是)
+    :top_k = 消息中的 top_k;
+  else (否)
+    :从配置读取默认 top_k;
+  endif
+  
+  :original_top_k = top_k;
+  
+  if (rerank 使能?) then (是)
+    :从配置读取 rerank.top_k_multiplier;
+    :top_k = original_top_k × multiplier;
+    note right
+      例如：original_top_k=10, 
+      multiplier=6, 则 top_k=60
+    end note
+  endif
+}
+
+:遍历 index_name_set;
+
+|Repository层\nfeatures/search/repositories/|
+
+while (还有索引未处理?) is (是)
+  :获取下一个 index_name;
+  
+  :根据 index 类型\n从工厂获取对应的 Repository;
+  note right
+    SearchRepositoryFactory.create()
+    返回对应的 Repository：
+    - CodeSearchRepository (code.py)
+    - SctSearchRepository (sct.py)
+    - BuildSearchRepository (build.py)
+    - SessionSearchRepository (session.py)
+    - SkillSearchRepository (skill.py)
+    - AlgorithmSearchRepository (alg.py)
+    等等...
+  end note
+  
+  :Repository 构建查询 DSL;
+  :执行 ES 检索\n(返回 top_k 条结果);
+  
+  if (rerank 使能?) then (是)
+    :调用 rerank 工具进行精排;
+    :取精排后的前 original_top_k\n条结果作为最终结果;
+  else (否)
+    :使用检索结果作为最终结果;
+  endif
+  
+  :返回该索引的检索结果;
+  
+  |Service层\nfeatures/search/search_service.py|
+  :收集该索引的最终结果;
+  
+  |Repository层\nfeatures/search/repositories/|
+endwhile (否)
+
+|Service层\nfeatures/search/search_service.py|
+:合并所有索引的结果;
+:格式化响应数据;
+
+:返回结果;
+
+|API层\napp/api/v1/search_api.py|
+:构建 HTTP 响应\n(SearchResponse);
+
+:返回 JSON 响应;
+
+|Client|
+:接收响应;
+
+note right
+  可以多次提取关键字，
+  但每次都要等待响应
+  才能发送下一次
+end note
+
+backward :继续检索?;
+repeat while (是否继续?) is (是)
+->否;
+
+stop
+
+@enduml

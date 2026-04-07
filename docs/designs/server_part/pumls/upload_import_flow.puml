@@ -1,0 +1,302 @@
+@startuml upload_import_flow
+title 上传导入流程（分层架构）
+
+|Client|
+start
+:选择文件准备上传;
+
+:组装上传请求;
+note right
+  multipart/form-data:
+  - file: 文件内容
+  - index_name: 目标索引
+  - doc_type: 文档类型
+    (CODE/SCT/BUILD/SESSION/SKILL等)
+  - use_vector: 是否生成向量
+  - vector_model: 向量模型
+  - chunk_size: 分块大小
+end note
+
+:发送 POST /api/v1/upload;
+
+|API层\napp/api/v1/upload_api.py|
+:接收 HTTP 请求;
+note right
+  **文件上传协议: multipart/form-data**
+  HTTP 客户端将文件内容编码为
+  multipart 消息体，服务器通过
+  request.files['file'] 获取文件流
+end note
+
+:读取文件流到内存\n(UploadFile 对象);
+
+:验证请求参数\n(UploadRequest);
+:验证文件类型和大小;
+
+if (文件验证通过?) then (是)
+  :将文件流传递给\nUploadService;
+else (否)
+  :返回 400 错误\n(文件类型不支持/文件过大);
+  |Client|
+  :显示错误信息;
+  stop
+endif
+
+|Service层\nfeatures/upload/upload_service.py|
+
+:生成文档 ID (UUID);
+:确定文档类型\n(doc_type);
+
+partition "保存原始文件到本地存储" {
+  :将文件内容写入服务器磁盘;
+  note right
+    **保存路径结构：**
+    
+    **Session/Skill 类型：**
+    /app/uploads/{doc_type}/{session_id}/{filename}
+    示例：
+    /app/uploads/session/session-abc123/main.md
+    /app/uploads/session/session-abc123/attachment.pdf
+    /app/uploads/skill/skill-def456/code_example.py
+    
+    **其他类型：**
+    /app/uploads/{doc_type}/{date}/{doc_id}.{ext}
+    示例：
+    /app/uploads/code/2026-04-01/ghi789.py
+    /app/uploads/spec/2026-04-01/jkl012.pdf
+    
+    **存储选项（配置化）：**
+    - 本地文件系统（默认）
+    - MinIO 对象存储
+    - AWS S3
+  end note
+  
+  :记录文件保存路径\n(file_path);
+  
+  if (doc_type 是 SESSION 或 SKILL?) then (是)
+    :同时记录文件元数据;
+    note right
+      **文件元数据记录：**
+      - file_id: 文件唯一标识
+      - session_id/skill_id: 所属 session/skill
+      - filename: 原始文件名
+      - role: 文件角色
+        (main_document/attachment/reference_material/code_example)
+      - process_type: 处理方式
+        (parse_and_index/store_only)
+      - storage_path: 存储路径
+      - size_bytes: 文件大小
+      - uploaded_at: 上传时间
+    end note
+  endif
+}
+
+:创建 Celery 异步任务;
+note right
+  **传递给 Celery 的参数：**
+  {
+    "doc_id": "abc123...",
+    "file_path": "/app/uploads/session/.../abc123.md",
+    "doc_type": "SESSION",
+    "index_name": "kb_session",
+    "use_vector": true,
+    "vector_model": "bge-large-zh",
+    "chunk_size": 1000,
+    ...
+  }
+end note
+
+:返回 task_id;
+
+|API层\napp/api/v1/upload_api.py|
+:构建响应;
+note right
+  {
+    "success": true,
+    "task_id": "abc123...",
+    "status": "processing",
+    "message": "File uploaded and import task started"
+  }
+end note
+
+:返回 202 Accepted;
+
+|Client|
+:接收 task_id;
+:轮询任务状态\nGET /api/v1/tasks/{task_id};
+
+|Celery Worker|
+:异步任务开始执行;
+
+:从任务参数获取元数据;
+note right
+  **常规类型参数：**
+  - doc_id
+  - file_path: /app/uploads/code/.../file.py
+  - doc_type: CODE/SCT/BUILD 等
+  - use_vector, vector_model, chunk_size
+  
+  **Session/Skill 类型参数：**
+  - session_id/skill_id
+  - files: [
+      {
+        file_id, file_path, role,
+        process_type, filename
+      }, ...
+    ]
+  - doc_type: SESSION/SKILL
+end note
+
+switch (doc_type?)
+case (SESSION 或 SKILL)
+  partition "Session/Skill 多文件处理" #LightYellow {
+    :遍历 files 列表;
+    
+    while (还有文件未处理?) is (是)
+      :获取文件信息\n(file_path, role, process_type);
+      
+      if (process_type == "parse_and_index") then (是)
+        :从磁盘读取文件内容;
+        :解析文件内容\n(自动识别格式);
+        note right
+          支持格式：
+          - Markdown (.md)
+          - Text (.txt)
+          - PDF (.pdf)
+          - 代码文件 (.py, .js, .java 等)
+        end note
+        
+        :将文档分块\n(chunk_size tokens);
+        note right
+          默认 1000 tokens/块
+          带 overlap 避免边界丢失
+        end note
+        
+        :为每个块生成向量;
+        
+        :将分块数据插入 ES;
+        note right
+          document_chunks 索引：
+          - session_id/skill_id
+          - file_id
+          - chunk_text
+          - chunk_vector
+          - chunk_index
+          - start_offset
+          - end_offset
+        end note
+        
+        :更新文件元数据\n(indexed=true, chunks_count);
+        
+      else (否: store_only)
+        :仅记录文件元数据;
+        note right
+          不解析、不索引
+          仅用于下载
+        end note
+        
+        :更新文件元数据\n(indexed=false);
+      endif
+    endwhile (否)
+    
+    :在数据库中创建/更新\nSession/Skill 元数据记录;
+    note right
+      Session/Skill 文档：
+      - session_id/skill_id
+      - title
+      - description
+      - files: [文件列表]
+      - total_files
+      - total_chunks
+      - created_at
+      - updated_at
+    end note
+  }
+
+case (其他类型：CODE/SCT/BUILD 等)
+  partition "常规文档处理" {
+    :从磁盘读取文件内容;
+    
+    :解析文件内容\n(自动识别格式);
+    
+    :根据 doc_type 选择\n对应的 Repository;
+    note right
+      UploadRepositoryFactory.create()
+      - CodeUploadRepository
+      - SctUploadRepository
+      - BuildUploadRepository
+      等等...
+    end note
+    
+    if (use_vector?) then (是)
+      :生成文档向量;
+      
+      :根据 doc_type\n构建索引数据;
+      note right
+        不同类型有不同的字段结构:
+        - CODE: 函数级别索引
+        - SCT: 测试用例
+        - BUILD: 编译步骤
+        等等...
+      end note
+      
+      :批量插入 ES 索引;
+    else (否)
+      :不生成向量\n仅插入文本数据;
+    endif
+  }
+endswitch
+
+:更新任务状态\nstatus = "completed";
+
+|Client|
+:轮询到任务完成;
+:显示导入成功\n并展示统计信息;
+
+note right
+  **常规文档任务结果：**
+  {
+    "task_id": "abc123...",
+    "status": "completed",
+    "progress": 100,
+    "result": {
+      "documents_imported": 1234,
+      "vectors_generated": 1234,
+      "duration": "3m 45s"
+    }
+  }
+  
+  **Session/Skill 任务结果：**
+  {
+    "task_id": "task-456def",
+    "status": "completed",
+    "progress": 100,
+    "result": {
+      "session_id": "session-abc123",
+      "files_processed": [
+        {
+          "filename": "main.md",
+          "role": "main_document",
+          "process_type": "parse_and_index",
+          "status": "success",
+          "chunks_created": 45,
+          "vectors_generated": 45
+        },
+        {
+          "filename": "attachment.pdf",
+          "role": "attachment",
+          "process_type": "store_only",
+          "status": "success",
+          "storage_path": "/app/uploads/session/.../attachment.pdf"
+        }
+      ],
+      "total_chunks": 45,
+      "total_vectors": 45,
+      "duration": "4m 23s"
+    }
+  }
+end note
+
+stop
+
+@enduml
