@@ -1,10 +1,23 @@
+[build-system]
+requires = ["setuptools>=68", "setuptools-scm>=7"]
+build-backend = "setuptools.build_meta"
+
 [project]
 name = "bible-atlas"
-version = "0.1.0"
-description = "Add your description here"
+# version = "0.1.0"
+dynamic = ["version"]
+
+description = "An Agent-native context database"
 readme = "README.md"
+
 requires-python = ">=3.10"
+
 dependencies = [
     "fastapi>=0.128.0",
     "uvicorn>=0.34.0",
 ]
+
+[tool.setuptools_scm]
+write_to = "bible/_version.py"
+local_scheme = "no-local-version"
+tag_regex = "^(?:v)?(?:[a-zA-Z0-9_]+@)?(?P<version>[0-9]+(?:\\.[0-9]+)*)$"
