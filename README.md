@@ -8,8 +8,15 @@ BiBLE Atlas provides rapid mode (default) and thinking mode.
 ## Components
 
 BiBLE Atlas contains:
-- BiBLE Atlas server backend + opensearch DB
+
+- BiBLE Atlas server backend and opensearch DB
 - BiBLE Plugin for VSCode
 - BiBLE CLI
 
+## Environment Prepare
 
+uv sync --all-extras
+
+source .venv/bin/activate
+
+**Note:** You should switch to proper python version (3.10+) or you'll face import issue.
