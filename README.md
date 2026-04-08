@@ -12,4 +12,3 @@ BiBLE Atlas contains:
 - BiBLE Plugin for VSCode
 - BiBLE CLI
 
---++--
