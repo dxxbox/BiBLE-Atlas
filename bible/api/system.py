@@ -1,6 +1,6 @@
 from fastapi import APIRouter, Response
 
-from bible.main import _get_version
+from bible.common import _get_version
 
 router = APIRouter()
 
