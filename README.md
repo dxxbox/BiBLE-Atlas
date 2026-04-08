@@ -11,3 +11,5 @@ BiBLE Atlas contains:
 - BiBLE Atlas server backend + opensearch DB
 - BiBLE Plugin for VSCode
 - BiBLE CLI
+
+--++--
