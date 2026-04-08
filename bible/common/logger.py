@@ -18,7 +18,7 @@ def _load_log_config() -> Tuple[str, str, str, Optional[Any]]:
             workspace_path = Path(config.storage.workspace_dir).resolve()
             log_dir = workspace_path / "log"
             log_dir.mkdir(parents=True, exist_ok=True)
-            log_output = str(log_dir / "openviking.log")
+            log_output = str(log_dir / "bible-atlas.log")
     except Exception:
         log_level_str = "INFO"
         log_format = "%(asctime)s - %(name)s - %(levelname)s - %(message)s"
@@ -65,7 +65,7 @@ def _create_log_handler(log_output: str, config: Optional[Any]) -> logging.Handl
             return logging.FileHandler(log_output, encoding="utf-8")
 
 def get_logger(
-    name: str = "openviking",
+    name: str = "bible-atlas",
     format_string: Optional[str] = None,
 ) -> logging.Logger:
     logger = logging.getLogger(name)
