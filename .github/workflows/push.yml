@@ -9,6 +9,15 @@ on:
 
 jobs:
 
+  lint:
+    uses: ./.github/workflows/_lint.yml
+
+  test:
+    uses: ./.github/workflows/_test_lite.yml
+    with:
+      os_json: '["ubuntu-24.04"]'
+      python_json: '["3.10", "3.11", "3.12"]'
+
   check-dependencies:
     runs-on: ubuntu-24.04
     steps:
@@ -26,17 +35,5 @@ jobs:
       with:
         enable-cache: true
 
-    - name: Check for dependency updates
-      run: uv check --update
-
     - name: install dependecies
       run: uv sync --frozen --extra dev
-
-  lint:
-    uses: ./.github/workflows/_lint.yml
-
-  test:
-    uses: ./.github/workflows/_test_lite.yml
-    with:
-      os_json: '["ubuntu-24.04"]'
-      python_json: '["3.10", "3.11", "3.12"]'
