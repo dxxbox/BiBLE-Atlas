@@ -18,6 +18,16 @@ dependencies = [
     "uvicorn>=0.34.0",
 ]
 
+[project.optional-dependencies]
+test = [
+    "pytest>=8.0",
+]
+
+dev = [
+    "mypy>=1.0.0",
+    "ruff>=0.1.0",
+]
+
 [tool.setuptools_scm]
 write_to = "bible/_version.py"
 local_scheme = "no-local-version"

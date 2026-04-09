@@ -8,30 +8,35 @@ on:
     branches: [ "main" ]
 
 jobs:
-  build:
 
-    runs-on: ubuntu-latest
-    strategy:
-      fail-fast: false
-      matrix:
-        python-version: ["3.9", "3.10", "3.11"]
-
+  check-dependencies:
+    runs-on: ubuntu-24.04
     steps:
-    - uses: actions/checkout@v4
-    
-    - name: Set up Python ${{ matrix.python-version }}
-      uses: actions/setup-python@v3
+    - uses: actions/checkout@v6
       with:
-        python-version: ${{ matrix.python-version }}
-    
-    - name: Install dependencies
-      run: |
-        python -m pip install --upgrade pip
+        fetch-depth: 0 # Required to calculate the git diff
+        
+    - name: Set up Python
+      uses: actions/setup-python@v6
+      with:
+        python-version: '3.10'
 
-    - name: Lint with flake8
-      run: |
-        flake8 . --count --exit-zero --max-complexity=10 --max-line-length=127 --statistics
+    - name: Install uv  
+      uses: astral-sh/setup-uv@v7
+      with:
+        enable-cache: true
 
-    - name: Test with pytest
-      run: |
-        pytest
+    - name: Check for dependency updates
+      run: uv check --update
+
+    - name: install dependecies
+      run: uv sync --frozen --extra dev
+
+  lint:
+    uses: ./.github/workflows/_lint.yml
+
+  test:
+    uses: ./.github/workflows/_test_lite.yml
+    with:
+      os_json: '["ubuntu-24.04"]'
+      python_json: '["3.10", "3.11", "3.12"]'
