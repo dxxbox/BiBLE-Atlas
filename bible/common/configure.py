@@ -1,9 +1,17 @@
-import json
-import os
-import yaml
-from typing import Any, Dict, Optional
+import logging
+import sys
+from copy import deepcopy
+from logging.handlers import TimedRotatingFileHandler
 from pathlib import Path
+from typing import Any, Dict, Optional
+
 from pydantic import BaseModel, Field
+
+from bible.common.config_loader import (
+    load_raw_config_from_file,
+    resolve_config_path,
+)
+from bible.common.consts import CONFIG_PATH_ENV_VAR
 
 class LogConfig(BaseModel):
     level: str = "INFO"
@@ -26,39 +34,36 @@ class BibleAtlasConfig(BaseModel):
 
     @classmethod
     def load_config_from_dict(cls, config_dict: Dict[str, Any]) -> "BibleAtlasConfig":
-        """Create a BibleAtlasConfig instance from a dictionary."""
-        return cls(**config_dict)
+        """Create a BibleAtlasConfig instance from a raw config dictionary."""
+        config_copy = deepcopy(config_dict)
 
-class BibleAtlasConfigSingleton:
-    _instance: Optional[BibleAtlasConfig] = None
+        return cls(**config_copy)
 
-    _default_config_path = "./config/bible_atlas_config.json"  # Default path to the configuration file
+_config_instance: Optional[BibleAtlasConfig] = None
 
-    @classmethod
-    def get_instance(cls) -> BibleAtlasConfig:
-        if cls._instance is None:
-            cls._instance = cls._load_config_from_file(cls._default_config_path)
-        return cls._instance
-    
-    @classmethod
-    def _load_config_from_file(cls, file_path: str) -> BibleAtlasConfig:
-        """Load configuration from a JSON or YAML file."""
-        try:
-            config_path = Path(file_path)
-            if not config_path.exists():
-                raise FileNotFoundError(f"Configuration file not found: {file_path}")
-            
-            with open(config_path, 'r', encoding="utf-8") as f:
-                raw = f.read()
-            
-            raw = os.path.expandvars(raw)  # Expand environment variables
-            config_data = yaml.safe_load(raw) if file_path.endswith(('.yaml', '.yml')) else json.loads(raw)
-            return BibleAtlasConfig.load_config_from_dict(config_data)
+def load_bible_atlas_config_from_file(file_path: Path | str) -> "BibleAtlasConfig":
+    """Load a BibleAtlasConfig object from a JSON or YAML file."""
+    try:
+        config_data = load_raw_config_from_file(file_path)
+        return BibleAtlasConfig.load_config_from_dict(config_data)
+    except Exception as e:
+        raise RuntimeError(f"Failed to load configuration from file: {e}")
 
-        except Exception as e:
-            raise RuntimeError(f"Failed to load configuration from file: {e}")
 
+def _clear_bible_atlas_config_cache() -> None:
+    global _config_instance
+    _config_instance = None
 
 def get_bible_atlas_config() -> BibleAtlasConfig:
-    # In a real implementation, you might load this from a file or environment variables
-    return BibleAtlasConfigSingleton.get_instance()
+    global _config_instance
+
+    if _config_instance is None:
+        config_path = resolve_config_path()
+        if config_path is None:
+            raise RuntimeError(
+                "Failed to resolve configuration path from default locations or "
+                f"environment variable {CONFIG_PATH_ENV_VAR}"
+            )
+        _config_instance = load_bible_atlas_config_from_file(config_path)
+
+    return _config_instance
