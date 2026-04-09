@@ -28,7 +28,7 @@ jobs:
         enable-cache: true
 
     - name: Install dependencies
-      run: uv sync --frozen --extra dev
+      run: uv sync --all-extras
 
     # --- NEW STEP: Get the list of changed files ---
     - name: Get changed files

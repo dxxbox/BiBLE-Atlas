@@ -55,14 +55,11 @@ jobs:
         sudo apt-get update
         sudo apt-get install -y cmake build-essential
 
-    - name: Check for dependency updates
-      run: uv check --update
-
     - name: Install Python dependencies
-      run: uv sync --frozen --extra test
+      run: uv sync --all-extras
 
     - name: Install build dependencies
-      run: uv pip install setuptools cmake wheel
+      run: uv pip install setuptools wheel
 
     - name: Run Lite Integration Test (Quick Start)
       shell: bash

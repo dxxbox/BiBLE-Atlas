@@ -36,4 +36,4 @@ jobs:
         enable-cache: true
 
     - name: install dependecies
-      run: uv sync --frozen --extra dev
+      run: uv sync --all-extras
