@@ -80,12 +80,12 @@ curl http://localhost:8000/api/v1/health
 | `search_type` | string | `"hybrid"` | 检索类型: `keyword`, `title`, `text`, `vector`, `hybrid` |
 | `vector_model` | string | `"bge-large"` | 向量模型: `mini`, `mpnet`, `bge-base`, `bge-large`, `bge-m3`, `e5-large` |
 | `top_k` | integer | `10` | 返回结果数量 (1-100) |
-| `vector_weight` | float | `0.8` | 向量权重 (0.1-0.9)，仅混合检索需要 |
-| `enable_relation_search` | boolean | `true` | 是否启用关联函数查询 |
+| `vector_weight` | float | `0.8` | 向量权重 (0.1-0.9)，仅混合检索需要；非 `hybrid` 时接受但忽略 |
+| `enable_relation_search` | boolean | `true` | 是否启用关联函数查询；当前版本允许透传，未支持的仓储可忽略 |
 | `enable_hit` | boolean | `false` | 是否启用关联知识库检索（在主检索基础上增加 CODE、BUILD、SESSION、SKILL 等知识库） |
-| `filter_mode` | string | `"none"` | 过滤模式: `none`, `elbow`, `gap_statistic` |
+| `filter_mode` | string | `"none"` | 过滤模式: `none`, `elbow`, `gap_statistic`；当前版本允许透传，未实现时为 no-op |
 | `ai_enable` | boolean | `false` | 是否启用 AI 增强检索 |
-| `ai_model` | string | `"gpt-5-mini"` | AI 模型。可选: `gpt-4.1`, `gpt-5-mini`, `gpt-5.1`, `claude-sonnet-4.5`, `claude-sonnet-4.6` |
+| `ai_model` | string | `"gpt-5-mini"` | AI 模型。可选: `gpt-4.1`, `gpt-5-mini`, `gpt-5.1`, `claude-sonnet-4.5`, `claude-sonnet-4.6`；仅 `ai_enable=true` 时生效 |
 
 #### tag 字段说明
 
@@ -270,6 +270,24 @@ curl -X POST http://localhost:8000/api/v1/search \
 | `ALG` | `algorithm` | 算法库结果（章节格式） |
 | `DESIGN` | `design` | 设计文档结果（章节格式） |
 | `FLOW` | `flow` | 流程文档结果（章节格式） |
+| `SESSION` | `session` | 当前切片为预留桶；若执行该任务则返回空数组 `[]` |
+| `SKILL` | `skill` | 当前切片为预留桶；若执行该任务则返回空数组 `[]` |
+
+**固定规则**:
+1. `results` 只包含本次实际执行过的分桶。
+2. 已执行但无结果的分桶返回空数组 `[]`，不返回 `null`。
+3. `total` 固定等于 `results` 中所有分桶数组长度之和。
+
+**SESSION 占位响应示例**（当前切片）:
+```json
+{
+  "success": true,
+  "results": {
+    "session": []
+  },
+  "total": 0
+}
+```
 
 ### 错误响应
 
@@ -293,6 +311,8 @@ curl -X POST http://localhost:8000/api/v1/search \
   "error": "top_k must be between 1 and 100"
 }
 ```
+
+说明：请求体验证失败、类型错误、范围/枚举错误均统一返回 **400**，不暴露框架默认 `422` 错误结构。AI 增强子步骤失败时，服务端会降级为非 AI 路径结果，通常**不会**因此返回 500。
 
 #### 500 Internal Server Error
 ```json
@@ -1192,7 +1212,7 @@ response = requests.post(
     }
 )
 results = response.json()
-print(f"找到 {results['total']} 个文件组")
+print(f"找到 {results['total']} 条结果")
 
 # 遍历代码结果
 code_results = results['results'].get('code', [])
@@ -1278,7 +1298,7 @@ fetch('http://localhost:8000/api/v1/search', {
 })
   .then(res => res.json())
   .then(data => {
-    console.log(`找到 ${data.total} 个文件组`);
+    console.log(`找到 ${data.total} 条结果`);
     
     // 处理 code 分类结果
     const codeResults = data.results.code || [];
@@ -1349,7 +1369,7 @@ fetch('http://localhost:8000/api/v1/download/batch', {
 
 ### 检索 API
 1. **默认参数**: 仅提供 `index_name` 和 `query` 即可使用，其他参数都有合理默认值
-2. **关联查询**: 默认启用，会额外耗时 100-500ms，关联结果会自动合并到 `results` 中，可通过 `enable_relation_search: false` 关闭
+2. **关联查询**: `enable_relation_search` 参数默认启用，但当前版本按具体仓储能力决定是否生效；未支持时可被忽略，不改变响应结构
 3. **向量权重**: 仅在 `search_type: "hybrid"` 时生效，范围 0.1-0.9，默认 0.8
 4. **超时时间**: 建议设置 30 秒超时；启用 AI 增强检索时建议设置 60-120 秒超时
 5. **结果格式**: 

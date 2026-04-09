@@ -47,7 +47,13 @@
    - session/skill 大文档处理方案（分块存储详解）
    - 三种方案的实现细节与迁移路径
 
-7. **[Redis_Celery_FAQ.md](./Redis_Celery_FAQ.md)** ⭐ **新增**
+7. **[07_Search流程_no_session_skill_详细设计.md](./07_Search流程_no_session_skill_详细设计.md)** ⭐ **新增**
+   - `POST /api/v1/search` 与 `app/features/search/` 实现型设计（无 SESSION/SKILL 仓储切片）
+   - `search_api.py`、`SearchService`、`kb_search_tasks.py`、仓储/工厂、`SearchClient`、`AiRankingRunner` 等文件/类设计说明
+   - 主 tag 与 `enable_hit` 子任务统一经工厂占位仓储；Rerank 与 AI 增强均在 Repository 流水线内执行
+   - 与 [search_flow_with_hit_and_rerank.puml](./pumls/search_flow_with_hit_and_rerank.puml) 步骤一一对应
+
+8. **[Redis_Celery_FAQ.md](./Redis_Celery_FAQ.md)** ⭐ **新增**
    - Redis 是什么？用途和特点
    - Redis 和 Celery 的关系
    - 为什么需要 Redis？没有 Redis 能用 Celery 吗？
@@ -85,7 +91,7 @@
    - 多索引并行检索和结果合并
    - 展示 API 层 → Service 层 → Repository 层的分层架构
 
-2. **[upload_import_flow.puml](./upload_import_flow.puml)**  
+2. **[upload_import_flow.puml](./pumls/upload_import_flow.puml)**  
    **上传导入流程** - 文件上传和异步导入
    - **支持两种上传模式**：
      - 单文件上传（常规文档：CODE/SCT/BUILD 等）
@@ -104,7 +110,7 @@
    - **任务状态轮询**：区分常规文档和 Session/Skill 的返回结果
    - 展示 API 层 → Service 层 → Celery Worker 的完整流程
 
-3. **[system_startup_flow.puml](./system_startup_flow.puml)**  
+3. **[system_startup_flow.puml](./pumls/system_startup_flow.puml)**  
    **系统启动流程** - 从启动到就绪的完整过程
    - **分层结构展示**：配置层、数据库层、任务队列层、向量模型层、应用层
    - 静态配置和动态配置加载
