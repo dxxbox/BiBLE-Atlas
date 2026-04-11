@@ -2,7 +2,7 @@ from pathlib import Path
 
 import pytest
 
-from bible.common.config_loader import load_raw_config_from_file, resolve_config_path
+from bible.config.config_loader import load_raw_config_from_file, resolve_config_path
 from bible.common.consts import CONFIG_PATH_ENV_VAR
 
 

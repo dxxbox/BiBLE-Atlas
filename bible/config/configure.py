@@ -7,7 +7,7 @@ from typing import Any, Dict, Optional
 
 from pydantic import BaseModel, Field
 
-from bible.common.config_loader import (
+from bible.config.config_loader import (
     load_raw_config_from_file,
     resolve_config_path,
 )
@@ -29,7 +29,7 @@ class BibleAtlasConfig(BaseModel):
     atlas_api_key: Optional[str] = None
     atlas_timeout: int = 10
 
-    storage: StorageConfig = Field(default_factory=lambda: StorageConfig(), description="Storage configuration")  
+    storage: StorageConfig = Field(default_factory=lambda: StorageConfig(), description="Storage configuration")
     log: LogConfig = Field(default_factory=lambda: LogConfig(), description="Logging configuration")
 
     @classmethod

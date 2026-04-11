@@ -7,7 +7,7 @@ from typing import Any, Optional, Tuple
 def _load_log_config() -> Tuple[str, str, str, Optional[Any]]:
     config = None
     try:
-        from bible.common.configure import get_bible_atlas_config
+        from bible.config.configure import get_bible_atlas_config
 
         config = get_bible_atlas_config()
         log_level_str = config.log.level.upper()

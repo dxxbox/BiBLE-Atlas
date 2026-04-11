@@ -4,7 +4,7 @@ from pathlib import Path
 
 import pytest
 
-from bible.common.configure import (
+from bible.config.configure import (
     BibleAtlasConfig,
     get_bible_atlas_config,
     load_bible_atlas_config_from_file,
