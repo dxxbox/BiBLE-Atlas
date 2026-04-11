@@ -3,6 +3,14 @@ name: 11. _Lint Checks
 on:
   workflow_call:
   workflow_dispatch:
+  pull_request:
+    branches:
+      - master
+      - main
+  push:
+    branches:
+      - master
+      - main
 
 jobs:
   lint:
@@ -34,8 +42,19 @@ jobs:
     - name: Get changed files
       id: files
       run: |
-        # Compare the PR head to the base branch
-        echo "changed_files=$(git diff --name-only --diff-filter=d origin/${{ github.base_ref }} HEAD | grep '\.py$' | xargs)" >> $GITHUB_OUTPUT
+        # Determine the base commit for comparison
+        if [ "${{ github.event_name }}" == "pull_request" ]; then
+          # For PRs, compare PR head to base branch
+          BASE_COMMIT="origin/${{ github.base_ref }}"
+        else
+          # For direct pushes, compare to the previous commit
+          BASE_COMMIT="${{ github.event.before }}"
+          # If this is the first commit, use HEAD~1 as fallback
+          if [ "$BASE_COMMIT" == "0000000000000000000000000000000000000000" ]; then
+            BASE_COMMIT="HEAD~1"
+          fi
+        fi
+        echo "changed_files=$(git diff --name-only --diff-filter=d $BASE_COMMIT HEAD | grep '\.py$' | xargs)" >> $GITHUB_OUTPUT
 
     # --- UPDATED STEPS: Use the file list ---
     - name: List files
