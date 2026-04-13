@@ -14,6 +14,8 @@ from bible.config.config_loader import (
 from bible.common.consts import CONFIG_PATH_ENV_VAR
 
 class LogConfig(BaseModel):
+    #TO-DO: add log configuration logic here, 
+    # below are default in case no configuration found.
     level: str = "INFO"
     format: str = "%(asctime)s - %(name)s - %(levelname)s - %(message)s"
     output: str = "stdout"
@@ -32,12 +34,14 @@ class BibleAtlasConfig(BaseModel):
     storage: StorageConfig = Field(default_factory=lambda: StorageConfig(), description="Storage configuration")
     log: LogConfig = Field(default_factory=lambda: LogConfig(), description="Logging configuration")
 
+    # add other config fields as needed
+
     @classmethod
     def load_config_from_dict(cls, config_dict: Dict[str, Any]) -> "BibleAtlasConfig":
         """Create a BibleAtlasConfig instance from a raw config dictionary."""
         config_copy = deepcopy(config_dict)
 
-        return cls(**config_copy)
+        return cls(**config_copy) # TO-DO: change this to real function.
 
 _config_instance: Optional[BibleAtlasConfig] = None
 

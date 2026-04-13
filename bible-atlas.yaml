@@ -1,0 +1,225 @@
+# ============================================================
+# 动态配置文件 - 支持热更新（无需重启服务）
+# 修改后自动生效，或调用 reload_config() 手动刷新
+# ============================================================
+
+# ==================== 库配置 ====================
+# 测试库列表（包含所有可用库）
+test_libraries:
+  - sct_testcase
+  - sct_function
+  - coding_standards
+  - build_method
+  - requirement
+  - algorithm
+  - design
+  - flow
+  - build
+  - spec
+  - syntax
+
+# ==================== 检索标签配置 ====================
+# 检索标签到索引的映射（用于API检索路由）
+tag_to_index_mapping:
+  CODE: null  # null表示使用请求中的index_name
+  SCT: sct_testcase
+  BUILD: build_method
+  SYNTAX: coding_standards
+  SPEC: requirement
+  ALG: algorithm
+  DESIGN: design
+  FLOW: flow
+
+# 支持的检索标签列表
+supported_search_tags:
+  - CODE
+  - SCT
+  - BUILD
+  - SYNTAX
+  - SPEC
+  - ALG
+  - DESIGN
+  - FLOW
+
+# SCT 库列表（用于判断是否使用SCT特殊逻辑）
+sct_libraries:
+  - sct_testcase
+  - sct_function
+
+# SCT 检索前缀标识
+sct_prefix: "[SCT]"
+
+# ==================== 编码规范配置 ====================
+# 编码规范语言映射（章节标题关键字 -> 语言标识）
+coding_standards_languages:
+  c++: cpp
+  cpp: cpp
+  ttcn-3: ttcn3
+  ttcn3: ttcn3
+  python: python
+  rust: rust
+  java: java
+  go: go
+  javascript: javascript
+  typescript: typescript
+
+# 检索库到编码规范语言的映射
+library_to_coding_language:
+  sct_testcase: ttcn3
+  sct_function: ttcn3
+  # 其他库默认使用 default_coding_language
+
+# 默认编码规范语言（当库不在映射中时）
+default_coding_language: cpp
+
+# ==================== 文件上传限制 ====================
+# 单个文件最大大小（字节）
+max_file_size: 10485760  # 10MB
+
+# 单次上传最大文件数
+max_file_count: 2000
+
+# 允许的文件格式
+allowed_extensions:
+  - .md
+  - .json
+
+# ==================== 检索配置 ====================
+# 默认检索结果数量
+default_top_k: 10
+
+# 最大检索结果数量
+max_top_k: 100
+
+# 结果筛选方式
+# 可选值: none, elbow, gap_statistic
+# - none: 不进行筛选，返回所有结果
+# - elbow: 使用Elbow Method识别断崖式差距
+# - gap_statistic: 使用Gap Statistic识别最大间隙
+result_filter_mode: none
+
+# 筛选参数
+filter_min_results: 3   # 筛选后至少保留的结果数
+filter_max_results: 10  # 筛选后最多保留的结果数
+
+# ==================== 关联函数查询配置 ====================
+# 是否启用关联函数查询
+enable_relation_search: true
+
+# 最大递归深度（0=不查关联，1=查1层，2=查2层...）
+# 深度定义：深度0是主检索结果，深度1是第一层关联，深度2是第二层关联
+max_relation_depth: 2
+
+# ==================== API默认参数 ====================
+# 默认检索类型
+api_default_search_type: hybrid
+
+# 默认向量模型
+api_default_vector_model: bge-large
+
+# 默认向量权重（混合检索）
+api_default_vector_weight: 0.8
+
+# 默认过滤模式
+api_default_filter_mode: none
+
+# 默认启用关联查询
+api_default_enable_relation: true
+
+# 是否在响应中附加额外内容（编码规范和编译方法）
+# true: 根据tag判断是否附加; false: 不附加
+enable_append_extra_content: false
+
+# 允许的CORS来源（"*"表示所有）
+cors_origins: "*"
+
+# ==================== AI增强检索配置 ====================
+# 是否启用AI模型增强检索（默认false）
+ai_enable: false
+
+# AI检索时top_k扩展系数
+# 当启用AI筛选时，初始检索数量 = 用户请求的top_k × ai_top_k_multiplier
+# 例如：用户要10条，系数为3，则先检索30条，再用AI筛选出最佳10条
+ai_top_k_multiplier: 6
+
+# AI筛选超时时间（秒）
+# 注意：考虑到代理服务器超时限制，建议设置为60秒以内
+# 如果AI处理时间超过此值，将返回原始检索结果
+ai_filter_timeout: 120
+
+# Copilot CLI配置（用于AI调用）
+copilot_config:
+  cli_path: "/home/fenghxu/.nvm/versions/node/v22.22.0/bin/copilot"  # Copilot CLI完整路径（参照auto_doc/configs/config.yaml）
+  # 可用的AI模型列表
+  available_models:
+    - "gpt-4.1"
+    - "gpt-5-mini"
+    - "gpt-5.1"
+    - "gpt-5.1-codex"
+    - "gpt-5.2"
+    - "gpt-5.2-codex"
+    - "gpt-5.3-codex"
+    - "gpt-5.4"
+    - "claude-sonnet-4.5"
+    - "claude-sonnet-4.6"
+  # 默认模型（API请求未指定时使用）
+  default_model: "gpt-5-mini"
+  workspace_root: "/var/fpwork2/fenghxu/cprt_ai_context/elastic_operator/website_9220/"  # 工作空间绝对路径
+
+# ==================== Rerank（重排序）配置 ====================
+# 是否启用 Rerank（默认false，用于对比评估效果）
+rerank:
+  enable: true
+  
+  # 默认使用的 rerank 模型
+  default_model: 'bge-reranker-base'
+  
+  # Rerank检索时top_k扩展系数
+  # 当启用Rerank时，初始检索数量 = 用户请求的top_k × rerank_top_k_multiplier
+  # 例如：用户要10条，系数为3，则先检索30条，再用Rerank重排序后选择最佳10条
+  top_k_multiplier: 6
+  
+  # 可用的 rerank 模型列表（优先级从高到低）
+  available_models:
+    # 中文场景首选
+    - id: 'bge-reranker-base'
+      name: 'BAAI/bge-reranker-base'
+      description: '中文优化，性价比最高（推荐）'
+      params: '278M'
+      languages: ['中文', '英文']
+      speed: '~200 对/秒'
+      
+    - id: 'bge-reranker-large'
+      name: 'BAAI/bge-reranker-large'
+      description: '中文最高精度'
+      params: '326M'
+      languages: ['中文', '英文']
+      speed: '~100 对/秒'
+      
+    - id: 'bge-reranker-v2-m3'
+      name: 'BAAI/bge-reranker-v2-m3'
+      description: '多语言，支持超长文本（8K tokens）'
+      params: '568M'
+      languages: ['100+ 语言']
+      speed: '~50 对/秒'
+    
+    # 英文场景备选
+    - id: 'ms-marco-MiniLM'
+      name: 'cross-encoder/ms-marco-MiniLM-L-6-v2'
+      description: '轻量快速，英文为主'
+      params: '23M'
+      languages: ['英文']
+      speed: '~800 对/秒'
+      
+    - id: 'ms-marco-electra-base'
+      name: 'cross-encoder/ms-marco-electra-base'
+      description: '英文场景，速度与精度平衡'
+      params: '110M'
+      languages: ['英文']
+      speed: '~150 对/秒'
+  
+  # 是否在启动时预加载所有模型
+  preload_on_startup: true
+  
+  # Rerank 推理批处理大小
+  batch_size: 32

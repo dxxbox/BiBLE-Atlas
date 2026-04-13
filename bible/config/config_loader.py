@@ -16,6 +16,11 @@ def resolve_existing_path(file_path: Path | str) -> Optional[Path]:
 
 
 def resolve_config_path(explicit_path: Path | str | None = None) -> Optional[Path]:
+    """Resolve the configuration file path using the following precedence:
+    1. Explicitly provided path
+    2. Environment variable
+    3. Default paths
+    """
     if explicit_path is not None:
         return resolve_existing_path(explicit_path)
 
@@ -32,6 +37,7 @@ def resolve_config_path(explicit_path: Path | str | None = None) -> Optional[Pat
 
 
 def load_raw_config_from_file(file_path: Path | str) -> Dict[str, Any]:
+    """Load raw configuration data from a JSON or YAML file."""
     config_path = Path(file_path)
     if not config_path.exists():
         raise FileNotFoundError(f"Configuration file not found: {file_path}")
