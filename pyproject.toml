@@ -42,14 +42,6 @@ warn_redundant_casts = true
 warn_unused_ignores = true
 ignore_missing_imports = true
 
-[tool.pytest.ini_options]
-testpaths = ["tests"]
-python_files = ["test_*.py"]
-python_classes = ["Test*"]
-python_functions = ["test_*"]
-asyncio_mode = "auto"
-addopts = "-v --cov=openviking --cov-report=term-missing"
-
 [tool.ruff]
 line-length = 100
 exclude = ["third_party"]
