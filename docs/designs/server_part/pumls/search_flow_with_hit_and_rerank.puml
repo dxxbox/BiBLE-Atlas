@@ -97,7 +97,7 @@ partition "解析 top_k 与扩召回" {
 :调用 index_search_tasks\n生成 list[IndexSearchTask];
 :遍历 list[IndexSearchTask];
 
-|Repository层\nfeatures/search/repositories/|
+|Service层\nfeatures/search/search_service.py|
 
 while (还有索引未处理?) is (是)
   :获取下一个 IndexSearchTask;
@@ -116,11 +116,25 @@ while (还有索引未处理?) is (是)
     - AlgorithmSearchRepository (alg.py)
     - DesignSearchRepository (design.py)
     - FlowSearchRepository (flow.py)
+    - CustomVectorSearchRepository (custom.py)
     - EmptySearchRepository (SESSION/SKILL 本切片占位)
   end note
 
+  :校验仓储能力\n(supported_search_types / default_search_type);
+  if (是否要对 query 做向量化?) then (是)
+    note right
+      判断依据：
+      - repository.requires_query_embedding(...)
+      - 例如 vector / hybrid
+      - 或 CUSTOM(vector)
+    end note
+    :内部调用 VectorTool\n生成 query vector;
+  else (否)
+    :vector = None;
+  endif
+
   |Repository层\nfeatures/search/repositories/|
-  :调用 BaseSearchRepository.search(\n task: IndexSearchTask,\n req: SearchRequest,\n ...);
+  :调用 BaseSearchRepository.search(\n task: IndexSearchTask,\n req: SearchRequest,\n vector,\n ...);
   note right
     共享接口：
     - build_query(...)
@@ -155,8 +169,6 @@ while (还有索引未处理?) is (是)
 
   |Service层\nfeatures/search/search_service.py|
   :收集该索引的最终结果;
-
-  |Repository层\nfeatures/search/repositories/|
 endwhile (否)
 
 |Service层\nfeatures/search/search_service.py|

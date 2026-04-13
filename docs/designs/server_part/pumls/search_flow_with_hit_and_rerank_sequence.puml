@@ -8,6 +8,7 @@ participant "TagQuery" as TagQuery
 participant "IndexSearchTasks" as IndexTasks
 participant "Factory\nSearchRepositoryFactory" as Factory
 participant "Repository\nBaseSearchRepository" as Repository
+participant "VectorTool" as VectorTool
 participant "SearchClient" as SearchClient
 participant "RerankTool" as RerankTool
 participant "CopilotCLI\nAiRankingRunner" as CopilotCLI
@@ -26,7 +27,17 @@ loop each IndexSearchTask
   Service -> Factory: create(task.index_tag, ...)
   Factory --> Service: repository
 
-  Service -> Repository: search(task, req, fetch_size)
+  Service -> Service: check supported_search_types / default_search_type
+  alt requires_query_embedding(...)
+    Service -> VectorTool: vectorize query
+    VectorTool --> Service: vector
+  else no query vectorization
+    note right of Service
+      vector = None
+    end note
+  end
+
+  Service -> Repository: search(task, req, fetch_size, vector)
   Repository -> SearchClient: search(...)
   SearchClient --> Repository: raw response
 

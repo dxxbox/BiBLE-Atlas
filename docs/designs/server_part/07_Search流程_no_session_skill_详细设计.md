@@ -2,6 +2,18 @@
 
 本文档描述在 FastAPI 分层架构下，**检索 API** 与 **`app/features/search/`** 的实现型设计，范围**排除** `SessionSearchRepository`、`SkillSearchRepository` 及 SESSION、SKILL 专属编排逻辑。对外 HTTP 契约以 [04_API接口文档.md](./04_API接口文档.md) 为准；分层原则见 [02_分层职责详解.md](./02_分层职责详解.md)。
 
+## 目录
+
+- [1. 范围与术语](#1-范围与术语)
+- [2. 与 04 API 的字段对照](#2-与-04-api-的字段对照)
+- [3. 模块与文件结构](#3-模块与文件结构)
+- [4. 核心类型与接口](#4-核心类型与接口)
+- [5. SearchService 时序说明](#5-searchservice-时序说明)
+- [6. 配置依赖](#6-配置依赖)
+- [7. 与 PlantUML 的对应关系](#7-与-plantuml-的对应关系)
+- [8. 实现检查清单（本切片交付）](#8-实现检查清单本切片交付)
+- [9. 文档索引](#9-文档索引)
+
 ---
 
 ## 1. 范围与术语
@@ -13,6 +25,7 @@
 - **Rerank** 与 **AI 增强** 为**两项独立能力**（cross-encoder 等 **重排序** vs **经 Copilot CLI 的筛选/理解**）；配置见 [03](./03_配置管理设计.md)；**默认在各自 `BaseSearchRepository` 实现内**、于 **底层检索（Elasticsearch / OpenSearch / PostgreSQL 等，见 §4.2）完成且 `map_backend_response_to_items` 之后** 按序执行，便于单索引 **一次性** 产出该索引的最终候选，再由 Service 合并。
 - **Query 向量**：仍由 **Service** 调用 `VectorTool` 生成后 **传入** Repository（避免在仓储内重复加载向量模型）；Repository **不调用** `VectorTool`。
 - 以下 index tag 的 **Repository 与工厂注册**：`CODE`, `SCT`, `BUILD`, `SYNTAX`, `SPEC`, `ALG`, `DESIGN`, `FLOW`。
+- **扩展预留**：若后续新增**用户自定义仓储形式**，建议新增 `CustomVectorSearchRepository`；该类仓储的**首轮召回应限定为 `search_type=vector`**，并继续复用统一的 Rerank / AI / 分桶返回流水线（见 §4.2.2、§4.3.2、§6）。
 
 ### 1.2 不包含（本切片）
 
@@ -60,6 +73,7 @@
 3. `enable_relation_search` 在本切片中为**兼容性开关**：允许透传给具体 Repository；若仓储暂不支持，**静默忽略并记录 debug/info 日志**，不改变响应结构。
 4. `filter_mode` 在本切片中为**预留枚举参数**：先完成校验并透传；若当前 Service/Repository 未实现对应过滤算法，则视为 **no-op**。
 5. 请求体验证失败统一按项目错误体映射为 **400**，不向客户端暴露 FastAPI 默认 `422` 结构。
+6. **自定义仓储扩展约定**：若后续开放用户自定义仓储，则 `index_name` 表示某个已注册的用户自定义库；建议该类仓储首轮检索仅允许 `search_type=vector`，其余类型返回 **400**。
 
 ### 2.2 响应体（`SearchResponse`）
 
@@ -85,13 +99,15 @@
 - `flow`
 - `session`
 - `skill`
+- `custom`（用户自定义仓储扩展时使用）
 
 约束：
 
 1. **仅对本次实际执行的任务桶输出对应 key**；值恒为列表。
 2. 某桶执行后即使没有命中，也返回空列表 `[]`，**不**返回 `null`。
 3. `SESSION` / `SKILL` 在本切片中若出现在任务列表里，其桶值**固定为空列表**。
-4. `_merge_results(...)` 不得丢弃已执行任务的空桶，否则会破坏 `total` 与分桶可观测性的一致性。
+4. 若后续启用用户自定义仓储，其桶键建议固定为 `custom`，桶内元素类型见 §4.1 的 `CustomSearchItem`。
+5. `_merge_results(...)` 不得丢弃已执行任务的空桶，否则会破坏 `total` 与分桶可观测性的一致性。
 
 #### `SearchResponse.results` 的桶值类型
 
@@ -100,6 +116,7 @@
 | `code` | `list[CodeSearchItem]` | 代码按文件聚合结果 |
 | `sct` / `build_method` / `coding_standards` / `requirement` / `algorithm` / `design` / `flow` | `list[SectionSearchItem]` | 章节型结果 |
 | `session` / `skill` | `list[dict]`，且本切片固定为 `[]` | 预留桶；待后续切片补真实 item 结构 |
+| `custom` | `list[CustomSearchItem]` | 用户自定义仓储的通用结果项；建议保留 `metadata` 便于兼容不同自定义字段 |
 
 ### 2.3 对外模型接口设计
 
@@ -170,6 +187,8 @@
 | `SearchClient` 底层检索异常、超时、协议错误 | 记录 error 日志并返回统一错误体 | **500** |
 | `RerankTool` 失败 | 视为本次检索失败，返回统一错误体（除非后续版本另行定义降级） | **500** |
 | `AiRankingRunner` 解析失败、CLI 异常、超时 | **降级**到上一步结果并截断到 `top_k` | **200** |
+| 用户请求自定义仓储，但 `index_name` 未在 `custom_indices` 注册 | 视为业务输入不合法 | **400** |
+| 用户自定义仓储收到非 `vector` 的 `search_type` | 视为该仓储能力范围外的业务输入 | **400** |
 
 ### 2.6 本版本固定实现边界
 
@@ -208,6 +227,7 @@ app/
             ├── base.py            # BaseSearchRepository（ABC）
             ├── factory.py         # SearchRepositoryFactory
             ├── empty.py           # EmptySearchRepository（SESSION/SKILL 占位）
+            ├── custom.py          # CustomVectorSearchRepository（用户自定义仓储）
             ├── code.py            # CodeSearchRepository
             ├── sct.py             # SctSearchRepository
             ├── build.py           # BuildSearchRepository
@@ -231,6 +251,7 @@ app/
 | `repositories/base.py` | 定义 `BaseSearchRepository` 共享检索流水线、抽象扩展点（`build_query`、`map_backend_response_to_items`）、公共依赖注入约定 |
 | `repositories/factory.py` | 根据 `index_tag` 选择具体仓储类或 `EmptySearchRepository`；封装已知/未知 tag 分流与依赖透传规则 |
 | `repositories/empty.py` | `EmptySearchRepository` 的落位文件；用于 `SESSION` / `SKILL` 在本切片中的空分桶占位实现 |
+| `repositories/custom.py` | `CustomVectorSearchRepository` 的落位文件；用于承接用户自定义仓储，建议首轮检索仅支持向量召回 |
 | `repositories/*` | 各 index 仓储：按部署选择 **Elasticsearch / OpenSearch / PostgreSQL** 等后端，负责 tag 专属查询构建、原始结果映射与最终分桶输出；共享流程仍遵循 **检索 → `map_backend_response_to_items` → Rerank → AI → top_k**（§4.2） |
 | `infrastructure/search/client.py`（推荐抽象） | 统一检索后端门面：对上提供稳定的 `search(...)` 契约，对下适配 ES / OpenSearch / PostgreSQL 等不同客户端、查询协议与错误类型；必要时在此做连接复用、重试、超时与统一错误包装。**后端类型建议由静态 `settings.database_type` 选择**（见 [01_架构总览.md](./01_架构总览.md)），**不建议放到动态配置热切换** |
 
@@ -279,10 +300,10 @@ async def search_documents(
 
 建议先在 `schemas.py` 中固定以下基础类型，供 API、Service、Repository 共用：
 
-- `IndexTag = Literal["CODE", "SCT", "BUILD", "SYNTAX", "SPEC", "ALG", "DESIGN", "FLOW", "SESSION", "SKILL"]`
+- `IndexTag = Literal["CODE", "SCT", "BUILD", "SYNTAX", "SPEC", "ALG", "DESIGN", "FLOW", "SESSION", "SKILL", "CUSTOM"]`
 - `SearchType = Literal["keyword", "title", "text", "vector", "hybrid"]`
 - `FilterMode = Literal["none", "elbow", "gap_statistic"]`
-- `ResultsKey = Literal["code", "sct", "build_method", "coding_standards", "requirement", "algorithm", "design", "flow", "session", "skill"]`
+- `ResultsKey = Literal["code", "sct", "build_method", "coding_standards", "requirement", "algorithm", "design", "flow", "session", "skill", "custom"]`
 
 建议同步定义两类稳定的桶内 item：
 
@@ -290,10 +311,11 @@ async def search_documents(
 |------|------|------|
 | `CodeSearchItem` | `relative_code_header_file`、`relative_code_source_file`、`relative_ut_file`、`relative_function_list` | 对应 04 的代码分组结果 |
 | `SectionSearchItem` | `section_title`、`content` | 对应 04 的章节型结果 |
+| `CustomSearchItem` | `title`、`content`、`metadata` | 用户自定义仓储的通用结果项；避免把外部字段硬编码进公共 schema |
 
 建议再定义两个聚合类型：
 
-1. `RepositoryResult = dict[ResultsKey, list[CodeSearchItem] | list[SectionSearchItem] | list[dict]]`
+1. `RepositoryResult = dict[ResultsKey, list[CodeSearchItem] | list[SectionSearchItem] | list[CustomSearchItem] | list[dict]]`
 2. `SearchResultsBuckets`：作为 `SearchResponse.results` 的结构化对象；字段集合固定为全部 `ResultsKey`，其中未执行的桶可省略，已执行但无命中的桶必须为 `[]`
 
 #### `IndexSearchTask`
@@ -434,6 +456,8 @@ async def search_documents(
 | 方法 / 成员 | 说明 |
 |-------------|------|
 | `index_tag` / `results_key` | `ClassVar[str]`，与 04 分桶一致 |
+| `supported_search_types` / `default_search_type` | 仓储能力声明；供 Service 判断当前仓储允许哪些 `search_type`，以及未显式指定时采用什么默认方式 |
+| `requires_query_embedding(...)` | 由仓储声明当前任务是否需要 query 向量；**判断权在 Repository，执行权在 Service** |
 | `build_query(...)` | 生成当前后端的查询；`vector` 由 **Service** 生成后传入，**不**调用 `VectorTool` |
 | `map_backend_response_to_items(raw_response)` | 统一把 **各后端原始结果** 转为 **`list[SearchMatchRow]`** |
 | `format_bucket_items(rows, *, task, req)` | 将最终 `SearchMatchRow` 列表映射为当前分桶的 item 列表（代码分组或章节项） |
@@ -457,6 +481,15 @@ async def search_documents(
 class BaseSearchRepository(ABC):
     index_tag: ClassVar[str]
     results_key: ClassVar[str]
+    supported_search_types: ClassVar[set[str]]
+    default_search_type: ClassVar[str]
+
+    def requires_query_embedding(
+        self,
+        *,
+        task: IndexSearchTask,
+        req: SearchRequest,
+    ) -> bool: ...
 
     @abstractmethod
     def build_query(self, *, task: IndexSearchTask, req: SearchRequest, vector) -> object: ...
@@ -479,8 +512,9 @@ class BaseSearchRepository(ABC):
 说明：
 
 1. 具体仓储至少需要实现 **`build_query(...)`**、**`map_backend_response_to_items(...)`** 与 **`format_bucket_items(...)`**。
-2. **`search(...)`** 建议由基类提供共享骨架，具体子类只覆写必要步骤。
-3. 若某一 index 需要特殊聚合，也应保持最终返回值仍为 **`{results_key: [...]}`** 结构。
+2. 建议各仓储通过 **`supported_search_types` / `default_search_type` / `requires_query_embedding(...)`** 声明自身能力，而不是让 Service 写死针对某个仓储类型的分支。
+3. **`search(...)`** 建议由基类提供共享骨架，具体子类只覆写必要步骤。
+4. 若某一 index 需要特殊聚合，也应保持最终返回值仍为 **`{results_key: [...]}`** 结构。
 
 ### 4.2.1 `search_type` 与 Repository / 向量化的关系
 
@@ -494,6 +528,36 @@ class BaseSearchRepository(ABC):
 
 **Repository 差异**：各具体仓储（`code.py` 等）的 **`build_query(...)`** 根据 **`search_type` + `req`** 分支：拼接 **bool/match**、**knn**、或 **混合子句**；**公共流水线**（`SearchClient.search` → `map_backend_response_to_items` → Rerank → Copilot → `format_bucket_items`）不变。**占位仓储**（SESSION/SKILL 本切片）**不调** `build_query` 与后端，也 **不调** `VectorTool`。
 
+**用户自定义仓储的特例**：`CustomVectorSearchRepository` 建议把首轮召回能力固定为 **仅支持 `search_type=vector`**。也就是说，虽然公共 `SearchRequest.search_type` 仍保留通用枚举，但当目标仓储为 `CUSTOM` 时，Service 应基于仓储能力声明把非 `vector` 请求判为 **400**，而不是让 Repository 在内部做隐式降级。
+
+### 4.2.2 Repository 能力声明与 query 向量化落点
+
+为避免“某类仓储是否需要 query 向量”被硬编码在 `SearchService` 中，建议把**能力声明**放在 Repository，而把**向量生成执行**保留在 Service：
+
+1. `SearchRepositoryFactory.create(...)` 先返回具体仓储实例。
+2. Service 读取仓储的 **`supported_search_types`** / **`default_search_type`**，判断本次请求是否在该仓储能力范围内。
+3. Service 调仓储的 **`requires_query_embedding(task, req)`** 决定是否需要 query 向量。
+4. 若需要，再由 **Service** 调用 **`VectorTool`** 生成向量，并把 `vector` 传给 `repository.search(...)`。
+5. Repository 只消费 `vector` 构建查询，**不直接持有/调用 `VectorTool`**。
+
+这样分层更稳定：
+
+- **API 层**：只负责请求/响应契约
+- **Service 层**：负责流程编排、依赖协调、缓存/复用 query 向量
+- **Repository 层**：只声明“我支不支持这种搜索”和“我需不需要向量”，再负责具体查询构建
+
+对**用户自定义仓储**，建议固定如下：
+
+- `CustomVectorSearchRepository.supported_search_types = {"vector"}`
+- `CustomVectorSearchRepository.default_search_type = "vector"`
+- `CustomVectorSearchRepository.requires_query_embedding(...) = True`
+
+对现有内置仓储，可保持：
+
+- `keyword` / `title` / `text`：通常不需要 embedding
+- `vector` / `hybrid`：通常需要 embedding
+- `EmptySearchRepository.requires_query_embedding(...) = False`
+
 ### 4.3 `SearchRepositoryFactory`（`repositories/factory.py`）
 
 `create(index_tag: str, *, search_client, rerank_tool, ai_ranking_runner, request_ctx, ...) -> BaseSearchRepository`（签名以实现为准；须把 **检索客户端 / Rerank / AI（Copilot CLI）/ 请求上下文** 传入具体仓储类）：
@@ -503,7 +567,8 @@ class BaseSearchRepository(ABC):
 1. 根据 `index_tag` 选择具体 `*SearchRepository`。
 2. 为所有仓储提供一致的构造依赖（`SearchClient`、`RerankTool`、`AiRankingRunner`、`ConfigManager`、`SearchContext`）。
 3. 对已知但本切片未实现的 tag（SESSION/SKILL）返回 **`EmptySearchRepository`**。
-4. 对未知/非法 tag 抛出显式异常，而不是静默降级。
+4. 对用户自定义仓储（`CUSTOM`）读取 `custom_indices.<index_name>` 配置，并构造 `CustomVectorSearchRepository`。
+5. 对未知/非法 tag 抛出显式异常，而不是静默降级。
 
 | `index_tag` | 实现类 | `results_key`（与 04 一致） |
 |----------|--------|----------------------------|
@@ -515,6 +580,7 @@ class BaseSearchRepository(ABC):
 | `ALG` | `AlgSearchRepository` | `algorithm` |
 | `DESIGN` | `DesignSearchRepository` | `design` |
 | `FLOW` | `FlowSearchRepository` | `flow` |
+| `CUSTOM` | **扩展设计**：`CustomVectorSearchRepository` | `custom` |
 | `SESSION` | **本切片**：`EmptySearchRepository`（或等价占位） | `session`（本切片固定返回 `[]`） |
 | `SKILL` | **本切片**：同上 | `skill`（本切片固定返回 `[]`） |
 
@@ -526,8 +592,9 @@ class BaseSearchRepository(ABC):
 
 1. 校验 `index_tag` 是否在受支持集合内。
 2. 若为 `SESSION` / `SKILL`，直接构造 `EmptySearchRepository`。
-3. 否则选择具体仓储类，并注入共享依赖。
-4. 返回与 `BaseSearchRepository` 兼容的实例，供 Service 透明调用。
+3. 若为 `CUSTOM`，读取 `custom_indices.<index_name>` 元数据，校验 `supported_search_types` / `default_search_type` 等约束，并构造 `CustomVectorSearchRepository`。
+4. 否则选择具体内置仓储类，并注入共享依赖。
+5. 返回与 `BaseSearchRepository` 兼容的实例，供 Service 透明调用。
 
 #### 4.3.1 `EmptySearchRepository`
 
@@ -563,6 +630,7 @@ class BaseSearchRepository(ABC):
 | `AlgSearchRepository` | `repositories/alg.py` | `ALG` | `algorithm` |
 | `DesignSearchRepository` | `repositories/design.py` | `DESIGN` | `design` |
 | `FlowSearchRepository` | `repositories/flow.py` | `FLOW` | `flow` |
+| `CustomVectorSearchRepository` | `repositories/custom.py` | `CUSTOM` | `custom` |
 | `EmptySearchRepository` | `repositories/empty.py` | `SESSION` / `SKILL` | `session` / `skill` |
 
 调用关系也固定为：
@@ -619,6 +687,23 @@ class BaseSearchRepository(ABC):
   - `results_key = "flow"`。
   - 接口实现重点：步骤化、流程化内容的结构化回包。
 
+- `CustomVectorSearchRepository`
+  - 面向**用户自定义仓储**；建议不再为每个用户库单独新增一个 Python 仓储类，而是用一个通用仓储 + 配置注册表承接。
+  - 推荐首轮召回**仅支持 `search_type=vector`**，不支持 `keyword` / `title` / `text` / `hybrid`，从而把用户自定义库的实现复杂度控制在最低。
+  - `results_key = "custom"`。
+  - 接口实现重点：
+    - `supported_search_types = {"vector"}`
+    - `default_search_type = "vector"`
+    - `requires_query_embedding(...) = True`
+    - `build_query(...)` 仅构造向量检索语句（如 kNN / `pgvector` 相似度查询）
+    - `format_bucket_items(...)` 返回 `CustomSearchItem(title, content, metadata)`，避免公共 schema 绑定某个用户库的私有字段
+  - `index_name` 的语义：
+    - 对内置仓储，`index_name` 是固定业务索引名或映射结果
+    - 对用户自定义仓储，`index_name` 表示某个**已注册的用户自定义库标识**
+  - 推荐接入方式：
+    - 客户端显式传 `tag=CUSTOM`
+    - Service / Factory 通过 `custom_indices.<index_name>` 读取该仓储的字段映射、向量字段、默认模型等元数据
+
 上述仓储的**共享点**是：都复用同一检索/Rerank/AI 骨架；**主要差异**集中在 `build_query(...)` 的字段选择、`map_backend_response_to_items(...)` 的原始结果归一化，以及 `format_bucket_items(...)` 的最终分桶映射。
 
 ### 4.4 `SearchService`（`search_service.py`）
@@ -630,7 +715,7 @@ class BaseSearchRepository(ABC):
 | `_resolve_index_name(...)` | `tag_to_index_mapping` |
 | `_build_index_search_tasks(...)` | `index_search_tasks`；**不**在此处过滤 SESSION/SKILL |
 | `_initial_fetch_size(user_top_k, req)` | **首次检索条数上限**（ES/OpenSearch 的 `size`、Postgres 的 `LIMIT` 等语义对齐），传入各 `Repository.search(..., fetch_size=...)`。记 `Mr = search.rerank.top_k_multiplier`（仅当 `search.rerank.enable`）、`Ma = search.ai.top_k_multiplier`（仅当 `req.ai_enable`）。**仅 Rerank**：`size = min(user_top_k × Mr, max_top_k)`。**仅 AI**：`size = min(user_top_k × Ma, max_top_k)`。**二者皆开**：**有效倍数取大** — `M = max(Mr, Ma)`，`size = min(user_top_k × M, max_top_k)`。**皆关**：`size = user_top_k`。 |
-| `async def _search_one_task(self, task, req, fetch_size)` | 若 **`factory.create` 为占位仓储**（SESSION/SKILL 本切片等）：**跳过 `VectorTool`**，直接 **`await repository.search(...)`**（零后端）。否则：先 **`create`** 再按 **`search_type`（§4.2.1）** 决定是否调用 **`VectorTool`**（`keyword`/`title`/`text` 通常 **不调**）→ **`await repository.search(...)`**（**首次检索** → Rerank → Copilot AI → 本分桶）；**不再**在 Service 里调用 `_rerank_if_needed` / `_ai_filter_if_needed`。 |
+| `async def _search_one_task(self, task, req, fetch_size)` | 先 `factory.create(...)` 得到仓储，再读取仓储能力（`supported_search_types` / `default_search_type` / `requires_query_embedding(...)`）；若仓储声明需要 embedding，则由 **Service** 调 **`VectorTool`** 生成 query 向量后传入 `repository.search(...)`；否则直接传 `vector=None`。**不再**在 Service 里调用 `_rerank_if_needed` / `_ai_filter_if_needed`。 |
 | `_merge_results(task_results) -> SearchResultsBuckets` | 将各索引返回的分桶片段合并为 04 的 `results`（`enable_hit` 多 key 并存）；**保留已执行任务的空桶** |
 
 **处理顺序（本切片约定）**：`asyncio.gather` 并行 **各索引的 `Repository` 完整流水线**（内序：**首次检索 → Rerank（若开）→ Copilot AI 筛选（若 `ai_enable`）→ 本索引 `top_k`**）→ Service **`_merge_results`** → `SearchResponse`。**Rerank 与 AI 仍是不同技术**；仅 **首次检索扩大倍数**在二者同开时用 **`max(Mr, Ma)`** 一次取够候选。
@@ -639,8 +724,8 @@ class BaseSearchRepository(ABC):
 
 1. 调 `tag_query` 得到 `effective_tag` 与 `query_for_search`。
 2. 调 `index_search_tasks` 构造 `IndexSearchTask` 列表。
-3. 计算 `fetch_size`，并按 `search_type` 决定是否生成向量。
-4. 借助 `SearchRepositoryFactory` 并发执行各任务。
+3. 计算 `fetch_size`。
+4. 借助 `SearchRepositoryFactory` 创建仓储，并基于仓储能力声明决定是否生成 query 向量。
 5. 合并多分桶结果。
 6. 按 **`sum(len(bucket) for bucket in results.values())`** 计算 `total`。
 7. 返回 `SearchResponse`。
@@ -700,7 +785,7 @@ class SearchService:
 ### 5.4 并行调度与单索引流水线
 
 - `asyncio.gather` 并发执行多个 `_search_one_task`。
-- 每个任务：`fetch_size = _initial_fetch_size`（**Rerank 与 AI 同开时** `size = user_top_k × max(Mr, Ma)`，见 §4.4）→ **`factory.create` 得仓储**；若为 **占位仓储**则 **不调 `VectorTool`**，否则按 **§4.2.1** **`search_type`** 决定 **是否** `VectorTool` → **`await repository.search(...)`**（占位仓储可忽略 `fetch_size`）。
+- 每个任务：`fetch_size = _initial_fetch_size`（**Rerank 与 AI 同开时** `size = user_top_k × max(Mr, Ma)`，见 §4.4）→ **`factory.create` 得仓储** → 校验 `req.search_type` 是否落在仓储 **`supported_search_types`** 内（必要时回退 **`default_search_type`**）→ 若 **`repository.requires_query_embedding(...)`** 为真，则由 **Service** 调 **`VectorTool`** 生成 query 向量；否则直接 `vector=None` → **`await repository.search(...)`**（占位仓储可忽略 `fetch_size`）。
 - **在 `Repository.search` 内部**（同一索引、一次调用内；占位仓储直接返回空分桶）：**首次检索 → `map_backend_response_to_items`（统一转 `SearchMatchRow`）→（若开）RerankTool →（若 `ai_enable`）ai_ranking（Copilot CLI）→ 截断到本索引 `top_k` → `format_bucket_items`**。
 - 全部任务结束后，**仅在 Service** 执行 **`_merge_results`**，组装 `SearchResponse`；`total` 为各桶长度之和。
 
@@ -736,6 +821,7 @@ class SearchService:
 | `copilot_config.available_models` | `ai_model` 允许列表（热更新） |
 | `copilot_config.default_model` | 未传 `ai_model` 时的回退 |
 | `vector_models.models` | `vector_model` 合法性 |
+| `custom_indices` | 用户自定义仓储注册表；具体结构、示意和使用说明统一见 [03_配置管理设计.md](./03_配置管理设计.md) |
 
 热更新边界见 [README.md](./README.md) 配置表：业务参数可 reload。**Copilot CLI** 的登录态 / 令牌由 **CLI 与运行环境** 管理，**不写进**动态 YAML；**Elasticsearch / OpenSearch / PostgreSQL** 等连接串通常 **不可热更新**（与运维策略一致）。
 
@@ -758,6 +844,7 @@ class SearchService:
 | 首次检索 `fetch_size` | `SearchService._initial_fetch_size`（§4.4；**Rerank+AI 同开** 时倍数 = **`max(Mr, Ma)`**） |
 | 并行 | `asyncio.gather` + 多 `IndexSearchTask` |
 | `SearchRepositoryFactory.create` | 注入 **`SearchClient`**、`RerankTool`、**AI 运行器（Copilot）**、`request_ctx`；未实现 tag → **占位仓储** |
+| 用户自定义仓储 | `repositories/custom.py`；工厂读取 `custom_indices.<index_name>` 后构造 `CustomVectorSearchRepository`；首轮召回建议仅支持 `search_type=vector` |
 | 仓储内检索 | `repository.search` 内 **`SearchClient` + `map_backend_response_to_items`**（统一产出 `SearchMatchRow`；ES / OpenSearch / Postgres 等；占位仓储跳过） |
 | 仓储内 Rerank | `RerankTool.rerank`（`search.rerank.enable`） |
 | 仓储内 AI | `ai_ranking` + **`copilot_config`**（`ai_enable`） |
@@ -778,6 +865,8 @@ class SearchService:
 - [ ] **Rerank** 与 **AI** 分路径、分配置；同开时 **首次检索**条数使用 **`top_k × max(rerank_top_k_multiplier, ai_top_k_multiplier)`**（§4.4）；流水线在 **Repository** 内 **检索 → `SearchMatchRow` 归一化 → Rerank → Copilot AI → `format_bucket_items`**；支持 **ES / OpenSearch / Postgres** 由 **`SearchClient`** 切换。
 - [ ] `ai_enable` / `ai_model`：**Copilot CLI 筛选至 top_k**（§5.5），`ai_model` 与 **`copilot_config.available_models`** 对齐，与 04 示例一致。
 - [ ] `SearchResponse.results` 使用固定桶键集合，已执行但空结果的桶返回 `[]`；`total` 为全部桶长度之和。
+- [ ] 若引入用户自定义仓储：新增 `CustomVectorSearchRepository`，并通过 `custom_indices` 配置注册；首轮检索仅支持向量召回，统一返回 `custom` 分桶。
+- [ ] Query 向量化由 **Service** 负责执行，但是否需要向量由 **Repository 能力声明**（`supported_search_types` / `requires_query_embedding(...)`）决定。
 - [ ] OpenAPI 示例与 04 示例请求体对齐（含 AI 示例）。
 
 ---
