@@ -5,7 +5,11 @@ from typing import Any, Dict, Optional
 
 import yaml
 
-from bible.common.consts import CONFIG_PATH_ENV_VAR, DEFAULT_CONFIG_PATH_JSON, DEFAULT_CONFIG_PATH_YAML
+from bible.common.consts import (
+    CONFIG_PATH_ENV_VAR,
+    DEFAULT_CONFIG_PATH_JSON,
+    DEFAULT_CONFIG_PATH_YAML,
+)
 
 
 def resolve_existing_path(file_path: Path | str) -> Optional[Path]:

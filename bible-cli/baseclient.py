@@ -1,11 +1,12 @@
 from abc import ABC, abstractmethod
-from typing import List, Dict, Any, Optional, Union
+from typing import Any, Dict, Optional
 
-from fastapi import Response
 
 class KnowledgeID(str):
     """Knowledge ID类型定义"""
+
     pass
+
 
 class BaseClient(ABC):
     """

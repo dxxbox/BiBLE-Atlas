@@ -1,20 +1,18 @@
-import logging
-import sys
 from copy import deepcopy
-from logging.handlers import TimedRotatingFileHandler
 from pathlib import Path
 from typing import Any, Dict, Optional
 
 from pydantic import BaseModel, Field
 
+from bible.common.consts import CONFIG_PATH_ENV_VAR
 from bible.config.config_loader import (
     load_raw_config_from_file,
     resolve_config_path,
 )
-from bible.common.consts import CONFIG_PATH_ENV_VAR
+
 
 class LogConfig(BaseModel):
-    #TO-DO: add log configuration logic here, 
+    # TO-DO: add log configuration logic here,
     # below are default in case no configuration found.
     level: str = "INFO"
     format: str = "%(asctime)s - %(name)s - %(levelname)s - %(message)s"
@@ -23,15 +21,19 @@ class LogConfig(BaseModel):
     rotation_days: int = 7
     rotation_interval: str = "midnight"
 
+
 class StorageConfig(BaseModel):
     workspace_dir: str = "./workspace"
+
 
 class BibleAtlasConfig(BaseModel):
     atlas_url: str = "https://bibleatlas.org"
     atlas_api_key: Optional[str] = None
     atlas_timeout: int = 10
 
-    storage: StorageConfig = Field(default_factory=lambda: StorageConfig(), description="Storage configuration")
+    storage: StorageConfig = Field(
+        default_factory=lambda: StorageConfig(), description="Storage configuration"
+    )
     log: LogConfig = Field(default_factory=lambda: LogConfig(), description="Logging configuration")
 
     # add other config fields as needed
@@ -41,9 +43,11 @@ class BibleAtlasConfig(BaseModel):
         """Create a BibleAtlasConfig instance from a raw config dictionary."""
         config_copy = deepcopy(config_dict)
 
-        return cls(**config_copy) # TO-DO: change this to real function.
+        return cls(**config_copy)  # TO-DO: change this to real function.
+
 
 _config_instance: Optional[BibleAtlasConfig] = None
+
 
 def load_bible_atlas_config_from_file(file_path: Path | str) -> "BibleAtlasConfig":
     """Load a BibleAtlasConfig object from a JSON or YAML file."""
@@ -57,6 +61,7 @@ def load_bible_atlas_config_from_file(file_path: Path | str) -> "BibleAtlasConfi
 def _clear_bible_atlas_config_cache() -> None:
     global _config_instance
     _config_instance = None
+
 
 def get_bible_atlas_config() -> BibleAtlasConfig:
     global _config_instance

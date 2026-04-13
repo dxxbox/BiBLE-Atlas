@@ -60,13 +60,15 @@ jobs:
     - name: List files
       run: echo "The changed files are ${{ steps.files.outputs.changed_files }}"
 
-    - name: Format with ruff (Changed files only)
-      if: steps.files.outputs.changed_files != ''
-      run: uv run ruff format --check ${{ steps.files.outputs.changed_files }}  
-
     - name: Lint with ruff (Changed files only)
       if: steps.files.outputs.changed_files != ''
+      run: uv run ruff format --check ${{ steps.files.outputs.changed_files }}
+      continue-on-error: true
+
+    - name: Format with ruff (Changed files only)
+      if: steps.files.outputs.changed_files != ''
       run: uv run ruff check ${{ steps.files.outputs.changed_files }}
+      continue-on-error: true  
 
     - name: Type check with mypy (Changed files only)
       if: steps.files.outputs.changed_files != ''

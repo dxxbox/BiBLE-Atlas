@@ -20,3 +20,13 @@ uv sync --all-extras
 source .venv/bin/activate
 
 **Note:** You should switch to proper python version (3.10+) or you'll face import issue.
+
+## check/foramt before push
+
+Github has been configured with LINT, you'd better run below command and format your code before submit.
+
+> uv run format path/to/changed_file.py another/path/to/changed_file2.py
+>
+> uv run check --fix path/to/changed_file.py another/path/to/changed_file2.py
+>
+> uv run mypy path/to/changed_file.py another/path/to/changed_file2.py
