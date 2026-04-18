@@ -17,7 +17,19 @@ class BibleCLIError(Exception):
     exit_code: int = 1
     details: dict[str, Any] | None = None
 
+    def __post_init__(self) -> None:
+        Exception.__init__(self, self.message)
 
+
+@dataclass(slots=True)
+class BibleAPIError(BibleCLIError):
+    """Typed API/domain error restored from server error payload."""
+
+    code: str = "INTERNAL"
+    retryable: bool = False
+    status_code: int | None = None
+
+# ----------------------- CLI Error -----------------------
 class CommandNotImplementedError(BibleCLIError):
     """Raised when a command path is declared but not implemented yet."""
 
@@ -28,3 +40,106 @@ class CommandNotImplementedError(BibleCLIError):
             exit_code=COMMAND_NOT_IMPLEMENTED_EXIT_CODE,
             details={"command_path": command_path},
         )
+
+# ----------------------- API Error -----------------------
+class InvalidArgumentError(BibleAPIError):
+    def __init__(self, message: str, details: dict[str, Any] | None = None) -> None:
+        super().__init__(message=message, code="INVALID_ARGUMENT", details=details, retryable=False)
+
+
+class UnauthenticatedError(BibleAPIError):
+    def __init__(self, message: str, details: dict[str, Any] | None = None) -> None:
+        super().__init__(message=message, code="UNAUTHENTICATED", details=details, retryable=False)
+
+
+class PermissionDeniedError(BibleAPIError):
+    def __init__(self, message: str, details: dict[str, Any] | None = None) -> None:
+        super().__init__(message=message, code="PERMISSION_DENIED", details=details, retryable=False)
+
+
+class NotFoundError(BibleAPIError):
+    def __init__(self, message: str, details: dict[str, Any] | None = None) -> None:
+        super().__init__(message=message, code="NOT_FOUND", details=details, retryable=False)
+
+
+class ConflictError(BibleAPIError):
+    def __init__(self, message: str, details: dict[str, Any] | None = None) -> None:
+        super().__init__(message=message, code="CONFLICT", details=details, retryable=False)
+
+
+class ResourceExhaustedError(BibleAPIError):
+    def __init__(self, message: str, details: dict[str, Any] | None = None) -> None:
+        super().__init__(message=message, code="RESOURCE_EXHAUSTED", details=details, retryable=True)
+
+
+class UnavailableError(BibleAPIError):
+    def __init__(self, message: str, details: dict[str, Any] | None = None) -> None:
+        super().__init__(message=message, code="UNAVAILABLE", details=details, retryable=True)
+
+
+class DeadlineExceededError(BibleAPIError):
+    def __init__(self, message: str, details: dict[str, Any] | None = None) -> None:
+        super().__init__(message=message, code="DEADLINE_EXCEEDED", details=details, retryable=True)
+
+# ----------------------- Mapping Server Error to Local Error -----------------------
+class ProcessingError(BibleAPIError):
+    def __init__(
+        self,
+        message: str,
+        *,
+        code: str = "INTERNAL",
+        details: dict[str, Any] | None = None,
+        retryable: bool = False,
+        status_code: int | None = None,
+    ) -> None:
+        super().__init__(
+            message=message,
+            code=code,
+            details=details,
+            retryable=retryable,
+            status_code=status_code,
+        )
+
+
+ERROR_CODE_EXCEPTION_MAP: dict[str, type[BibleAPIError]] = {
+    "INVALID_ARGUMENT": InvalidArgumentError,
+    "UNAUTHENTICATED": UnauthenticatedError,
+    "AUTH_INVALID_API_KEY": UnauthenticatedError,
+    "PERMISSION_DENIED": PermissionDeniedError,
+    "NOT_FOUND": NotFoundError,
+    "TENANT_NOT_FOUND": NotFoundError,
+    "CONFLICT": ConflictError,
+    "ALREADY_EXISTS": ConflictError,
+    "RESOURCE_EXHAUSTED": ResourceExhaustedError,
+    "UNAVAILABLE": UnavailableError,
+    "DEADLINE_EXCEEDED": DeadlineExceededError,
+}
+
+
+def map_server_error(
+    *,
+    code: str | None,
+    message: str,
+    details: dict[str, Any] | None = None,
+    retryable: bool = False,
+    status_code: int | None = None,
+) -> BibleAPIError:
+    """Map a server error payload to a local typed exception."""
+    normalized_code = code or "INTERNAL"
+    error_type = ERROR_CODE_EXCEPTION_MAP.get(normalized_code)
+
+    if error_type is None:
+        return ProcessingError(
+            message=message,
+            code=normalized_code,
+            details=details,
+            retryable=retryable,
+            status_code=status_code,
+        )
+
+    error = error_type(message=message, details=details)
+    error.retryable = retryable
+    error.status_code = status_code
+    # Preserve domain-specific codes while using canonical local classes.
+    error.code = normalized_code
+    return error

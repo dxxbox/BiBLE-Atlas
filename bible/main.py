@@ -2,7 +2,7 @@ from fastapi import FastAPI
 from bible.common import _get_version
 import uvicorn
 
-from bible.api import (system_router)
+from bible.api import knowledge_router, system_router
 
 from bible.common.logger import get_logger
 
@@ -16,7 +16,8 @@ def create_app() -> FastAPI:
     
     # Include your API routes here
     # e.g., app.include_router(your_router)
-    app.include_router(system_router)  # Make sure to import and include your API router
+    app.include_router(system_router)
+    app.include_router(knowledge_router)
 
     return app
 
@@ -27,8 +28,8 @@ def main():
     # Add your application logic here
     app = create_app()
     logger.info("Starting BiBLE-Atlas application...")
-    uvicorn.run(app, host="0.0.0.0", port=5555, log_config=None)
-    pass
+    uvicorn.run(app, host="127.0.0.1", port=5555, log_config=None)
+
 
 if __name__ == "__main__":
     main()

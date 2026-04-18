@@ -1,5 +1,4 @@
 import json
-from unittest.mock import patch
 
 import pytest
 from fastapi.testclient import TestClient
@@ -41,6 +40,38 @@ def test_system_status(client):
     # Parse the response as JSON
     data = json.loads(response.content)
     assert data == {"status": "ok"}
+
+
+def test_system_info(client):
+    """Test /api/v1/system/info returns envelope style info."""
+    response = client.get("/api/v1/system/info")
+    assert response.status_code == 200
+    data = response.json()
+    assert data["status"] == "ok"
+    assert "result" in data
+    assert "version" in data["result"]
+    assert data["result"]["description"] == "BiBLE-Atlas: Agent-native context DB"
+
+
+def test_knowledge_list_not_implemented(client):
+    """Test knowledge list returns explicit not implemented envelope."""
+    response = client.get("/api/v1/knowledge/list")
+    assert response.status_code == 501
+    data = response.json()
+    assert data["status"] == "error"
+    assert data["error"]["code"] == "NOT_IMPLEMENTED"
+    assert data["error"]["details"]["operation"] == "list"
+
+
+def test_knowledge_search_not_implemented(client):
+    """Test knowledge search returns explicit not implemented envelope."""
+    response = client.get("/api/v1/knowledge/search", params={"query": "faith"})
+    assert response.status_code == 501
+    data = response.json()
+    assert data["status"] == "error"
+    assert data["error"]["code"] == "NOT_IMPLEMENTED"
+    assert data["error"]["details"]["operation"] == "search"
+    assert data["error"]["details"]["query"] == "faith"
 
 
 def test_get_info_version_format(client):

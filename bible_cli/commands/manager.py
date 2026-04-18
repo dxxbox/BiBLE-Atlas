@@ -5,6 +5,7 @@ from __future__ import annotations
 from argparse import Namespace
 
 from bible_cli.commands.handlers import (
+    HealthCommands,
     KnowledgeCommands,
     MemoryCommands,
     SkillsCommands,
@@ -17,6 +18,7 @@ class CommandsManager:
 
     def __init__(self) -> None:
         self._handlers = {
+            "health": HealthCommands(),
             "system": SystemCommands(),
             "knowledge": KnowledgeCommands(),
             "memory": MemoryCommands(),
