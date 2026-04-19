@@ -23,6 +23,13 @@ on:
         description: 'JSON string of Python versions'
         required: false
         default: '["3.10"]'
+  pull_request:
+    branches:
+      - main
+  push:
+    branches:
+      - main
+      - "feature/**"
 
 jobs:
   test-lite:
