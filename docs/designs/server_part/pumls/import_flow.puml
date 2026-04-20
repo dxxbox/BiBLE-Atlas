@@ -1,0 +1,884 @@
+@startuml Import流程泳道图
+!theme plain
+skinparam backgroundColor #FEFEFE
+skinparam swimlaneWidth 70
+skinparam pageMargin 5
+skinparam dpi 150
+scale 0.8
+
+title Import 流程详细设计（泳道视图）\n无 SESSION/SKILL 仓储切片\n包含临时文件管理与清理逻辑
+
+|#LightBlue|API 层|
+start
+:客户端发起请求\nPOST /api/v1/import/jobs;
+note right
+  **multipart/form-data**
+  • library: str
+  • files: List[UploadFile]
+  • vector_model: str (可选)
+  • import_mode: str (replace/append)
+  • custom_parser: UploadFile (可选)
+end note
+
+:FastAPI 接收请求\n(import_api.py);
+
+:Form 参数绑定;
+note right
+  • library = Form(...)
+  • files = File(...)
+  • vector_model = Form(None)
+  • import_mode = Form("replace")
+  • custom_parser = File(None)
+end note
+
+|#LightGray|Feature.Schemas|
+:使用 Pydantic 校验;
+note right
+  虽然是 Form 参数，
+  但遵循 ImportJobRequest
+  的字段定义和验证规则
+end note
+
+|#LightBlue|API 层|
+if (参数校验通过?) then (no)
+  :返回 HTTP 400\n参数错误;
+  stop
+else (yes)
+  :调用 Service\nservice.create_import_job_with_files();
+  note right
+    **依赖注入**
+    service: ImportService = 
+      Depends(get_import_service)
+  end note
+endif
+
+|#LightGreen|Feature.Service|
+:ImportService 接收请求\ncreate_import_job_with_files();
+note right
+  **方法签名**
+  async def create_import_job_with_files(
+    library, files, vector_model,
+    import_mode, custom_parser
+  ) -> ImportJobResponse
+end note
+
+:校验 library 参数\n_validate_library();
+note right
+  • 检查 library 是否在有效列表中
+  • SESSION/SKILL 短路返回异常
+end note
+
+if (SESSION/SKILL?) then (yes)
+  :抛出 ValueError\n"not supported";
+  
+  |#LightBlue|API 层|
+  :捕获异常\n返回 HTTP 400;
+  stop
+else (no)
+  |#LightGreen|Feature.Service|
+  :生成 job_id;
+  note right
+    格式: import_YYYYMMDD_HHMMSS_random
+    示例: import_20260415_143025_a1b2c3d4
+  end note
+  
+  :保存上传文件到临时目录\n_save_uploaded_files();
+  note right
+    **临时目录结构**
+    /tmp/bible_import/jobs/{job_id}/
+    ├── files/
+    │   ├── doc1.md
+    │   ├── doc2.json
+    │   └── custom_parser.py
+    └── metadata.json
+    
+    **保存内容**
+    • 所有上传的文件
+    • 自定义解析器（如果有）
+    • 任务元数据（job_id, created_at, files, library, vector_model, import_mode）
+    
+    **注意**：API层只保存文件，不解析
+  end note
+  
+  :提交 Celery 任务\n_submit_import_task();
+  note right
+    import_documents_task.delay(
+      job_id, library,
+      vector_model, import_mode
+    )
+    
+    **注意**：只传递job_id和参数，
+    不传递文件内容。
+    Celery任务会从临时目录读取文件。
+  end note
+    
+    |#LightCoral|Infrastructure\nCelery|
+    fork
+      :Celery 任务入队\nimport_documents_task.delay();
+      note right
+        **异步执行参数**
+        • job_id (用于定位临时目录)
+        • library
+        • vector_model
+        • import_mode
+        
+        **注意**：不传递文件内容，
+        Celery任务从临时目录读取
+      end note
+    fork again
+      |#LightGreen|Feature.Service|
+      :构造响应对象;
+      
+      |#LightGray|Feature.Schemas|
+      :创建 ImportJobResponse;
+      note right
+        **ImportJobResponse**
+        • success: true
+        • job_id: str
+        • status: "pending"
+        • message: "任务已提交，正在排队"
+        • details: dict
+          - library
+          - use_vector
+          - vector_model
+          - import_mode
+          - file_count
+      end note
+      
+      |#LightGreen|Feature.Service|
+      :返回 ImportJobResponse\n给 API 层;
+      
+      |#LightBlue|API 层|
+      :接收 ImportJobResponse;
+      :返回 HTTP 201 Created\nresponse_model=ImportJobResponse;
+      note right
+        FastAPI 自动序列化
+        ImportJobResponse 为 JSON
+        
+        **临时文件状态**：
+        • 文件已保存到临时目录
+        • 任务已提交给 Celery（排队中）
+        • API请求快速返回（不等待解析/向量化）
+        • 临时文件由 Celery 任务完成后清理
+      end note
+      stop
+    end fork
+    
+    |#LightCoral|Infrastructure\nCelery|
+    
+    note right
+      **========================================**
+      **Celery 异步任务执行（后台）**
+      **完整任务流程：解析 → 向量化 → 导入**
+      **========================================**
+    end note
+    
+    :Celery Worker 接收任务;
+    :import_documents_task() 开始执行;
+    
+    note right
+      **任务参数**
+      • job_id (用于定位临时目录)
+      • library (知识库名称)
+      • vector_model (向量模型，可为None)
+      • import_mode (replace/append)
+      
+      **执行模式**：完整任务
+      不传递文件内容，从临时目录读取
+    end note
+    
+    note right
+      **=== 步骤1: 读取文件 (0-5%) ===**
+    end note
+    
+    :更新任务状态 (0%);
+    note right
+      self.update_state(
+        state='PROGRESS',
+        meta={
+          'job_id': job_id,
+          'status': 'reading_files',
+          'progress': 0,
+          'stage': 'reading_metadata'
+        }
+      )
+    end note
+    
+    :读取任务元数据\nmetadata.json;
+    note right
+      从临时目录读取：
+      /tmp/bible_import/jobs/{job_id}/metadata.json
+      
+      获取：
+      • files: ["doc1.md", "doc2.json"]
+      • library: "CODE"
+      • vector_model: "mpnet"
+      • import_mode: "replace"
+      • created_at, status 等
+    end note
+    
+    :从临时目录读取文件列表;
+    note right
+      files_dir = /tmp/bible_import/jobs/{job_id}/files/
+      
+      遍历 metadata['files']:
+      • doc1.md
+      • doc2.json
+      • custom_parser.py (如果有)
+    end note
+    
+    :更新任务状态 (5%);
+    note right
+      status: 'files_loaded'
+      progress: 5
+    end note
+    
+    note right
+      **=== 步骤2: 解析文件 (5-30%) ===**
+    end note
+    
+    :更新任务状态 (5%);
+    note right
+      status: 'parsing_files'
+      stage: 'parsing'
+      total_files: len(files)
+    end note
+    
+    |#LightYellow|Feature.Repository|
+    :获取 Repository 实例\nImportRepositoryFactory.create(library);
+    note right
+      根据 library 选择对应的 Repository：
+      • CODE → CodeImportRepository
+      • SCT → SctImportRepository
+      • DESIGN → DesignImportRepository
+      等
+    end note
+    
+    repeat :遍历每个文件 (i / total);
+      :从临时目录读取文件内容;
+      note right
+        file_path = files_dir / filename
+        content = read_file(file_path)
+      end note
+      
+      :调用 Repository\nprocess_file(filename, content);
+      
+      |#LightCyan|Feature.Parser|
+      :选择解析器\nParserFactory.get_parser(filename);
+      
+      if (文件扩展名) then (.md)
+        :使用 MarkdownParser;
+        note right
+          按标题层级分割：
+          # H1 → 新文档
+          ## H2 → 新章节
+          提取标题和内容
+        end note
+        :解析为 DocumentChunk 列表;
+      elseif (.json) then
+        :使用 JsonParser;
+        note right
+          验证 JSON 结构：
+          {
+            "sections": [
+              {"id", "title", "content"},
+              ...
+            ]
+          }
+        end note
+        :解析为 DocumentChunk 列表;
+      else (unsupported)
+        :抛出 ParserError;
+        note right
+          记录到 failed_files
+        end note
+      endif
+      
+      |#LightYellow|Feature.Repository|
+      if (解析成功?) then (yes)
+        :格式化为 OpenSearch 文档\nformat_for_opensearch();
+        note right
+          为每个 chunk 生成文档：
+          • doc_id (唯一标识)
+          • library, filename
+          • section_id, section_title
+          • content
+          • created_at, updated_at
+          • metadata
+          
+          **注意**：此时 content_vector 为空
+          向量生成在下一步
+        end note
+        :返回文档列表;
+        note right
+          documents.extend(parsed_docs)
+        end note
+      else (no)
+        :记录解析失败;
+        note right
+          failed_files.append({
+            'filename': filename,
+            'error': str(error)
+          })
+        end note
+      endif
+      
+      |#LightCoral|Infrastructure\nCelery|
+      :更新解析进度;
+      note right
+        progress = 5 + (i / total) * 25
+        例: 2/5 完成 → 15%
+      end note
+    repeat while (还有文件?) is (yes)
+    
+    :汇总解析结果;
+    note right
+      parse_results = {
+        'total_files': total_files,
+        'parsed_files': len(documents),
+        'failed_files': len(failed_files),
+        'failed_file_details': failed_files
+      }
+    end note
+    
+    :更新任务状态 (30%);
+    note right
+      status: 'files_parsed'
+      progress: 30
+      parse_results: {...}
+    end note
+    
+    note right
+      **=== 步骤3: 生成向量 (30-60%) ===**
+    end note
+    
+    if (vector_model 不为空?) then (yes)
+      :更新任务状态 (30%);
+      note right
+        status: 'generating_vectors'
+        stage: 'vectorizing'
+        total_documents: len(documents)
+      end note
+      
+      |#Lavender|Infrastructure\nVectorTool|
+      :初始化 VectorTool;
+      note right
+        vector_tool = VectorTool(
+          model_name=vector_model
+        )
+        加载模型到内存
+      end note
+      
+      repeat :遍历每个文档 (i / total);
+        :生成向量\nvector_tool.generate_vector(text);
+        note right
+          text = doc['section_title'] + '\n' + doc['content']
+          vector = vector_tool.generate(text)
+          
+          输出：List[float]
+          维度：768 (mpnet) / 1024 (bge-large)
+        end note
+        
+        :将向量存入文档;
+        note right
+          doc['content_vector'] = vector
+        end note
+        
+        |#LightCoral|Infrastructure\nCelery|
+        if (每10个文档?) then (yes)
+          :更新向量生成进度;
+          note right
+            progress = 30 + (i / total) * 30
+            例: 50/100 完成 → 45%
+          end note
+        endif
+      repeat while (还有文档?) is (yes)
+      
+      :更新任务状态 (60%);
+      note right
+        status: 'vectors_generated'
+        progress: 60
+        vector_dims: len(vector)
+      end note
+    else (no)
+      :跳过向量生成;
+      note right
+        所有文档的 content_vector 保持为 null
+      end note
+      :更新任务状态 (60%);
+    endif
+    
+    note right
+      **=== 步骤4: 导入 OpenSearch (60-95%) ===**
+    end note
+    
+    :更新任务状态 (60%);
+    note right
+      status: 'importing_to_es'
+      stage: 'importing'
+      total_documents: len(documents)
+    end note
+    
+    |#Pink|Infrastructure\nOpenSearch|
+    :检测向量配置;
+    if (文档包含 content_vector?) then (yes)
+      :use_vector = True\nvector_dims = len(vector);
+    else (no)
+      :use_vector = False;
+    endif
+    
+    :调用 IndexManager\nensure_index_exists();
+    note right
+      **创建/检查索引**
+      • 索引名: bible_{library}
+      • 检查是否存在
+      • 不存在则创建
+      • 配置 mappings (含向量字段)
+      • 配置 settings (分片、副本)
+      返回: index_name
+    end note
+    
+    if (import_mode == "replace"?) then (yes)
+      :调用 IndexManager\ndelete_library_documents();
+      note right
+        **删除旧文档**
+        DELETE /bible_{library}/_doc/_query
+        {
+          "query": {
+            "term": { "library": library }
+          }
+        }
+        返回: deleted_count
+      end note
+      :更新任务状态 (65%);
+    else (append)
+      :跳过删除，直接追加;
+    endif
+    
+    :调用 BulkImporter\nbulk_insert(documents);
+    note right
+      **批量导入配置**
+      • batch_size: 100
+      • 使用 opensearchpy.helpers.bulk
+      • 支持自动重试
+      • 触发进度回调
+    end note
+    
+    repeat :批量导入循环 (每批100个);
+      :导入一批文档\nhelpers.bulk();
+      note right
+        操作：
+        POST /bible_{library}/_bulk
+        [
+          { "index": { "_id": "doc_id_1" } },
+          { "doc_id": "...", "content": "..." },
+          { "index": { "_id": "doc_id_2" } },
+          { "doc_id": "...", "content": "..." },
+          ...
+        ]
+      end note
+      
+      :触发进度回调;
+      note right
+        completed = (current_batch + 1) * batch_size
+        progress = 65 + (completed / total) * 25
+        
+        self.update_state(
+          state='PROGRESS',
+          meta={
+            'progress': progress,
+            'status': f'正在导入 ({completed}/{total})'
+          }
+        )
+      end note
+    repeat while (还有未导入的文档?) is (yes)
+    
+    :接收导入结果;
+    note right
+      **BulkImportResult**
+      {
+        'total': 100,
+        'successful': 98,
+        'failed': 2,
+        'errors': [
+          {'doc_id': 'xxx', 'error': '...'},
+          ...
+        ]
+      }
+    end note
+    
+    :更新任务状态 (90%);
+    note right
+      status: 'import_completed'
+      progress: 90
+    end note
+    
+    note right
+      **=== 步骤5: 清理与完成 (90-100%) ===**
+    end note
+    
+    |#LightCoral|Infrastructure\nCelery|
+    :判断任务最终状态;
+    if (failed > 0?) then (yes)
+      :设置状态 = "partial";
+      note right
+        部分文档导入失败
+      end note
+    else (no)
+      :设置状态 = "completed";
+      note right
+        全部文档导入成功
+      end note
+    endif
+    
+    :更新任务状态 (95%);
+    note right
+      status: 'cleaning_up'
+      progress: 95
+    end note
+    
+    :清理临时文件\n_cleanup_job_files();
+    note right
+      **清理策略**
+      • 删除: /tmp/bible_import/jobs/{job_id}/files/
+        (包含所有上传的文件)
+      • 保留: /tmp/bible_import/jobs/{job_id}/metadata.json
+        (用于查询任务状态和结果)
+      • keep_metadata=True
+    end note
+    
+    :更新任务元数据;
+    note right
+      metadata.json 更新：
+      {
+        "status": "completed" / "partial" / "failed",
+        "updated_at": "2026-04-15T14:35:42.789012",
+        "parse_results": {
+          "total_files": 5,
+          "parsed_files": 5,
+          "failed_files": 0
+        },
+        "import_result": {
+          "total_documents": 50,
+          "successful": 50,
+          "failed": 0,
+          "index_name": "bible_CODE"
+        }
+      }
+    end note
+    
+    :更新任务状态 (100%);
+    note right
+      state: 'SUCCESS'
+      status: 'completed'
+      progress: 100
+    end note
+    
+    :构造并返回任务结果;
+    note right
+      **Celery Task Result**
+      {
+        "job_id": "import_20260415_143025_a1b2c3d4",
+        "status": "completed",
+        "total_documents": 50,
+        "successful": 50,
+        "failed": 0,
+        "parse_results": {...},
+        "import_result": {...},
+        "message": "成功导入 50 个文档到 bible_CODE"
+      }
+    end note
+    
+    :Celery 任务完成;
+    
+    note right
+      **========================================**
+      **定期清理任务（独立后台任务）**
+      **========================================**
+      
+      **cleanup_old_jobs 定期任务**：
+      • 触发：每天凌晨执行（cron: 0 2 * * *）
+      • 目标：清理过期的任务目录
+      • 保留期：7 天
+      • 操作：
+        1. 扫描 /tmp/bible_import/jobs/ 目录
+        2. 检查每个 job_id 目录的创建时间
+        3. 删除超过 7 天的整个目录（包括元数据）
+        4. 清理孤儿目录（无 metadata.json 且超过1天）
+      
+      **磁盘空间管理**：
+      • 估算：每个任务约 10MB-100MB
+      • 7天内最多保留约 1000 个任务
+      • 总空间：约 10GB-100GB
+      • 建议：监控磁盘使用率，超过80%时告警
+    end note
+    
+    stop
+  endif
+
+|#LightBlue|API 层|
+
+:客户端发起查询请求\nGET /api/v1/import/jobs/{job_id};
+note right
+  **路径参数**
+  • job_id: 任务ID
+  
+  **返回格式**
+  • job_id, status, progress
+  • message, parse_results
+  • result, error
+  • created_at, started_at, completed_at
+end note
+
+:FastAPI 接收请求\n(import_api.py);
+
+:提取 job_id 参数;
+note right
+  从路径中提取 job_id
+  例: import_20260415_143025_a1b2c3d4
+end note
+
+:调用 Service\nservice.get_job_status(job_id);
+note right
+  **依赖注入**
+  service: ImportService = 
+    Depends(get_import_service)
+end note
+
+|#LightGreen|Feature.Service|
+:ImportService 接收查询请求\nget_job_status(job_id);
+note right
+  **方法职责**
+  • 读取任务元数据
+  • 查询 Celery 任务状态
+  • 映射状态到业务语义
+  • 返回统一响应
+end note
+
+:检查任务元数据文件;
+note right
+  路径: /tmp/bible_import/jobs/{job_id}/metadata.json
+end note
+
+if (metadata.json 存在?) then (no)
+  :记录警告日志;
+  :抛出 FileNotFoundError;
+  
+  |#LightBlue|API 层|
+  :捕获异常\n返回 HTTP 404;
+  note right
+    {
+      "detail": "Job not found: {job_id}"
+    }
+  end note
+  stop
+else (yes)
+  |#LightGreen|Feature.Service|
+  :读取 metadata.json;
+  note right
+    提取信息：
+    • created_at: 创建时间
+    • library: 知识库名称
+    • parse_results: 解析结果
+    • celery_task_id: Celery任务ID
+    • started_at, completed_at (如果有)
+  end note
+  
+  if (celery_task_id 存在?) then (no)
+    :构造初始状态响应;
+    note right
+      status = "parsing"
+      progress = 0.0
+      message = "正在解析文件..."
+    end note
+    
+    |#LightGray|Feature.Schemas|
+    :创建 ImportJobStatusResponse;
+    
+    |#LightBlue|API 层|
+    :返回 HTTP 200 OK;
+    stop
+  else (yes)
+    |#LightCoral|Infrastructure\nCelery|
+    :查询 Celery 任务状态\nAsyncResult(celery_task_id);
+    note right
+      从 Celery 获取任务执行信息：
+      • state: PENDING/PROGRESS/SUCCESS/FAILURE
+      • info: 任务进度信息（仅PROGRESS时）
+      • result: 任务结果（仅SUCCESS时）
+    end note
+    
+    |#LightGreen|Feature.Service|
+    if (Celery state?) then (PENDING)
+      :映射为业务状态;
+      note right
+        status = "parsing"
+        progress = 0.0
+        message = "等待执行..."
+      end note
+    elseif (PROGRESS) then
+      :提取进度信息;
+      note right
+        从 task_info 提取：
+        • stage: 执行阶段
+        • current: 当前进度
+        • total: 总进度
+        • status: 状态描述
+      end note
+      
+      :根据 stage 映射业务状态;
+      note right
+        **阶段映射规则**
+        • preparing → parsing
+        • processing_files → parsing
+        • files_processed → vectorizing (如果use_vector)
+        • importing_es → importing
+        • cleanup → importing
+      end note
+      
+      :计算进度百分比;
+      note right
+        progress = current / 100.0
+      end note
+    elseif (SUCCESS) then
+      :提取任务结果;
+      note right
+        从 celery_task.result 提取：
+        • index_name: 索引名称
+        • imported_docs: 导入文档数
+        • total_docs: 总文档数
+        • failed_docs: 失败文档数
+        • has_vector: 是否有向量
+        • vector_dims: 向量维度
+      end note
+      
+      :映射为完成状态;
+      note right
+        status = "completed"
+        progress = 1.0
+        message = "导入完成"
+      end note
+      
+      :构造 ImportResult;
+      note right
+        包含最终导入结果的详细信息
+      end note
+      
+      if (元数据中有 completed_at?) then (no)
+        :更新 completed_at;
+        note right
+          completed_at = 当前时间
+          写回 metadata.json
+        end note
+      endif
+    elseif (FAILURE) then
+      :提取错误信息;
+      note right
+        error = str(celery_task.info)
+      end note
+      
+      :映射为失败状态;
+      note right
+        status = "failed"
+        progress = 0.0 到 1.0 (取决于失败时刻)
+        message = "导入失败"
+        error = 错误详情
+      end note
+    else (REVOKED/其他)
+      :映射为取消状态;
+      note right
+        status = "cancelled"
+        message = "任务已取消"
+      end note
+    endif
+    
+    |#LightGray|Feature.Schemas|
+    :创建 ImportJobStatusResponse;
+    note right
+      **完整响应结构**
+      {
+        "job_id": str,
+        "status": str,  // parsing/vectorizing/importing/completed/failed/cancelled
+        "progress": float,  // 0.0-1.0
+        "message": str,
+        "parse_results": ParseResults | null,
+        "result": ImportResult | null,  // 仅completed时有值
+        "error": str | null,  // 仅failed时有值
+        "created_at": datetime,
+        "started_at": datetime | null,
+        "completed_at": datetime | null
+      }
+    end note
+    
+    |#LightGreen|Feature.Service|
+    :返回 ImportJobStatusResponse\n给 API 层;
+    
+    |#LightBlue|API 层|
+    :接收 ImportJobStatusResponse;
+    :返回 HTTP 200 OK\nresponse_model=ImportJobStatusResponse;
+    note right
+      FastAPI 自动序列化为 JSON
+      
+      **状态示例**：
+      • parsing: "正在解析文件..."
+      • vectorizing: "正在生成向量 (35/100)..."
+      • importing: "正在导入到OpenSearch (112/150)..."
+      • completed: "导入完成" + result详情
+      • failed: "导入失败" + error详情
+    end note
+    stop
+  endif
+endif
+
+legend right
+  |= 图例 |= 说明 |
+  |<#LightBlue> API 层 | FastAPI 路由与参数校验 |
+  |<#LightGray> Feature.Schemas | Pydantic 数据模型 |
+  |<#LightGreen> Feature.Service | 业务编排逻辑 |
+  |<#LightYellow> Feature.Repository | 数据访问与转换 |
+  |<#LightCyan> Feature.Parser | 文件解析 |
+  |<#Lavender> Infrastructure.VectorTool | 向量生成服务 |
+  |<#Pink> Infrastructure.OpenSearch | 文档存储与索引 |
+  |<#LightCoral> Infrastructure.Celery | 异步任务执行 |
+  
+  **=== Celery 异步架构设计 ===**
+  
+  **职责划分**：
+  • API层：保存文件（毫秒级），立即返回
+  • Celery任务：执行完整流程（分钟级）
+    - 步骤1: 读取文件 (0-5%)
+    - 步骤2: 解析文件 (5-30%)
+    - 步骤3: 生成向量 (30-60%)
+    - 步骤4: 导入OpenSearch (60-95%)
+    - 步骤5: 清理完成 (95-100%)
+  
+  **任务参数**：
+  • job_id: 任务标识符
+  • library: 知识库名称
+  • vector_model: 向量模型（可选）
+  • import_mode: replace/append
+  
+  **进度状态**：
+  • pending → reading_files → parsing_files
+  • → generating_vectors → importing_to_es
+  • → cleaning_up → completed/failed
+  
+  **临时文件管理**：
+  • 上传文件保存到: /tmp/bible_import/jobs/{job_id}/files/
+  • 任务元数据: /tmp/bible_import/jobs/{job_id}/metadata.json
+  • 立即清理: 任务完成时删除 files/，保留 metadata.json
+  • 延迟清理: cleanup_old_jobs 定期任务清理超过7天的目录
+  
+  **优势**：
+  ✓ API快速返回（不阻塞）
+  ✓ 真正的异步处理
+  ✓ 详细的进度反馈
+  ✓ 支持任务重试
+  ✓ 易于扩展和监控
+  
+  **相关文档**：
+  • CELERY_ASYNC_DESIGN.md - 详细设计
+  • IMPORT_FLOW_COMPARISON.md - 新旧对比
+endlegend
+
+@enduml
