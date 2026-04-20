@@ -44,13 +44,13 @@
 │  (Web Service)  │
 └────────┬────────┘
          │
-         ├─────────────────────────────────────┐
-         │                                     │
-         ▼                                     ▼
-┌────────────────────┐              ┌──────────────────┐
-│  Celery Broker     │              │  Elasticsearch   │
-│     (Redis)        │              │    (存储层)       │
-│  - 任务队列管理     │              └──────────────────┘
+         |
+         │                                     
+         ▼                                     
+┌────────────────────┐      
+│  Celery Broker     │        
+│     (Redis)        │         
+│  - 任务队列管理     │         
 │  - 任务分发        │
 └─────────┬──────────┘
           │
@@ -89,7 +89,7 @@
 
 ```bash
 # 进入项目目录
-cd /var/fpwork/jerzhang/elastic_search_server/bible_server
+cd PRJECTPATH
 
 # 安装依赖
 pip install -r requirements.txt
@@ -433,7 +433,7 @@ USE_CELERY=True
 ### 6.2 创建必要目录
 
 ```bash
-cd /var/fpwork/jerzhang/elastic_search_server/bible_server
+cd /var/fpwork/jerzhang/BiBLE-Atlas
 
 # 创建日志目录
 mkdir -p logs
@@ -687,7 +687,7 @@ grep "task_id" logs/*.log
 创建 `/etc/logrotate.d/bible_celery`:
 
 ```conf
-/var/fpwork/jerzhang/elastic_search_server/bible_server/logs/*.log {
+/var/fpwork/jerzhang/BiBLE-Atlas/logs/*.log {
     daily
     rotate 7
     compress
