@@ -23,13 +23,6 @@ on:
         description: 'JSON string of Python versions'
         required: false
         default: '["3.10"]'
-  pull_request:
-    branches:
-      - main
-  push:
-    branches:
-      - main
-      - "feature/**"
 
 jobs:
   test-lite:
@@ -38,8 +31,8 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        os: ${{ fromJson(inputs.os_json) }}
-        python-version: ${{ fromJson(inputs.python_json) }}
+        os: ${{ fromJson(inputs.os_json || '["ubuntu-24.04"]') }}
+        python-version: ${{ fromJson(inputs.python_json || '["3.10"]') }}
 
     steps:
     - uses: actions/checkout@v6
