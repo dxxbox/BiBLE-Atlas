@@ -15,12 +15,33 @@
 ## 1. 健康检查 API
 
 ### 基本信息
-- **端点**: `GET /api/v1/health`
+- **规范端点**: `GET /api/v1/health`
 - **功能**: 查询系统健康状态
+
+### 兼容端点（当前实现保留）
+
+为兼容 CLI 与历史调用路径，当前版本同时保留以下健康/系统探针端点：
+
+- `GET /health`：轻量探针（`{ "status": "ok" }`）
+- `GET /api/v1/system/status`：轻量探针（`{ "status": "ok" }`）
+- `GET /api/v1/system/info`：系统信息 envelope（`{ "status": "ok", "result": {...} }`）
+
+说明：
+
+- 外部集成建议优先使用 `GET /api/v1/health` 作为健康检查规范入口。
+- `system` 路径用于客户端兼容与最小探针，后续若收敛端点会在变更日志中提前声明。
 
 ### 请求示例
 ```bash
 curl http://localhost:8000/api/v1/health
+```
+
+兼容端点示例：
+
+```bash
+curl http://localhost:8000/health
+curl http://localhost:8000/api/v1/system/status
+curl http://localhost:8000/api/v1/system/info
 ```
 
 ### 成功响应 (200)
@@ -56,6 +77,24 @@ curl http://localhost:8000/api/v1/health
 | `models` | object | 向量模型加载状态 |
 | `version` | string | 应用版本 |
 | `timestamp` | string | 响应时间戳（ISO 8601） |
+
+兼容端点响应（示例）：
+
+```json
+{
+  "status": "ok"
+}
+```
+
+```json
+{
+  "status": "ok",
+  "result": {
+    "version": "0.1.dev51",
+    "description": "BiBLE-Atlas: Agent-native context DB"
+  }
+}
+```
 
 ---
 
@@ -1384,7 +1423,9 @@ fetch('http://localhost:8000/api/v1/download/batch', {
 
 ```
 健康检查:
-  GET  /api/v1/health
+  GET  /health                                # 兼容探针
+  GET  /api/v1/system/status                  # 丰富探针
+  GET  /api/v1/system/info                    # 系统信息（envelope）
 
 检索:
   POST /api/v1/search
