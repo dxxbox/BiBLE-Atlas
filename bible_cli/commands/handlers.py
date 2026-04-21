@@ -12,6 +12,12 @@ from bible_cli.utils.config import ClientConfig
 
 class _BaseCommands:
     group_name: str
+    client_config: ClientConfig
+    client: SyncHTTPClient
+
+    def __init__(self) -> None:
+        self.client_config = ClientConfig.from_env()
+        self.client = SyncHTTPClient(config=self.client_config.as_client_dict())    
 
     def execute(self, args: Namespace) -> int:
         action = getattr(args, "action", None) or "default"
@@ -22,13 +28,11 @@ class HealthCommands(_BaseCommands):
     group_name = "health"
 
     def execute(self, args: Namespace) -> int:
-        client_config = ClientConfig.from_env()
-        client = SyncHTTPClient(config=client_config.as_client_dict())
         try:
-            print(json.dumps(client.health(), ensure_ascii=True))
+            print(json.dumps(self.client.health(), ensure_ascii=True))
             return 0
         finally:
-            client.close()
+            self.client.close()
 
 
 class SystemCommands(_BaseCommands):
@@ -36,17 +40,15 @@ class SystemCommands(_BaseCommands):
 
     def execute(self, args: Namespace) -> int:
         action = getattr(args, "action", None) or "default"
-        client_config = ClientConfig.from_env()
-        client = SyncHTTPClient(config=client_config.as_client_dict())
         try:
             if action == "status":
-                print(json.dumps(client.status(), ensure_ascii=True))
+                print(json.dumps(self.client.status(), ensure_ascii=True))
                 return 0
             if action == "info":
-                print(json.dumps(client.info(), ensure_ascii=True))
+                print(json.dumps(self.client.info(), ensure_ascii=True))
                 return 0
         finally:
-            client.close()
+            self.client.close()
         raise CommandNotImplementedError(f"{self.group_name} {action}".strip())
 
 
@@ -55,18 +57,16 @@ class KnowledgeCommands(_BaseCommands):
 
     def execute(self, args: Namespace) -> int:
         action = getattr(args, "action", None) or "default"
-        client_config = ClientConfig.from_env()
-        client = SyncHTTPClient(config=client_config.as_client_dict())
         try:
             if action == "list":
-                print(json.dumps(client.knowledge_list(), ensure_ascii=True))
+                print(json.dumps(self.client.knowledge_list(), ensure_ascii=True))
                 return 0
             if action == "search":
                 query = getattr(args, "query", None)
-                print(json.dumps(client.knowledge_search(query=query), ensure_ascii=True))
+                print(json.dumps(self.client.knowledge_search(query=query), ensure_ascii=True))
                 return 0
         finally:
-            client.close()
+            self.client.close()
         raise CommandNotImplementedError(f"{self.group_name} {action}".strip())
 
 

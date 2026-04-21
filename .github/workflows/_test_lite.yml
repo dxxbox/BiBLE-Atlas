@@ -31,8 +31,8 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        os: ${{ fromJson(inputs.os_json || '["ubuntu-24.04"]') }}
-        python-version: ${{ fromJson(inputs.python_json || '["3.10"]') }}
+        os: ${{ fromJson(inputs.os_json || github.event.inputs.os_json || '["ubuntu-24.04"]') }}
+        python-version: ${{ fromJson(inputs.python_json || github.event.inputs.python_json || '["3.10"]') }}
 
     steps:
     - uses: actions/checkout@v6
