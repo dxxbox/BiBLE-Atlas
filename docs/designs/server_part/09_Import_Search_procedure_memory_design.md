@@ -1,816 +1,1231 @@
-# Import/Search 流程 session 详细设计
+# Import/Search 流程 — MEMORY 类型详细设计
 
-本文档仅细化 SESSION 类型在 import 与 search 中的处理分支，不重写通用 import、search 主流程。通用分层以 `01_架构总览.md` 为准，通用 Import 主链路以 `08_Import_no_session_skill_detail_design.md` 为准，通用 Search 主链路以 `07_Search流程_no_session_skill_详细设计.md` 为准，OpenSearch 基础设施边界以 `06_OpenSearch部署和接口设计文档.md` 为准；本文只补 session 在这些既有流程中的文件集合、字段规范、目录职责、函数边界与返回收口。
+本文档细化 `MEMORY` 类型的 import 与 search 详细设计。Import 使用独立端点 `POST /api/v1/memory/import`，完全独立于通用 upload 链路（后续可按需合并）；Search 接入通用 search 链路，通过 `MemorySearchRepository` 替换占位仓储。通用分层以 `01_架构总览.md` 为准，通用 Search 主链路以 `07_Search流程_no_session_skill_详细设计.md` 为准，OpenSearch 基础设施边界以 `06_OpenSearch部署和接口设计文档.md` 为准。流程图见 `pumls/memory_import_flow.puml`（import）和 `pumls/search_flow_with_hit_and_rerank.puml`（search）。
 
 ---
 
-## 1. 本次细化范围与非目标
+## 目录
+
+- [1. 范围与非目标](#1-范围与非目标)
+- [2. MEMORY 类型定位与两文件模型](#2-memory-类型定位与两文件模型)
+- [3. 两文件格式规范](#3-两文件格式规范)
+- [4. Import 分支详细设计](#4-import-分支详细设计)
+- [5. 后台 AI 标签提取设计](#5-后台-ai-标签提取设计)
+- [6. OpenSearch 索引契约](#6-opensearch-索引契约)
+- [7. Search 分支详细设计](#7-search-分支详细设计)
+- [8. Search API 兼容性分析与扩展方案](#8-search-api-兼容性分析与扩展方案)
+- [9. 原始内容返回策略](#9-原始内容返回策略)
+- [10. 目录结构与模块清单](#10-目录结构与模块清单)
+- [11. 关键失败点与错误处理](#11-关键失败点与错误处理)
+- [12. 实现检查清单](#12-实现检查清单)
+
+---
+
+## 1. 范围与非目标
 
 ### 1.1 本次细化范围
 
-- 仅讨论 SESSION 类型在 import 中的文件接收、校验、落盘、摘要生成、索引构建。
-- 仅讨论 SESSION 类型在 search 中的查询字段、过滤字段、命中整形、返回边界。
-- 仅讨论四文件集合 message.json、.abstract.md、.overview.md、meta.json 的生成责任、格式规范与 strict/lite 差异。
-- 仅讨论 session 分支需要新增或下沉到 repositories/session 的目录、文件、函数职责。
+- MEMORY 类型在 import 中的两文件接收、校验、本地落盘、元数据写库、索引构建。
+- MEMORY 类型在 search 中的查询字段设计、过滤支持、命中整形、返回边界控制。
+- `message.json` 与 `meta.json` 两文件的格式规范与字段职责。
+- 后台 AI 分析任务：提取 domain/feature/component 标签并回写索引。
+- 现有 Search API 对 MEMORY 专属过滤需求的兼容性评估与最小扩展方案。
+- 原始对话内容的返回边界与压缩折中方案评估。
 
 ### 1.2 非目标
 
-- 不重写通用 Import API、Search API 的主流程。
+- 不修改通用 `POST /api/v1/upload` 链路（MEMORY 使用独立端点，后续合并时再评估）。
 - 不扩展 CODE、SCT、BUILD、SKILL 等其他类型的 import/search 设计。
 - 不定义 download API 的完整协议，只说明 search 与 download 的边界。
-- 不展开 session merge、delete、全局向量检索、权限控制、脱敏策略的完整实现。
-- 不写业务代码，仅输出可执行设计。
+- 不展开 memory merge、delete、全局权限控制、脱敏策略的完整实现。
+- 不定义 client 侧如何从 Cursor/VSCode 导出对话内容，client 侧格式由 client 设计规范约定。
 
 ---
 
-## 2. 设计定位与主链路衔接
+## 2. MEMORY 类型定位与两文件模型
 
-SESSION 与其他文档类型的关键差异如下：
+### 2.1 业务背景
 
-- import 侧不仅要建立可检索元数据，还要保留原始会话文件集。
-- search 侧默认只返回轻量结果，不直接把完整 `message.json` 作为主响应载荷。
-- session 的事实源不是单文件正文，而是四文件集合：`message.json`、`.abstract.md`、`.overview.md`、`meta.json`。
+MEMORY 在 BiBLE-Atlas 中代表工程师与 AI 工具（Cursor、VSCode Copilot 等）进行的对话会话。这类对话通常包含对某个功能、任务、缺陷的分析与讨论，具有重要的知识复用价值，但单次对话原始内容可能较大（数十 KB 到数 MB）。
 
-因此，session 的实现定位应明确为“挂接在既有主链路上的增量分支”，而不是单独再造一套上传、检索、存储体系。
-
-主原则如下：
-
-- API 层只保留 HTTP 协议、入参校验和错误映射，不新增 session 专属复杂编排。
-- Import 主链路继续复用 `08` 中的 `import_api.py -> ImportService -> domain/infrastructure -> Celery/OpenSearch` 结构；session 只在 Import 内部增加专属识别、校验、四文件处理与索引文档构建。
-- Search 主链路继续复用 `07` 中的 `search_api.py -> SearchService -> SearchRepositoryFactory -> Repository` 结构；session 只把占位空仓储替换为真实 `SessionSearchRepository`。
-- OpenSearch 侧继续复用 `06` 中的 `search_manager.py`、`document_manager.py`、`chunks.json`；session repository 不手写底层检索 DSL，也不直接承担 bulk 写入细节。
-
-与既有主链路的衔接关系可直接理解为两条文字链路：
-
-- Import 链路：`import_api.py` -> `ImportService` -> `features/import/infrastructure/session/*` -> `document_manager.py`
-- Search 链路：`search_api.py` -> `SearchService` -> `SearchRepositoryFactory` -> `features/search/repositories/session/*` -> `search_manager.py`
-
-session 分支只负责以下增量职责：
-
-- 识别当前 import/search 是否命中 `SESSION` 业务。
-- 把会话事实统一规整为四文件集合和稳定的 `session_id/document_key`。
-- 构建适合 OpenSearch 主索引与 chunk 索引的 session 文档模型。
-- 对 session 搜索结果做聚合、裁剪和 raw 内容返回边界控制。
-
-下列能力继续显式复用通用框架，不在本文中重写：
-
-- 通用 Import Job 生命周期、异步任务状态机、Celery 提交与重试。
-- 通用 Search 的 `enable_hit`、多索引并发、分桶合并、统一响应结构。
-- OpenSearch 的底层 DSL、`_search/_msearch`、`bulk_import`、索引 mapping 管理。
-- download、安全权限、全局治理、rerank/AI 平台能力。
-
----
-
-## 3. 四文件生成责任方案比较
-
-### 3.0 输入理解：API 视角与 session 内部视角
-
-先明确“输入”这件事要分成两层理解。
-
-API 视角只关心下面几件事：
-
-- 本次 import 请求是否被识别或显式标记为 `SESSION`。
-- 请求里是否带了 session 相关文件集合。
-- 四文件里哪些文件存在，哪些缺失。
-- 调用方选择的是 `strict` 还是 `lite`。
-
-也就是说，API 层不需要理解 `message.json` 内部复杂结构，只需要完成“是否是 session”“文件是否齐”“模式是什么”的协议判断，并把原始输入交给 ImportService。
-
-session 内部视角才关心下面几件事：
-
-- 四文件各自承载什么业务语义。
-- 哪些关键字段必须从文件内容中提取。
-- 哪些字段进入结构化元数据，哪些进入轻量摘要，哪些进入 chunk/向量索引。
-- 当文件缺失或字段不足时，`strict/lite` 分别如何处理。
-
-因此，本文后续的设计会按“先定义输入文件语义，再定义 import/search 模块职责，再定义数据库存储契约”展开，而不是站在 API 协议层面展开内部细节。
-
-### 3.1 四文件与角色定义
+### 2.2 两文件设计原则
 
 | 文件 | 角色 | 定位 | 主要消费方 |
 |------|------|------|------|
-| message.json | raw_json | 原始会话事实源 | import 校验、download、再摘要、审计 |
-| .abstract.md | abstract | 一句话总结 | search 列表首屏、快速命中摘要 |
-| .overview.md | overview | 段落级总结 | search 预览、下载前判断 |
-| meta.json | meta | 结构化元数据 | 过滤、标签召回、治理、排序 |
+| `message.json` | 原始事实源 | 完整对话内容，不承担列表摘要职责 | import 落盘、download、分块索引、AI 分析 |
+| `meta.json` | 结构化元数据 + 轻量摘要载体 | 过滤、标签召回、排序、列表展示 | 全量写入 OpenSearch memory 级索引 |
 
-### 3.2 方案 1：client 直接生成并上传 4 个文件
+**核心原则**：
 
-定义：client 一次性提交四个文件；server 主要负责校验、落盘、规范化和索引。
+- `message.json` 永远只做原始事实，不进入 search 主响应。
+- `meta.json` 由 client 负责生成，server 负责校验与补充服务端字段。
+- search 返回只携带 `meta.json` 中的摘要字段 + 服务端补充的 `download_ref`，不直接返回 `message.json` 内容。
+- `meta.json` 内部直接承载 `abstract` 与 `overview` 字段，不再单独保存 `.abstract.md` 与 `.overview.md` 文件。
 
-优点：
+### 2.3 主链路衔接
 
-- 服务端职责相对轻，导入链路更直接。
-- 若 client 已掌握会话语境，摘要可能更贴近采集场景。
-- 内部受控采集端可以更快接入。
+Import 链路（独立端点，不复用通用 upload 链路）：
+```
+POST /api/v1/memory/import
+  → memory_api.py (app/api/v1/memory_api.py)
+    → MemoryImportService (features/memory/memory_import_service.py)
+      → MemoryUploadRepository (features/memory/repositories/memory_upload_repository.py)
+        → validator.py (校验两文件)
+        → storage_mapper.py (规划落盘路径)
+        → repository.py (本地落盘)
+        → metadata_normalizer.py (规范化 meta.json)
+        → index_document_builder.py (构建 memory 级文档 + message 级 chunks)
+      → document_manager.bulk_import(...) (写入 OpenSearch，复用通用基础设施)
+      → celery.submit(memory_ai_extraction_task, memory_id) (异步 AI 标签提取)
+```
 
-缺点：
+> **后续合并备注**：当前为独立链路，实现完成后可考虑通过 `tag=MEMORY` 接入通用 `POST /api/v1/upload` 链路，届时 `memory_api.py` 可作为 `upload_api.py` 的 MEMORY 分支入口。
 
-- 对 client 能力要求高，不同 client 的摘要、标签、字段风格容易漂移。
-- .abstract.md、.overview.md、meta.json 的一致性难保证。
-- 服务端虽然不主生成，但仍需做大量兜底校验和规范化。
+Search 链路（接入通用 search 链路，替换 EmptySearchRepository 占位）：
+```
+search_api.py
+  → SearchService.search(req) (识别 MEMORY 分支)
+    → SearchRepositoryFactory → MemorySearchRepository
+      → filters.py (归一化 memory 专属过滤)
+      → query_builder.py (生成 MemoryQuerySpec)
+      → repository.py (调用 search_manager.py 执行双路检索)
+    → result_mapper.py (聚合、整形、边界控制)
+  → SearchResponse (返回 memory 分桶结果)
+```
 
-适用场景：
+memory 分支只负责以下增量职责，下列能力继续显式复用通用框架：
 
-- 内部受控 client。
-- 接入源少，且可接受一定的摘要风格差异。
-
-### 3.3 方案 2：client 生成 message.json，server 生成另外 3 个文件
-
-定义：client 至少上传 message.json；server 基于 raw_json 生成 .abstract.md、.overview.md、meta.json，并写入索引。
-
-优点：
-
-- 原始事实源集中保真，便于后续重算摘要、补标签、回放与审计。
-- 摘要和结构化元数据由服务端统一生成，格式和质量更稳定。
-- 更适合多 client 并行接入后的统一知识库治理。
-
-缺点：
-
-- 服务端复杂度更高。
-- 需要明确摘要生成失败、回退生成、异步增强等机制。
-- 若 client 完全拿不出 message.json，则必须依赖 lite 模式降级。
-
-适用场景：
-
-- 以服务端统一知识库质量为目标。
-- 需要稳定的标签体系、可重算能力和统一检索表现。
-
-### 3.4 推荐结论
-
-推荐采用“方案 2 为主、方案 1 兼容”的双入口：
-
-- strict 模式下，message.json 必填，server 负责生成 .abstract.md、.overview.md、meta.json；若 client 已上传这 3 个文件，只能作为候选输入，服务端仍可覆盖式规范化。
-- lite 模式下，允许 client 缺少 message.json，但必须提供可生成摘要的最小信息；server 仍负责产出 .abstract.md、.overview.md、meta.json，并显式标记 has_raw_json=false、validation_mode=lite。
-- 不建议把“client 直接生成 4 个文件”定义为唯一主路径，否则文档标准难以收敛。
-
-### 3.5 message.json 是否必填、原始还是简化、strict/lite 是否适用
-
-#### message.json 是否必填
-
-- strict：必填。原因是它承担原始事实源职责，决定 download、重放、再摘要、责任追踪能力。
-- lite：非必填但强推荐。缺失时只能提供摘要型能力，不能伪造 raw 内容。
-
-#### message.json 是原始内容还是简化内容
-
-- 推荐把 message.json 定义为原始会话事实源，而不是简化摘要容器。
-- 可接受的简化只包括：截断超长正文、去掉无关渲染字段、附件只保留引用、对敏感片段打脱敏标记。
-- 不可接受的简化包括：仅保留一段总摘要却仍命名为 message.json；删除消息顺序、角色、时间信息导致无法还原结构。
-
-#### strict/lite 是否适用
-
-- 适用，且建议保留。
-- strict 用于保证高质量知识库和原始会话可追溯。
-- lite 用于保证弱能力 client 也能接入，但必须通过 validation_mode 与 has_raw_json 显式暴露降级事实。
+- **memory 负责**：独立接收 MEMORY import 请求；把原始对话事实规整为两文件集合和稳定的 `memory_id/document_key`；构建适合 OpenSearch 的 memory 文档模型；对 memory 搜索结果做聚合、裁剪和 raw 内容返回边界控制。
+- **通用框架负责**：异步任务状态机、Celery 提交与重试；Search 的 `enable_hit`、多索引并发、分桶合并、统一响应结构；OpenSearch 的底层 DSL、`bulk_import`、索引 mapping 管理；download、安全权限、全局治理。
 
 ---
 
-## 4. 四文件内容格式规范
-### 4.0 从示例 message.json 提取的结构（实测示例：request_0b60e0ce-782c-4b6d-9ec1-e66b097e5007/message.json）
+## 3. 两文件格式规范
 
-以下为对工作区示例 `message.json` 的结构化提取，作为 meta.json 字段设计与向量化分块策略的事实依据。
+### 3.1 `message.json` 规范
 
-- 顶层字段（observed）:
-  - `responderUsername`: string
-  - `initialLocation`: string
-  - `requests`: array — 每个 request 包含 `requestId`、`message`、`variableData`、`response` 等
-  - `timestamp` / `modelId` / `responseId` / `result` 等（agent 执行与模型输出相关元信息）
+**定位**：原始对话事实源，内容格式由 client 侧定义，server 侧只做最小校验。
 
-- `message` 对象常见结构:
-  - `message.text`: 主文本字符串（完整用户指令或描述）
-  - `message.parts`: array，分片文本（带 editorRange、range、kind），用于精确定位与高亮
+**注意**：此文件不要求是 VSCode/Cursor 完整导出格式，client 可对原始导出进行裁剪、脱敏后上传。
 
-- `variableData`:
-  - `variables`: array，每项含 `kind`（例如 file、promptFile、promptText）、`id`、`name`、`value`（可为文件引用或内联文本）
-  - 常见用于携带附件、.netrc 引用、用户选择的文件片段等
-
-- `response` 数组:
-  - 含一系列条目，条目类型包括 `thinking`（链路推理/思路）、`prepareToolInvocation`、`toolInvocationSerialized`、`value`（最终文字回复）等
-  - 每条 response 可能含 `id`、`kind`、`value`（文本或复杂对象）、`metadata`（如 timings、toolCallIds）
-
-- `agent` / `extension` 元信息:
-  - 包含 agent 名称、版本、extensionId、locations、modes 等，对审计与回溯有价值
-
-规范化建议（用于内部 session schema）:
-
-```json
-{
-  "schema_version":"1.0",
-  "session_id":"<use requestId or generated session id>",
-  "responderUsername":"...",
-  "initialLocation":"...",
-  "requests":[
-    {
-      "id":"request_...",
-      "text":"原始用户文本",
-      "parts":[{"kind":"text","text":"...","start":0,"end":100}],
-      "variables":[{"kind":"file","name":".netrc","path":"/home/.../.netrc"}],
-      "responses":[{"kind":"thinking","text":"...","timestamp":"..."}]
-    }
-  ],
-  "agent_meta":{"modelId":"...","responseId":"...","timestamp":"..."}
-}
-```
-
-以上为从示例抽取的最小可用事实模型，建议作为 `message.json` 的强化约定（便于后续生成 meta.json 与切分向量化）。
-
-### 4.0.1 从示例导出的对 meta.json 的字段映射建议（关键）
-
-基于上面 message.json 的结构，meta.json 应至少包含下列字段（优先级按前后）：
-
-- `session_id` (string) — 必填，取自 requestId 或 service 生成的唯一 id
-- `title` (string) — 优先来源：`generatedTitle` / 最早的 `message.text` 摘要；若无则由 server 生成简短标题
-- `created_at` (datetime) — 首次请求或第一条 message 的时间戳
-- `updated_at` (datetime) — 最后写入或索引时间
-- `validation_mode` (string) — strict|lite
-- `has_raw_json` (boolean) — 表示是否存在可下载的原始 `message.json`
-- `participants` (array[string]) — 由 messages[].role 或 variableData 派生（例如 user, assistant）
-- `feature_tags` / `task_ids` / `domain_tags` (array[string]) — 从 variableData、message 内容或 server 提取的结构化标签
-- `source_client` (string) — client 标识（若 variableData 中有来源文件或 promptFile）
-- `summary_source` (string) — server_generated | client_provided
-- `storage_path_ref` (string) — 指向四文件逻辑路径的引用
-- `download_ref` (string) — 原始内容下载引用（若 has_raw_json=true）
-- `raw_message_count` (integer) — messages 数量
-- `quality_flags` (array[string]) — 例如 `truncated`、`redacted`、`partial_parse` 等
-
-示例（基于当前 message.json 的抽取）：
-
-```json
-{
-  "session_id":"request_0b60e0ce-782c-4b6d-9ec1-e66b097e5007",
-  "title":"Developed web crawler script with pagination",
-  "created_at":"2026-02-03T...Z",
-  "updated_at":"2026-02-03T...Z",
-  "validation_mode":"strict",
-  "has_raw_json":true,
-  "participants":["user","assistant"],
-  "feature_tags":["crawler","pronto"],
-  "source_client":"vscode-extension:GitHub.copilot-chat",
-  "summary_source":"server_generated",
-  "storage_path_ref":"session://session/request_0b60e0ce/...",
-  "download_ref":"session://download/request_0b60e0ce/...",
-  "raw_message_count":12
-}
-```
-
-注：上例中的 `title` 可优先由 message.json 中出现的 `generatedTitle` 或 response 中最强显著的 `value` 抽取。
-
-### 4.0.2 并行存储策略与 OpenSearch 数据契约（文本 + 向量检索）
-
-总体思路：保留四文件存储作为权威事实源，同时把 session 检索能力映射到 `06` 定义的 OpenSearch 主索引与 `chunks` 索引。session 分支负责准备文档与字段，底层写入继续复用 `document_manager.py`，底层检索继续复用 `search_manager.py`。
-
-索引组织建议：
-
-- 业务主键使用 `session_id`，并映射为稳定的 `document_key`，供 `document_manager.py` 做幂等写入、按逻辑文档删除与 chunk 聚合。
-- 列表页与过滤常用字段放在轻量文档层：`title`、`abstract`、`overview_excerpt`、`validation_mode`、`has_raw_json`、`feature_tags`、`task_ids`、`participants`、`download_ref`、`storage_path_ref`。
-- 长文本与语义召回内容放入 `chunks` 索引：`message`、`overview`、`abstract`、`response`、可解析的附件文本。
-- 同一 `session_id` 的多个 chunk 在 Search 返回前按 session 维度聚合，避免前端直接消费 chunk 粒度结果。
-
-哪些字段需要进入 chunk 或向量化（优先级）：
-
-- 高优先级（必向量化）：
-  - `.abstract.md`（一句话摘要，单独向量）
-  - `.overview.md`（段落级概览，单独向量）
-  - `messages[].content`（逐条消息的语义内容，分块后入向量库）
-  - `response` 中的 `thinking` / `value` 文本（模型推理、代码片段、解决方案描述）
-
-- 中优先级（可选向量化）：
-  - 代码片段与补丁文本（按代码块语义切分），用于代码语义检索
-  - 附件文本内容（若为文本型附件，如 README、日志），以单独 chunk 入向量库
-
-- 不做向量化（结构化过滤用）：
-  - `feature_tags`、`task_ids`、`participants`、`validation_mode` 等结构化字段，用于精确过滤而非语义检索
-
-分块（chunking）建议：
-
-- 基本原则：以语义单元为界（消息级或段落级），当单元过长时按 token 限制切分并保留重叠（overlap）以保持上下文连贯。
-- 建议参数：
-  - chunk_size: 200–400 tokens（约 1500–3000 字符取决于语言）
-  - overlap: 20%（相邻 chunk 重叠以保留上下文）
-  - short texts (如 `.abstract.md`) 保持为单 chunk
-  - `.overview.md` 若 <= 600 tokens 保持为单 chunk，否则按段落或 300-token 窗口切分
-  - 对代码块：按函数/类或逻辑块切分，若不可分则 200-token 窗口
-
-chunk 条目的最小元数据应包含：
-
-- `chunk_id` (uuid)
-- `session_id`
-- `document_key`
-- `source` ("message" | "overview" | "abstract" | "response" | "attachment")
-- `message_id` (如有)
-- `role` (user/assistant/system)
-- `chunk_index` (int)
-- `char_offset` / `token_count`
-- `storage_path_ref`（定位到原始文件与 byte/char 范围或 pageN.html）
-- `created_at`
-- `index_version` / `last_indexed_at`（便于重建与回滚）
-
-写入边界建议：
-
-- `index_document_builder` 只生成 session 轻量文档与 chunk 文档，不直接调 OpenSearch SDK。
-- Import 主链路中的异步同步阶段继续调用 `document_manager.bulk_import(...)` 写入 OpenSearch。
-- 若写入失败，仍沿用 `08` 中“主存储为真相源、搜索引擎异步同步”的恢复思路，不把一致性治理逻辑塞进 session repository。
-
-检索流程参考（结构化过滤 + 文本/向量召回）：
-
-1. 接收 query 后，先按 `feature_tags/task_ids/participants/time` 等结构化条件缩小候选范围。
-2. `query_builder` 只产出 session 检索规格，如目标字段、过滤条件、是否需要向量、权重建议。
-3. `SessionSearchRepository` 把该规格交给 `search_manager.py`，由后者组装 OpenSearch DSL 并执行 `_search/_msearch`。
-4. `result_mapper` 把 chunk 级命中聚合回 `session_id`，合并得分、整理 `match_reason`，再按返回边界输出摘要、preview 或 ref。
-
-存储与同步注意：session 只约定字段和聚合语义，写入与检索的一致性策略继续复用通用 Import/Search 框架，并在 metadata 中保留 `index_version` 与 `last_indexed_at` 字段以便重算。
-
----
-
-### 4.1 逻辑存储目录
-
-session 文件集的逻辑存储模型建议保持如下语义：
-
-```text
-session_files/
-└── <session_id>/
-    ├── message.json
-    ├── .abstract.md
-    ├── .overview.md
-    └── meta.json
-```
-
-说明：
-
-- 这是逻辑目录语义，不要求对外暴露真实绝对路径。
-- search 结果只返回 storage_path_ref 与 download_ref，不直接暴露底层物理路径。
-- 四文件逻辑固定有助于 import、search、download 使用同一语义约定。
-
-### 4.2 message.json 规范
-
-定位：原始会话事实源，不承担列表摘要职责。
-
-最小结构建议：
+**最小结构（server 校验的字段）**：
 
 | 字段 | 类型 | 必填性 | 说明 |
 |------|------|------|------|
-| schema_version | string | 推荐必填 | 便于后续演进 |
-| session_id | string | 推荐必填 | 与目录主键一致 |
-| messages | array | strict 必填 | 原始消息数组 |
-| messages[].message_id | string | 选填但推荐 | 单条消息标识 |
-| messages[].role | string | 推荐必填 | user/assistant/system 等 |
-| messages[].content | string 或 array | 推荐必填 | 消息内容或分段内容 |
-| messages[].created_at | string(datetime) | 选填但推荐 | 用于排序与追踪 |
-| messages[].attachments | array | 选填 | 附件引用 |
+| `schema_version` | string | 推荐必填 | 格式版本，便于后续演进，当前固定 `"1.0"` |
+| `memory_id` | string | 必填 | 与 `meta.json.memory_id` 一致 |
+| `tool` | string | 推荐必填 | 来源工具，如 `"cursor"`, `"vscode"`, `"custom"` |
+| `messages` | array | 必填，非空 | 原始消息数组 |
+| `messages[].role` | string | 推荐必填 | `"user"` / `"assistant"` / `"system"` |
+| `messages[].content` | string \| array | 推荐必填 | 消息正文或分段内容 |
+| `messages[].message_id` | string | 选填但推荐 | 单条消息唯一标识 |
+| `messages[].created_at` | string (ISO8601) | 选填但推荐 | 消息时间戳 |
+| `messages[].attachments` | array | 选填 | 附件引用列表 |
 
-示例：
+**示例**：
 
 ```json
 {
   "schema_version": "1.0",
-  "session_id": "session-20260408-001",
+  "memory_id": "memory-20260408-cni12345",
+  "tool": "cursor",
   "messages": [
     {
       "message_id": "m1",
       "role": "user",
-      "content": "请细化 session import/search 设计",
+      "content": "CNI-12345 里 allocate 函数报 NPE，帮我分析一下原因",
       "created_at": "2026-04-08T09:30:00Z"
     },
     {
       "message_id": "m2",
       "role": "assistant",
-      "content": "建议拆分为 session repository 子目录，并把 raw 返回边界与摘要职责分离。",
+      "content": "从堆栈来看，NPE 发生在 allocate() 第 87 行，原因是 context 对象在并发场景下未做判空...",
       "created_at": "2026-04-08T09:31:30Z"
+    },
+    {
+      "message_id": "m3",
+      "role": "user",
+      "content": "修复方案是什么？",
+      "created_at": "2026-04-08T09:32:00Z"
+    },
+    {
+      "message_id": "m4",
+      "role": "assistant",
+      "content": "建议在 allocate() 入口处增加 null 检查，并用 Optional 包装返回值...",
+      "created_at": "2026-04-08T09:33:15Z",
+      "attachments": [
+        {"type": "code_ref", "path": "src/allocator.cpp", "line_range": "85-95"}
+      ]
     }
   ]
 }
 ```
 
-strict/lite 处理：
+**server 校验规则**：
 
-- strict：必须存在。
-- lite：允许不存在，但结果必须写 has_raw_json=false，且 search 不能承诺 raw download。
+1. `memory_id` 必须存在且与 `meta.json.memory_id` 一致。
+2. `messages` 必须是非空数组。
+3. 每条 message 必须有 `role` 字段，且为已知角色值（`user`/`assistant`/`system`/`tool`）。
+4. `content` 必须存在且非空字符串（若为数组则数组非空）。
+5. 文件大小上限：配置项 `memory.max_raw_file_size_mb`，默认 `50MB`。
 
-### 4.3 .abstract.md 规范
+---
 
-定位：一句话总结。
+### 3.2 `meta.json` 规范
 
-要求：
+**定位**：memory 检索、过滤、列表展示的结构化元数据，同时承载摘要字段。
+**生成方**：client 侧生成（可借助 AI 辅助），server 侧补充服务端字段。
 
-- 仅 1 段 1 句，不分标题。
-- 建议不超过 120 到 180 个中文字符。
-- 优先包含主题、对象、结论或动作。
-- strict 与 lite 都应保证该文件存在；若 client 未提供，由 server 生成。
+**字段规范**：
 
-示例：
-
-```markdown
-本会话围绕 SESSION 类型在 import/search 流程中的四文件职责、strict/lite 校验和 search 返回边界展开，结论是由服务端统一生成摘要与元数据，并默认只返回摘要和下载引用。
-```
-
-### 4.4 .overview.md 规范
-
-定位：段落级总结。
-
-建议结构：
-
-- 背景/触发原因
-- 讨论主题/核心问题
-- 关键结论/决策
-- 后续动作/未决事项
-
-要求：
-
-- 推荐 1 到 4 个自然段，或按上述 4 小节组织。
-- strict 下应尽量形成完整段落；lite 下允许生成简版，但仍建议落文件。
-- 不追求逐轮消息复现，重点是可读的段落级总结。
-
-示例：
-
-```markdown
-# 背景
-需要把 SESSION 类型从原则说明细化为可指导 import/search 落地的设计稿。
-
-# 讨论主题
-- message.json 是否必须保留为原始事实源
-- strict/lite 如何影响导入和检索返回
-- search 是否允许直接下发完整 raw_json
-
-# 关键结论
-- strict 下 message.json 必填
-- .abstract.md 由服务端保证生成，且必须是一句话总结
-- search 默认只返回摘要、preview 或 ref，不直接返回完整 message.json
-
-# 后续动作
-需要团队进一步统一 lite 模式最小输入集与 message.json 脱敏策略。
-```
-
-### 4.5 meta.json 规范
-
-定位：session 检索、过滤、治理的结构化元数据。
-
-字段建议：
-
-| 字段 | 类型 | 必填性 | 生成方建议 | 说明 |
+| 字段 | 类型 | 必填性 | 生成方 | 说明 |
 |------|------|------|------|------|
-| session_id | string | 必填 | client 或 server | 最低必填项 |
-| title | string | 推荐必填 | client 或 server | search 展示主标题 |
-| created_at | string(datetime) | 推荐必填 | client 或 server | 排序与追踪 |
-| updated_at | string(datetime) | 推荐必填 | server | 更新时间 |
-| validation_mode | string | 推荐必填 | server | strict 或 lite |
-| has_raw_json | boolean | 推荐必填 | server | 是否可提供 raw download |
-| task_ids | array[string] | 选填 | client/server | 结构化任务号 |
-| feature_tags | array[string] | 选填 | client/server | feature 号或 feature 名 |
-| domain_tags | array[string] | 选填 | client/server | 领域标签 |
-| component_tags | array[string] | 选填 | client/server | 组件标签 |
-| participants | array[string] | 选填 | client/server | 参与者 |
-| source_client | string | 选填 | client | 来源标识 |
-| summary_source | string | 选填 | server | 摘要生成来源 |
-| storage_path_ref | string | 选填 | server | 存储引用 |
-| download_ref | string | 选填 | server | 下载引用 |
-| raw_message_count | integer | 选填 | server | 原始消息数量 |
-| quality_flags | array[string] | 选填 | server | 质量或降级标记 |
+| `memory_id` | string | **必填** | client | 唯一主键，与 `message.json.memory_id` 一致 |
+| `title` | string | **必填** | client | memory 标题，search 展示主标题，不超过 200 字符 |
+| `abstract` | string | **必填** | client | 一句话摘要（≤500 字符），用于列表展示 |
+| `overview` | string | 推荐必填 | client | 段落级概览（≤2000 字符），描述本次 memory 讨论了什么、结论是什么 |
+| `created_at` | string (ISO8601) | 推荐必填 | client | memory 开始时间 |
+| `updated_at` | string (ISO8601) | 选填 | client | memory 最后更新时间 |
+| `task_ids` | array[string] | 选填 | client | 相关任务/缺陷单号，如 `["CNI-12345", "TASK-9021"]` |
+| `feature_tags` | array[string] | 选填 | client | feature 号或 feature 名，如 `["CNI", "memory-import"]` |
+| `domain_tags` | array[string] | 选填 | client/AI | 领域标签，如 `["allocator", "concurrency"]` |
+| `component_tags` | array[string] | 选填 | client/AI | 组件标签，如 `["cpnb", "search_service"]` |
+| `source_client` | string | 选填 | client | 来源工具标识，如 `"cursor"`, `"vscode"` |
+| `language` | string | 选填 | client | 会话主要语言，`"zh"` / `"en"` |
+| `storage_path_ref` | string | 服务端补充 | server | 落盘后由 server 回填，`message.json` 的逻辑路径 |
+| `download_ref` | string | 服务端补充 | server | 下载引用 URI，格式 `memory://download/<memory_id>` |
+| `raw_message_count` | integer | 服务端补充 | server | 由 server 从 `message.json` 统计后回填 |
+| `ai_tags_extracted` | boolean | 服务端补充 | server | AI 标签提取是否完成，初始 `false` |
+| `ai_tags_extracted_at` | string (ISO8601) | 服务端补充 | server | AI 标签提取完成时间 |
 
-规则：
-
-- session_id 至少必须存在。
-- 推荐把 title、created_at、updated_at、validation_mode、has_raw_json 视为推荐必填。
-- task_ids、feature_tags、domain_tags、participants 等允许缺失，不阻塞导入，禁止伪造占位值。
-
-示例：
+**示例**：
 
 ```json
 {
-  "session_id": "session-20260408-001",
-  "title": "SESSION import/search 设计讨论",
+  "memory_id": "memory-20260408-cni12345",
+  "title": "CNI-12345 allocate 函数 NPE 根因分析与修复",
+  "abstract": "分析 CNI-12345 中 allocate 函数在并发场景下因未判空导致 NPE 的根因，并给出修复方案。",
+  "overview": "本次 memory 聚焦 CNI-12345 缺陷。用户提供了堆栈信息，AI 定位到 allocate() 第 87 行在并发场景下 context 对象未做判空。讨论了两种修复方案：入口判空 + Optional 包装，以及使用 lock 保护 context 初始化。最终推荐方案一，成本更低且不影响现有接口。",
   "created_at": "2026-04-08T09:30:00Z",
-  "updated_at": "2026-04-08T10:12:45Z",
-  "validation_mode": "strict",
-  "has_raw_json": true,
-  "task_ids": ["TASK-9021"],
-  "feature_tags": ["session-import", "session-search"],
-  "domain_tags": ["retrieval"],
-  "component_tags": ["search_service", "import_service"],
-  "participants": ["user", "assistant"],
-  "summary_source": "server_generated",
-  "download_ref": "session://download/session-20260408-001"
+  "updated_at": "2026-04-08T09:45:00Z",
+  "task_ids": ["CNI-12345"],
+  "feature_tags": ["cni", "memory-allocator"],
+  "domain_tags": ["concurrency", "memory-management"],
+  "component_tags": ["cpnb", "allocator"],
+  "source_client": "cursor",
+  "language": "zh"
 }
 ```
 
-### 4.6 strict/lite 汇总矩阵
+**字段约束补充规则**：
 
-| 项目 | strict | lite |
+- `task_ids` 中的任务号建议统一大写，如 `"CNI-12345"` 而非 `"cni-12345"`，确保关键字检索准确性。
+- `feature_tags` 与 `task_ids` 允许重叠，如 `task_ids: ["CNI-12345"]` 与 `feature_tags: ["CNI"]` 可同时存在。
+- 禁止用占位符（如 `"N/A"`、`"unknown"`）填充缺失字段，缺失字段应直接省略。
+- `abstract` 不允许为空字符串，若 client 无法生成请省略该字段，server 将从 `overview` 截取前 500 字符作为 fallback。
+
+### 3.3 两文件跨校验规则
+
+server 必须对以下一致性关系做校验：
+
+| 校验项 | 规则 | 违反时行为 |
 |------|------|------|
-| message.json | 必填 | 非必填但强推荐 |
-| .abstract.md | 必须落盘 | 必须落盘 |
-| .overview.md | 必须落盘 | 建议落盘，缺失时由 server 生成简版 |
-| meta.json | 必须含 session_id | 必须含 session_id |
-| has_raw_json | 通常为 true | 可为 false |
-| search raw 返回 | 仅 preview/ref | 仅 preview/ref，且可能 unavailable |
-| download 原始内容 | 可支持 | message.json 缺失时不可支持 |
+| memory_id 一致性 | `message.json.memory_id == meta.json.memory_id` | 直接拒绝 import |
+| 时间合理性 | `meta.json.created_at` 不晚于 `message.json.messages[0].created_at`（若存在） | 记录 warning，不阻塞 |
+| message 数量 | `meta.json.raw_message_count`（若提供）与实际 messages 长度一致 | 以实际长度覆盖，记录 warning |
 
 ---
 
-## 5. import 中 session 分支目录与函数职责
+## 4. Import 分支详细设计
 
-### 5.1 目录建议
+### 4.1 目录结构
 
 ```text
 app/
 ├── api/
 │   └── v1/
-│       └── import_api.py
+│       ├── memory_api.py                    # 新增：MEMORY 独立入口
+│       └── upload_api.py                    # 现有文件，不修改
 ├── features/
-│   └── import/
-│       ├── application/
-│       │   └── import_service.py
-│       ├── domain/
-│       │   └── repositories/
-│       └── infrastructure/
-│           └── session/
-│               ├── __init__.py
-│               ├── repository.py
-│               ├── validator.py
-│               ├── storage_mapper.py
-│               ├── metadata_builder.py
-│               └── index_document_builder.py
-└── infrastructure/
-    └── opensearch/
-        └── document_manager.py
+│   ├── memory/                              # 全新目录
+│   │   ├── __init__.py
+│   │   ├── memory_import_service.py         # MEMORY import 编排服务
+│   │   ├── schemas.py                       # MemoryImportAcceptedResponse 等
+│   │   └── repositories/
+│   │       ├── __init__.py
+│   │       └── memory_upload_repository.py  # 落盘 + 主编排（含子模块调用）
+│   └── memory_internals/                    # 内部实现子模块
+│       ├── __init__.py
+│       ├── validator.py                     # 两文件校验
+│       ├── storage_mapper.py                # 落盘路径规划
+│       ├── metadata_normalizer.py           # 规范化 meta.json
+│       └── index_document_builder.py        # 构建索引文档
+├── infrastructure/
+│   └── opensearch/
+│       └── document_manager.py              # 现有文件，继续复用
+└── tasks/
+    └── memory_ai_extraction.py              # 新增：AI 标签提取 Celery 任务
 ```
 
-职责原则：
+### 4.2 API 层（`memory_api.py`）
 
-- import_api.py 只做 HTTP 参数校验与 service 调用。
-- `ImportService` 只识别 SESSION 分支并统一编排，不下沉到底层 SDK。
-- `features/import/infrastructure/session/` 下各文件分别承接校验、路径规划、落盘、元数据规范化、索引文档构建。
-- OpenSearch 写入继续通过共享的 `document_manager.py` 完成，session 分支只准备其输入文档。
+**端点**：`POST /api/v1/memory/import`（MEMORY 专属独立端点）
 
-### 5.2 import 调用关系
+**请求格式**：`multipart/form-data`
 
-为了减少图示，这里直接给出 import 分支的调用链和每一步的输入输出。
+| 参数 | 类型 | 必填 | 说明 |
+|------|------|------|------|
+| `files` | file[] | 必填 | 必须同时包含 `message.json` 和 `meta.json` 两个文件 |
+| `memory_id` | string | 选填 | 若提供，server 校验与文件内 `memory_id` 一致；不提供则从文件中读取 |
 
-调用链：
+**函数签名**（`memory_api.py`）：
 
-1. `app/api/v1/import_api.py`
-   - 接收 `files/files_config/validation_mode/tag` 等请求参数。
-   - 只判断“是否是 session 请求”“四文件里哪些文件存在”。
-   - 调用 `ImportService.create_import_job_with_files(...)`。
-2. `app/features/import/application/import_service.py`
-   - 识别当前任务是否进入 `SESSION` 分支。
-   - 若不是 session，走既有通用 import 流程。
-   - 若是 session，顺序调用 `validator -> storage_mapper -> repository -> metadata_builder -> index_document_builder`。
-3. `validator.py`
-   - 校验 `strict/lite`、四文件存在性、最小输入集、必要字段可提取性。
-   - 输出 `SessionBundleValidationResult`。
-4. `storage_mapper.py`
-   - 规划 `session_id` 对应的四文件逻辑目录和引用路径。
-   - 输出 `SessionStorageLayout`。
-5. `repository.py`
-   - 把收到或规范化后的文件真正落盘。
-   - 输出 `StoredSessionBundle`，其中要明确 `has_raw_json`。
-6. `metadata_builder.py`
-   - 从 `message.json` 或候选摘要文件中抽取标题、摘要、标签、参与者、引用路径等。
-   - 输出 `SessionMetadataPayload`，同时负责补全 `.abstract.md`、`.overview.md`、`meta.json`。
-7. `index_document_builder.py`
-   - 把 session 四文件整理成“轻量文档 + chunk 文档”两类写库输入。
-   - 输出 `SessionImportDocuments`。
-8. 通用异步同步阶段
-   - 调用 `app/infrastructure/opensearch/document_manager.py` 的 `bulk_import(...)`。
-   - 完成 OpenSearch 写入，不在 session 子目录里重复封装底层接口。
+```python
+router = APIRouter(prefix="/memory", tags=["memory"])
 
-这一段的核心边界是：session 分支负责准备“应该写什么”，通用 OpenSearch 基础设施负责执行“怎么写进去”。
+@router.post("/import", response_model=MemoryImportAcceptedResponse, status_code=202)
+async def import_memory(
+    files: list[UploadFile] = File(...),
+    memory_id: Optional[str] = Form(default=None),
+    service: MemoryImportService = Depends(get_memory_import_service),
+) -> MemoryImportAcceptedResponse:
+    """
+    MEMORY 独立导入端点。
+    接收 message.json + meta.json 两文件，校验后落盘并提交异步任务。
+    """
+```
 
-### 5.3 import 函数职责表
+**成功响应（202 Accepted）**：
 
-| 目录/文件 | 函数 | 输入 | 输出 | 职责边界 |
-|------|------|------|------|------|
-| app/api/v1/import_api.py | create_import_job | files、files_config、validation_mode、session_id、title、import_options | success、job_id、session_id、accepted_files、warnings | 只做 HTTP 入参校验与 service 调用 |
-| app/features/import/application/import_service.py | create_import_job_with_files | ImportCreateRequest | ImportAcceptedResponse | 识别 SESSION 分支并编排调用，不直接写文件或调 OpenSearch SDK |
-| app/features/import/infrastructure/session/validator.py | validate_session_bundle | files、files_config、validation_mode、request_fields | SessionBundleValidationResult | 校验角色、格式、必填项、strict/lite 降级 |
-| app/features/import/infrastructure/session/storage_mapper.py | build_session_storage_layout | session_id、normalized_files | SessionStorageLayout | 仅负责 `sessions/session_id` 四文件路径规划 |
-| app/features/import/infrastructure/session/repository.py | store_session_bundle | normalized_files、storage_layout | StoredSessionBundle | 仅负责落盘、回传 stored_files、checksum、has_raw_json |
-| app/features/import/infrastructure/session/metadata_builder.py | normalize_session_metadata | stored_bundle、request_fields | SessionMetadataPayload | 统一生成或规范化 `.abstract.md`、`.overview.md`、`meta.json` |
-| app/features/import/infrastructure/session/index_document_builder.py | build_session_import_documents | metadata_payload、stored_bundle | SessionImportDocuments | 生成轻量文档与 chunk 文档，禁止把完整 `message.json` 放入主索引返回字段 |
-| app/infrastructure/opensearch/document_manager.py | bulk_import | index_name、documents | success_count、error_count、errors | 负责 OpenSearch bulk 写入，session 分支只提供 documents 输入 |
+```json
+{
+  "success": true,
+  "task_id": "task-uuid-abc123",
+  "memory_id": "memory-20260408-cni12345",
+  "status": "processing",
+  "accepted_files": ["message.json", "meta.json"],
+  "warnings": [],
+  "message": "Memory import task submitted"
+}
+```
 
-### 5.4 import 分支关键失败点
+**错误响应**：
 
-- strict 缺少 message.json：直接拒绝。
-- lite 缺少 message.json：允许导入，但必须标记 has_raw_json=false。
-- title 无法从 request/meta/overview 推断：拒绝导入。
-- meta.json 非法或角色冲突：拒绝导入。
-- 可检索字段全部为空：拒绝构建索引文档。
-- OpenSearch bulk 导入失败：沿用通用 Import 异步失败状态，不在 session 分支内单独设计重试协议。
-
-### 5.5 import 输出到向量数据库的内容
-
-session import 最终要准备两类数据给向量数据库或 OpenSearch：
-
-- 轻量文档
-  - 用于列表展示、过滤、快速命中。
-  - 典型字段：`session_id`、`document_key`、`title`、`abstract`、`overview_excerpt`、`validation_mode`、`has_raw_json`、`feature_tags`、`task_ids`、`participants`、`download_ref`、`storage_path_ref`。
-- chunk 文档
-  - 用于文本召回、向量召回、snippet 提取。
-  - 典型字段：`chunk_id`、`session_id`、`document_key`、`source`、`message_id`、`role`、`content`、`content_vector`、`chunk_index`、`token_count`、`storage_path_ref`。
-
-对应到文件/函数：
-
-| 文件 | 函数 | 产物 |
+| HTTP 状态码 | 错误码 | 触发场景 |
 |------|------|------|
-| `metadata_builder.py` | `normalize_session_metadata` | `.abstract.md`、`.overview.md`、`meta.json` |
-| `index_document_builder.py` | `build_session_import_documents` | `light_documents`、`chunk_documents` |
-| `document_manager.py` | `bulk_import` | 把上述 documents 写入目标索引 |
+| 400 | `MEMORY_MISSING_MESSAGE` | 缺少 `message.json` |
+| 400 | `MEMORY_MISSING_META` | 缺少 `meta.json` |
+| 400 | `MEMORY_ID_MISMATCH` | 两文件 `memory_id` 不一致 |
+| 400 | `MEMORY_INVALID_JSON` | 任一文件不可解析为 JSON |
+| 400 | `MEMORY_MISSING_REQUIRED_FIELD` | `memory_id`/`title`/`messages` 等必填字段缺失 |
+| 413 | `MEMORY_FILE_TOO_LARGE` | `message.json` 超过 `max_raw_file_size_mb` |
+| 500 | `MEMORY_STORAGE_ERROR` | 落盘失败 |
 
-这样可以把“文件语义整理”和“数据库接口调用”拆开，便于后续替换底层引擎。
+### 4.3 Service 层（`memory_import_service.py`）
+
+```python
+class MemoryImportService:
+    async def import_memory(
+        self,
+        files: list[UploadFile],
+        memory_id_hint: Optional[str],
+    ) -> MemoryImportAcceptedResponse:
+        """
+        MEMORY import 编排入口，完整链路：
+        1. 读取文件字节流，解析 message_json / meta_json
+        2. 顺序调用 MemoryUploadRepository：
+           validate → build_storage_layout → store → normalize_metadata → build_index_documents
+        3. 通过 document_manager.bulk_import 写入 OpenSearch
+        4. 提交 Celery memory_ai_extraction_task（fire and forget）
+        5. 返回 MemoryImportAcceptedResponse
+        """
+```
+
+### 4.4 validator.py
+
+**职责**：只做校验，不修改数据，不做 IO。
+
+```python
+@dataclass
+class MemoryBundleValidationResult:
+    is_valid: bool             # errors 为空时为 True
+    memory_id: str             # 从 message_json 提取
+    raw_message_count: int     # 从 message_json.messages 统计
+    warnings: list[str]        # 不阻塞但需记录的问题
+    errors: list[str]          # 阻塞导入的错误
+
+def validate_memory_bundle(
+    message_json: dict,        # 已解析的 message.json
+    meta_json: dict,           # 已解析的 meta.json
+    memory_id_hint: Optional[str] = None,
+) -> MemoryBundleValidationResult:
+    """
+    校验规则（按优先级）：
+    1. message_json.memory_id 必须存在且非空
+    2. meta_json.memory_id 必须存在且与 message_json.memory_id 一致
+    3. 若 memory_id_hint 提供，必须与上述 memory_id 一致
+    4. message_json.messages 必须是非空列表
+    5. 每条 message 必须有 role 且为合法值（user/assistant/system/tool）
+    6. 每条 message 必须有非空 content
+    7. meta_json.title 必须存在且非空字符串
+    8. meta_json.abstract 若存在则不得为空字符串
+    9. 跨校验：时间合理性、raw_message_count 一致性（warnings，不阻塞）
+    返回 MemoryBundleValidationResult，errors 非空则上层 reject。
+    """
+```
+
+### 4.5 storage_mapper.py
+
+**职责**：规划落盘路径，不做实际 IO，输出可复用的路径对象。
+
+```python
+@dataclass
+class MemoryStorageLayout:
+    memory_id: str
+    base_dir: str              # 例：/app/uploads/memory/memory-20260408-cni12345
+    message_json_path: str     # 例：/app/uploads/memory/memory-20260408-cni12345/message.json
+    meta_json_path: str        # 例：/app/uploads/memory/memory-20260408-cni12345/meta.json
+    storage_path_ref: str      # 逻辑引用：memory://files/memory-20260408-cni12345
+    download_ref: str          # 下载 URI：memory://download/memory-20260408-cni12345
+
+def build_memory_storage_layout(
+    memory_id: str,
+    base_upload_dir: str,      # 从配置读取，默认 /app/uploads
+) -> MemoryStorageLayout:
+    """
+    规划 memory 文件集的落盘路径。
+    路径结构：{base_upload_dir}/memory/{memory_id}/
+    不创建目录，不写文件。
+    """
+```
+
+### 4.6 repository.py（落盘）
+
+**职责**：负责将两文件写入磁盘（或对象存储），返回落盘结果。
+
+```python
+@dataclass
+class StoredMemoryBundle:
+    memory_id: str
+    storage_layout: MemoryStorageLayout
+    message_json_bytes: int       # 写入的字节数
+    meta_json_bytes: int
+    message_checksum: str         # SHA-256 hex
+    meta_checksum: str
+    stored_at: datetime
+
+class MemoryUploadRepository(BaseUploadRepository):
+    async def store_memory_bundle(
+        self,
+        message_content: bytes,       # message.json 原始内容
+        meta_content: bytes,          # meta.json 原始内容
+        storage_layout: MemoryStorageLayout,
+    ) -> StoredMemoryBundle:
+        """
+        1. 创建 storage_layout.base_dir（若不存在）
+        2. 写入 message.json（原子写，先写临时文件再 rename）
+        3. 写入 meta.json
+        4. 计算并验证 checksum
+        5. 返回 StoredMemoryBundle
+        若写入失败抛出 MemoryStorageError，上层映射为 500。
+        """
+```
+
+### 4.7 metadata_normalizer.py
+
+**职责**：从 `meta.json` 中规范化所有字段，补充服务端字段，输出统一的元数据载荷。
+
+```python
+@dataclass
+class MemoryMetadataPayload:
+    memory_id: str
+    title: str
+    abstract: str                     # 优先从 meta_json 读取，fallback 从 overview 截取前 500 字符
+    overview: Optional[str]
+    overview_excerpt: str             # overview 的前 300 字符，用于列表展示
+    created_at: datetime
+    updated_at: Optional[datetime]
+    task_ids: list[str]
+    feature_tags: list[str]
+    domain_tags: list[str]
+    component_tags: list[str]
+    source_client: Optional[str]
+    language: Optional[str]
+    storage_path_ref: str             # 服务端补充
+    download_ref: str                 # 服务端补充
+    raw_message_count: int            # 服务端补充
+    ai_tags_extracted: bool           # 初始 False
+    document_key: str                 # = memory_id，供 OpenSearch 幂等写入
+
+def normalize_memory_metadata(
+    meta_json: dict,
+    stored_bundle: StoredMemoryBundle,
+) -> MemoryMetadataPayload:
+    """
+    1. 提取 meta_json 中所有字段并做类型规范化
+    2. abstract fallback：若缺失则截取 overview 前 500 字符
+    3. overview_excerpt：截取 overview 前 300 字符（UTF-8 安全截断）
+    4. 补充服务端字段：storage_path_ref, download_ref, raw_message_count
+    5. task_ids 统一大写处理（如 "cni-12345" → "CNI-12345"）
+    6. 所有 tags 列表去重、去空值
+    7. ai_tags_extracted 初始化为 False
+    """
+```
+
+### 4.8 index_document_builder.py
+
+**职责**：生成两层索引文档（memory 级文档 + message 级 chunks），不直接调用 OpenSearch。
+
+```python
+@dataclass
+class MemoryImportDocuments:
+    memory_document: dict             # memory 级文档（写入 memory 主索引）
+    message_chunks: list[dict]        # message 级 chunks（写入 chunks 索引）
+    abstract_chunk: dict              # abstract 作为独立 chunk（写入 chunks 索引）
+    overview_chunk: Optional[dict]    # overview 作为独立 chunk（若存在）
+
+def build_memory_import_documents(
+    metadata_payload: MemoryMetadataPayload,
+    message_json: dict,               # 已解析的 message.json
+    chunk_size: int = 500,            # token 数，从配置读取
+    chunk_overlap: int = 50,          # overlap token 数
+) -> MemoryImportDocuments:
+    """
+    1. 生成 memory 级文档（字段见 §6.1）
+    2. 从 abstract 生成摘要 chunk（source="abstract"）
+    3. 从 overview 生成概览 chunk（source="overview"）
+    4. 从 message_json.messages[] 按 chunk_size 切分，生成 message chunks
+       - 保留 message_id, role, content, created_at
+       - source="message"
+       - 附带 chunk_index, token_count
+    5. 所有 chunks 带 memory_id, document_key
+    禁止：将完整 message.json 内容放入 memory 级文档的任何可检索字段。
+    """
+```
+
+**message 切分规则**：
+
+- 单条 message content ≤ chunk_size tokens 时：单条 message 作为一个 chunk。
+- 单条 message content > chunk_size tokens 时：按 chunk_size 切分，相邻 chunk 保留 overlap。
+- role 信息附在每个 chunk 的 `role` 字段，不嵌入 content 正文（避免影响语义检索）。
+- `chunk_id` 生成规则：`{memory_id}_{message_id}_{chunk_index}` 或 `{memory_id}_abstract_0`。
+
+### 4.9 Import 调用时序
+
+```
+import_api.py
+  ↓ 解析 multipart，提取 message.json / meta.json 两个文件流
+  ↓ 读取为 bytes 并解析 JSON（失败 → 400）
+  ↓ tag == "MEMORY" → upload_service.import_memory_bundle(...)
+      ↓ validator.validate_memory_bundle(message_json, meta_json)
+        → ValidationResult.errors 非空 → raise MemoryValidationError → 400
+      ↓ storage_mapper.build_memory_storage_layout(memory_id)
+      ↓ repository.store_memory_bundle(message_bytes, meta_bytes, layout)
+        → 落盘失败 → raise MemoryStorageError → 500
+      ↓ metadata_normalizer.normalize_memory_metadata(meta_json, stored_bundle)
+      ↓ index_document_builder.build_memory_import_documents(metadata, message_json)
+      ↓ document_manager.bulk_import(memory_index, [memory_document])
+      ↓ document_manager.bulk_import(chunks_index, message_chunks + [abstract_chunk, overview_chunk])
+      ↓ celery.apply_async(memory_ai_extraction_task, args=[memory_id, layout.message_json_path])
+      ↓ return UploadAcceptedResponse(memory_id=memory_id, task_id=..., status="processing")
+  ↓ 返回 202
+```
 
 ---
 
-## 6. search 中 session 分支召回与返回边界
+## 5. 后台 AI 标签提取设计
 
-### 6.1 目录建议
+### 5.1 设计目标
+
+在 import 完成后，通过后台 Celery 任务异步分析 `message.json` 原始对话内容，提取以下信息并回写到 OpenSearch：
+
+- `domain_tags`：如 `["concurrency", "memory-management", "scheduling"]`
+- `feature_tags`：如 `["CNI", "cni-12345"]`（从对话正文中识别）
+- `component_tags`：如 `["cpnb", "allocator", "search_service"]`
+- 补充 `task_ids`（若对话中提到了未在 `meta.json` 声明的任务单号）
+
+### 5.2 触发条件
+
+- 每次 import 成功后均触发（`fire and forget`）。
+- 若 `meta.json` 中 `ai_tags_extracted == true`（client 已提供完整标签），**仍然触发**但仅做补充（不覆盖 client 提供的标签，只做合并去重）。
+- 任务失败后自动重试最多 3 次（Celery retry）。
+
+### 5.3 Celery 任务定义（`tasks/memory_ai_extraction.py`）
+
+```python
+@celery_app.task(
+    name="memory_ai_extraction",
+    bind=True,
+    max_retries=3,
+    default_retry_delay=60,  # 秒
+)
+def memory_ai_extraction_task(
+    self,
+    memory_id: str,
+    message_json_path: str,
+    ai_model: str = "gpt-5-mini",  # 从配置读取默认值
+) -> dict:
+    """
+    1. 从磁盘读取 message.json
+    2. 截取前 N 条消息（默认 50 条，避免超出 token 限制）
+    3. 构建 prompt，调用 AI 模型提取结构化标签
+    4. 合并 AI 提取结果与现有标签（去重）
+    5. 更新 OpenSearch 中对应 memory 文档的标签字段
+    6. 更新 ai_tags_extracted=true, ai_tags_extracted_at=now
+    返回：{"memory_id": ..., "extracted_tags": {...}, "status": "success"}
+    """
+```
+
+### 5.4 AI Prompt 设计
+
+**系统 Prompt**（固定）：
+
+```
+你是一个代码工程知识提取专家。给定一段工程师与 AI 助手的对话记录，
+请提取以下结构化信息：
+1. domain_tags：技术领域标签（如 concurrency, memory, scheduling, networking）
+2. feature_tags：功能模块或 feature 标识符（如功能名、模块名缩写）
+3. component_tags：代码组件名（如函数名、模块名、子系统名）
+4. task_ids：对话中明确提到的任务单号（格式如 CNI-12345, TASK-9021, BUG-456）
+
+输出 JSON 格式，不输出任何其他内容。
+```
+
+**用户 Prompt 模板**：
+
+```python
+def build_extraction_prompt(messages: list[dict], max_messages: int = 50) -> str:
+    truncated = messages[:max_messages]
+    conversation = "\n".join(
+        f"[{m['role']}]: {str(m['content'])[:500]}"  # 每条限 500 字符
+        for m in truncated
+    )
+    return f"""请从以下对话中提取结构化标签：
+
+{conversation}
+
+输出 JSON 格式：
+{{
+  "domain_tags": ["...", "..."],
+  "feature_tags": ["...", "..."],
+  "component_tags": ["...", "..."],
+  "task_ids": ["...", "..."]
+}}"""
+```
+
+### 5.5 标签回写规则
+
+```python
+def merge_and_update_tags(
+    existing_tags: dict,     # 从 OpenSearch 读取的现有标签
+    ai_tags: dict,           # AI 提取的标签
+) -> dict:
+    """
+    合并规则：
+    - 对每个 tag 类型，取 existing 和 ai 的并集
+    - 去重、去空值
+    - 统一大小写（task_ids 全大写，其余 tags 全小写）
+    - 不删除 client 已提供的任何标签
+    """
+```
+
+---
+
+## 6. OpenSearch 索引契约
+
+### 6.1 Memory 级文档（主索引：`bible_atlas_memory`）
+
+| 字段 | OpenSearch 类型 | 说明 |
+|------|------|------|
+| `memory_id` | `keyword` | 唯一主键 |
+| `document_key` | `keyword` | 同 `memory_id`，供 document_manager 幂等写入 |
+| `title` | `text` (analyzer: ik_max_word) + `keyword` | 标题，兼顾中文分词与精确匹配 |
+| `abstract` | `text` (analyzer: ik_max_word) | 一句话摘要 |
+| `overview` | `text` (analyzer: ik_max_word) | 段落级概览 |
+| `overview_excerpt` | `keyword` | overview 前 300 字符，不索引，仅用于返回展示 |
+| `task_ids` | `keyword` (array) | 任务单号，精确匹配 |
+| `feature_tags` | `keyword` (array) + 子字段 `text` | 精确 + 模糊兜底 |
+| `domain_tags` | `keyword` (array) | 领域标签 |
+| `component_tags` | `keyword` (array) | 组件标签 |
+| `source_client` | `keyword` | 来源工具 |
+| `language` | `keyword` | 会话语言 |
+| `storage_path_ref` | `keyword` | 逻辑存储路径，不索引 |
+| `download_ref` | `keyword` | 下载引用，不索引 |
+| `raw_message_count` | `integer` | 消息条数 |
+| `ai_tags_extracted` | `boolean` | AI 标签提取状态 |
+| `ai_tags_extracted_at` | `date` | AI 标签提取时间 |
+| `created_at` | `date` | 创建时间 |
+| `updated_at` | `date` | 更新时间 |
+| `abstract_vector` | `dense_vector` (dim=1024) | abstract 的向量，用于 memory 级语义召回 |
+
+**OpenSearch Mapping 片段**：
+
+```json
+{
+  "mappings": {
+    "properties": {
+      "memory_id":     { "type": "keyword" },
+      "document_key":  { "type": "keyword" },
+      "title": {
+        "type": "text", "analyzer": "ik_max_word",
+        "fields": { "keyword": { "type": "keyword" } }
+      },
+      "abstract":  { "type": "text", "analyzer": "ik_max_word" },
+      "overview":  { "type": "text", "analyzer": "ik_max_word" },
+      "overview_excerpt": { "type": "keyword", "index": false },
+      "task_ids":  { "type": "keyword" },
+      "feature_tags": {
+        "type": "keyword",
+        "fields": { "text": { "type": "text", "analyzer": "ik_max_word" } }
+      },
+      "domain_tags":    { "type": "keyword" },
+      "component_tags": { "type": "keyword" },
+      "storage_path_ref": { "type": "keyword", "index": false },
+      "download_ref":     { "type": "keyword", "index": false },
+      "raw_message_count":  { "type": "integer" },
+      "ai_tags_extracted":  { "type": "boolean" },
+      "ai_tags_extracted_at": { "type": "date" },
+      "created_at": { "type": "date" },
+      "updated_at": { "type": "date" },
+      "abstract_vector": {
+        "type": "dense_vector", "dims": 1024,
+        "index": true, "similarity": "cosine"
+      }
+    }
+  }
+}
+```
+
+### 6.2 Message 级 Chunks（chunks 索引：`bible_atlas_memory_chunks`）
+
+| 字段 | OpenSearch 类型 | 说明 |
+|------|------|------|
+| `chunk_id` | `keyword` | `{memory_id}_{message_id}_{chunk_index}` |
+| `memory_id` | `keyword` | 所属 memory |
+| `document_key` | `keyword` | 同 `memory_id` |
+| `message_id` | `keyword` | 原消息 ID（若存在） |
+| `role` | `keyword` | `user`/`assistant`/`system` |
+| `source` | `keyword` | `message`/`abstract`/`overview` |
+| `content` | `text` (analyzer: ik_max_word) | chunk 正文 |
+| `content_vector` | `dense_vector` (dim=1024) | chunk 语义向量 |
+| `chunk_index` | `integer` | chunk 在 memory 中的序号 |
+| `token_count` | `integer` | chunk token 数 |
+| `created_at` | `date` | 消息时间（来自 message.created_at） |
+
+### 6.3 向量化策略
+
+| 内容 | 向量化 | 原因 |
+|------|------|------|
+| `abstract` | ✅ memory 级向量 | memory 级语义召回主字段 |
+| `overview` | ✅ 独立 chunk 向量 | 段落级概览召回 |
+| `messages[].content` | ✅ message 级向量 | 精细语义召回 |
+| `title` | ❌（BM25 文本索引足够） | 标题通常较短，不做向量化 |
+| `task_ids`, `feature_tags` 等 | ❌（keyword 过滤） | 结构化过滤，不需要向量 |
+
+---
+
+## 7. Search 分支详细设计
+
+### 7.1 目录结构
 
 ```text
 app/
 ├── api/
 │   └── v1/
-│       └── search_api.py
+│       └── search_api.py                    # 现有文件，MEMORY 走统一路由
 ├── features/
 │   └── search/
-│       ├── search_service.py
+│       ├── search_service.py                # 现有文件，MEMORY 占位替换为真实仓储
+│       ├── schemas.py                       # 现有文件，补充 MemorySearchItem/MemoryFilters
 │       └── repositories/
-│           └── session/
+│           ├── factory.py                   # 现有文件，注册 MemorySearchRepository
+│           └── memory/                      # 新增目录
 │               ├── __init__.py
-│               ├── repository.py
-│               ├── query_builder.py
-│               ├── result_mapper.py
-│               └── filters.py
+│               ├── repository.py            # 主仓储：调用 search_manager 执行检索
+│               ├── query_builder.py         # 生成 MemoryQuerySpec
+│               ├── filters.py               # 归一化 memory 专属过滤条件
+│               └── result_mapper.py         # 命中整形与返回边界控制
 ```
 
-职责原则：
+### 7.2 schemas.py 扩展
 
-- search_service.py 只做 SESSION 分支识别、仓储路由、聚合排序。
-- query_builder.py 只负责 session 查询规格、字段权重与过滤归一化，不直接手写 OpenSearch DSL。
-- repository.py 负责把 session 查询规格交给 `search_manager.py` 执行。
-- result_mapper.py 只负责返回边界控制，不决定下载协议。
+**`MemoryFilters`（新增）**：
 
-### 6.2 search 调用关系
+```python
+class MemoryFilters(BaseModel):
+    """MEMORY 专属过滤条件，通过 SearchRequest.filters 传入。"""
+    task_ids: Optional[list[str]] = None          # 精确匹配任务单号，支持多值 OR
+    feature_tags: Optional[list[str]] = None       # 精确匹配 feature tag
+    domain_tags: Optional[list[str]] = None
+    component_tags: Optional[list[str]] = None
+    source_client: Optional[str] = None
+    language: Optional[str] = None
+    created_after: Optional[datetime] = None       # 时间范围过滤（起始）
+    created_before: Optional[datetime] = None      # 时间范围过滤（结束）
+    ai_tags_extracted: Optional[bool] = None       # 过滤 AI 标签提取状态
+```
 
-search 分支同样用文字调用链描述，不再展开图。
+**`MemorySearchItem`（新增）**：
 
-调用链：
+```python
+class MemorySearchItem(BaseModel):
+    memory_id: str
+    title: str
+    abstract: str
+    overview_excerpt: Optional[str]
+    feature_tags: list[str]
+    task_ids: list[str]
+    domain_tags: list[str]
+    component_tags: list[str]
+    created_at: Optional[datetime]
+    source_client: Optional[str]
+    score: float
+    match_scope: Literal["memory", "message"]    # 命中发生在哪个层级
+    matched_message_id: Optional[str]            # 若 match_scope=="message"，命中的消息 ID
+    matched_message_preview: Optional[str]       # 命中消息的局部预览（≤200 字符）
+    download_ref: str
+    storage_path_ref: str
+    match_reason: list[str]                      # 如 ["title_fuzzy", "task_ids_exact"]
+    raw_content_preview: Optional[str] = None   # 仅 include_raw_preview=true 时返回，≤500 字符
+    warnings: list[str] = []
+```
 
-1. `app/api/v1/search_api.py`
-   - 接收统一 `SearchRequest`。
-   - 不理解 session 内部结构，只把请求交给 `SearchService.execute_search(...)`。
-2. `app/features/search/search_service.py`
-   - 根据 `tag/index_name/query` 判断是否命中 `SESSION`。
-   - 若未命中，走现有非 session 仓储。
-   - 若命中，交给 `SearchRepositoryFactory` 创建 `SessionSearchRepository`。
-3. `filters.py`
-   - 归一化 session 专属过滤条件，如 `feature/task/participant/time`。
-4. `query_builder.py`
-   - 生成 `SessionQuerySpec`。
-   - 明确要查哪些字段、是否启用向量、`top_k` 如何放大、过滤条件如何组合。
-5. `repository.py`
-   - 把 `SessionQuerySpec` 转交 `search_manager.py`。
-   - 不自己写底层 OpenSearch JSON。
-6. `search_manager.py`
-   - 调用底层数据库查询接口，返回原始 hits。
-7. `result_mapper.py`
-   - 把 chunk 级命中聚合回 session 级结果。
-   - 整理 `match_reason`、`overview_excerpt`、`raw_content_preview/ref`、`warnings`。
-8. `SearchService`
-   - 把 session 结果与其它桶统一合并排序，最后返回给 client。
+**`SearchRequest` 扩展**（最小改动方式）：
 
-这一段的核心边界是：session 分支负责“查什么、怎么整形”，通用 Search 基础设施负责“怎么发起数据库查询”。
+```python
+class SearchRequest(BaseModel):
+    # ... 现有字段不变 ...
+    filters: Optional[dict] = None         # 新增：通用过滤字段，MEMORY 时解析为 MemoryFilters
+    include_raw_preview: bool = False      # 新增：是否在结果中包含 raw 内容预览
+```
 
-### 6.3 查询字段、查询规格与召回规则
+> `filters` 字段使用 `dict` 类型而非直接引用 `MemoryFilters`，保持 API 对所有类型通用，避免每种 doc_type 都扩展一次 SearchRequest schema。各类型 Repository 内部负责将 `filters` 解析为自己的 filters 模型。
 
-SESSION 检索不应以完整 `message.json` 原文作为默认主召回字段，而应优先命中下列轻量字段：
+### 7.3 filters.py
 
-| 字段 | 用途 | 建议匹配方式 |
+```python
+def normalize_memory_filters(
+    raw_filters: Optional[dict],
+) -> MemoryFilters:
+    """
+    将 SearchRequest.filters（dict 或 None）解析并校验为 MemoryFilters。
+    - None 或空 dict → 返回全空 MemoryFilters（不做过滤）
+    - 未知字段静默忽略
+    - task_ids 统一大写
+    - 时间字段解析为 datetime（失败则忽略，记录 warning）
+    """
+```
+
+### 7.4 query_builder.py
+
+```python
+@dataclass
+class MemoryQuerySpec:
+    query_text: str
+    search_type: str                   # keyword / vector / hybrid
+    title_boost: float = 3.0
+    abstract_boost: float = 2.0
+    overview_boost: float = 1.5
+    feature_tags_boost: float = 2.5
+    task_ids_boost: float = 3.0
+    use_vector: bool = True
+    vector_field: str = "abstract_vector"
+    message_vector_field: str = "content_vector"
+    vector_weight: float = 0.7
+    enable_message_level: bool = True  # top_k > 20 时建议仅做 memory 级
+    top_k: int = 10
+    filters: MemoryFilters = field(default_factory=MemoryFilters)
+    include_raw_preview: bool = False
+
+TASK_ID_PATTERN = re.compile(r'\b([A-Z]+-\d+)\b')
+
+def detect_task_id_in_query(query_text: str) -> list[str]:
+    """
+    从 query 文本中提取任务单号（如 CNI-12345, TASK-9021）。
+    若提取成功，在 query_builder 中将这些单号加入 task_ids 过滤条件（terms 精确匹配），
+    同时保留全文检索作为兜底。
+    """
+
+def build_memory_query_spec(
+    query_text: str,
+    search_type: str,
+    filters: MemoryFilters,
+    top_k: int,
+    vector_weight: float,
+    include_raw_preview: bool = False,
+) -> MemoryQuerySpec:
+    """
+    构建 memory 检索规格。
+    - 当 query_text 匹配单号格式（如 CNI-\\d+）时，提升 task_ids_boost
+    - 当 query_text 包含 feature 前缀（如 "CNI"）时，提升 feature_tags_boost
+    - enable_message_level 默认 True，但 top_k > 20 时建议仅做 memory 级
+    """
+```
+
+### 7.5 repository.py（MemorySearchRepository）
+
+```python
+class MemorySearchRepository(BaseSearchRepository):
+    """替换 07 中 MEMORY 的 EmptySearchRepository 占位仓储。"""
+
+    async def search(
+        self,
+        task: IndexSearchTask,
+        req: SearchRequest,
+        vector: Optional[list[float]],
+    ) -> list[SearchMatchRow]:
+        """
+        1. 调用 filters.normalize_memory_filters(req.filters)
+        2. 调用 query_builder.build_memory_query_spec(...)
+        3. 先执行 memory-level 检索：
+           - 向 search_manager.search(memory_index, memory_level_spec) 发起检索
+        4. 若 spec.enable_message_level：
+           - 向 search_manager.search(chunks_index, message_level_spec) 发起检索
+        5. 将两路 hits 传入 result_mapper.map_memory_hits(...)
+        6. 返回 list[SearchMatchRow]（兼容 BaseSearchRepository 接口）
+        """
+
+    def build_query(self, task: IndexSearchTask, req: SearchRequest, vector) -> dict:
+        """构建 memory-level OpenSearch Query DSL（由 search_manager 执行）。"""
+
+    def map_backend_response_to_items(self, raw_response: dict) -> list[SearchMatchRow]:
+        """将 OpenSearch 原始 hits 映射为 SearchMatchRow。"""
+```
+
+### 7.6 result_mapper.py
+
+```python
+def map_memory_hits(
+    memory_hits: list[dict],           # memory-level OpenSearch hits
+    message_hits: list[dict],          # message-level OpenSearch hits
+    include_raw_preview: bool = False,
+    raw_preview_max_chars: int = 500,
+    message_preview_max_chars: int = 200,
+) -> list[MemorySearchItem]:
+    """
+    整合两路命中，聚合为 memory 维度结果。
+
+    Step 1：group_hits_by_memory — 按 memory_id 分组两路命中
+    Step 2：merge_memory_and_message_hits
+      - 只有 memory-level 命中 → match_scope="memory"
+      - 有 message-level 命中 → match_scope="message"，取最高分 message
+      - 两者都有 → 取较高分者决定 match_scope
+    Step 3：build_match_reason — 生成命中原因标签
+      title_fuzzy / title_exact / abstract_semantic /
+      task_ids_exact / feature_tags_exact / feature_tags_fuzzy /
+      message_semantic / message_keyword
+    Step 4：build_preview
+      - match_scope=="message" → 截取 matched_message content 前 N 字符
+      - include_raw_preview → 截取 abstract 或 overview 前 N 字符
+    Step 5：输出 list[MemorySearchItem]，按 score 降序
+    """
+
+def group_hits_by_memory(hits: list[dict]) -> dict[str, list[dict]]: ...
+def merge_memory_and_message_hits(
+    memory_groups: dict[str, list[dict]],
+    message_groups: dict[str, list[dict]],
+) -> dict[str, dict]: ...
+def build_match_reason(hit: dict, source_index: str) -> list[str]: ...
+def build_message_preview(content: str, max_chars: int) -> str: ...
+```
+
+### 7.7 Search 返回字段边界
+
+| 字段 | 默认返回 | 条件返回 | 不返回 |
+|------|------|------|------|
+| `memory_id` | ✅ | | |
+| `title` | ✅ | | |
+| `abstract` | ✅ | | |
+| `overview_excerpt` | ✅ | | |
+| `feature_tags` / `task_ids` / `domain_tags` / `component_tags` | ✅ | | |
+| `created_at` / `score` | ✅ | | |
+| `match_scope` / `match_reason` | ✅ | | |
+| `download_ref` / `storage_path_ref` | ✅ | | |
+| `matched_message_id` | | `match_scope=="message"` 时 | |
+| `matched_message_preview` | | `match_scope=="message"` 时 | |
+| `raw_content_preview` | | `include_raw_preview=true` 时，≤500 字符 | |
+| `message.json` 完整内容 | | | ❌ 永不直接返回 |
+
+### 7.8 Search 返回前的数据整合
+
+1. 把 `memory-level hits` 与 `message-level hits` 分开接收。
+2. 按 `memory_id` 合并多条命中。
+3. 对同一 memory 的多条命中，保留最高分并汇总 `match_reason`。
+4. 若 `memory-level` 命中占优，则设置 `match_scope="memory"`。
+5. 若某个 `message_id` 命中占优，则设置 `match_scope="message"`，补充 `matched_message_id` 与 `matched_message_preview`。
+6. 从 `title/abstract/overview` 中选择最适合列表展示的摘要字段。
+7. 若命中的是 message chunk，则只回传受限长度的 preview，不回传完整 raw。
+8. 最终输出统一的 `MemorySearchItem`，再交给上层 `SearchService` 合并。
+
+---
+
+## 8. Search API 兼容性分析与扩展方案
+
+### 8.1 现有 Search API 能力评估
+
+| 检索需求 | 现有 API 是否支持 | 评估 |
 |------|------|------|
-| title | 标题召回主字段 | match、match_phrase_prefix、fuzzy |
-| abstract | 列表摘要召回 | match |
-| overview | 段落级概览召回 | match、bm25 |
-| feature_tags | feature 号与 feature 标签 | keyword 精确匹配 + prefix/模糊兜底 |
-| task_ids | 任务号 | keyword 精确匹配 + prefix |
-| domain_tags | 领域标签 | terms 过滤 + 模糊 query 兜底 |
-| component_tags | 组件标签 | terms 过滤 + 模糊 query 兜底 |
-| participants | 会话参与者 | terms 过滤 |
+| 按标题模糊匹配（如 "allocate NPE"） | ✅ 支持 | `query` + `search_type=hybrid` 可覆盖 |
+| 按任务单号精确匹配（如 "CNI-12345"） | ⚠️ 部分支持 | `query="CNI-12345"` 可触发 BM25，但无法精确过滤 |
+| 按任务单号前缀模糊匹配（如 "CNI-12*"） | ❌ 不支持 | 需要 `prefix` query，现有 API 无法传入 |
+| 按 feature_tag 过滤（如只看 "CNI" 相关） | ❌ 不支持 | 需要结构化过滤，现有 API 无此字段 |
+| 按时间范围过滤（如最近 30 天） | ❌ 不支持 | 需要 date range filter |
+| 语义检索（向量相似度） | ✅ 支持 | `search_type=vector/hybrid` |
+| 多索引并发检索（enable_hit） | ✅ 支持 | 现有 `enable_hit` 机制 |
 
-结论：
+### 8.2 推荐扩展方案（最小改动）
 
-- 标题、feature 号、标签都属于 session 检索的一级召回字段。
-- feature 号应优先进入 meta.json 的 feature_tags 或 task_ids，而不是退化为正文字符串搜索。
-- query_text 可对 title、abstract、overview、标签名称做模糊命中；filters 优先做结构化精确筛选。
-- `query_builder.py` 只产出 `SessionQuerySpec`，例如目标字段、过滤条件、是否需要向量检索、字段权重与 top_k 放大策略。
-- OpenSearch 原始 DSL 的组装与执行继续放在 `app/infrastructure/opensearch/search_manager.py`，与 `06` 的职责边界保持一致。
+**结论：在 `SearchRequest` 中新增 `filters: Optional[dict]` 字段**，不新增 MEMORY 专属 API 端点。
 
-### 6.4 search 函数职责表
+理由：
+1. 避免为每种 doc_type 增加专属 API，维护成本低。
+2. `dict` 类型的 `filters` 不破坏现有 `SearchRequest` 的 Pydantic 校验。
+3. 各类型 Repository 内部负责解析 `filters`，与 Service 层解耦。
+4. 若未来其他类型（SKILL 等）也需要结构化过滤，可复用同一机制。
 
-| 目录/文件 | 函数 | 输入 | 输出 | 职责边界 |
+**客户端使用示例**：
+
+```json
+POST /api/v1/search
+{
+  "index_name": "bible_atlas_memory",
+  "query": "allocate NPE 并发",
+  "tag": "MEMORY",
+  "search_type": "hybrid",
+  "top_k": 10,
+  "filters": {
+    "task_ids": ["CNI-12345"],
+    "feature_tags": ["cni"],
+    "created_after": "2026-01-01T00:00:00Z"
+  }
+}
+```
+
+**任务单号自动识别**（无需 client 显式传 filters）：
+
+```
+query = "CNI-12345 的 allocate 崩溃"
+         ↓
+query_builder 检测到 CNI-12345
+         ↓
+自动在 task_ids 字段做 terms 精确匹配
++ 同时对 title/abstract/overview 做全文检索兜底
+```
+
+---
+
+## 9. 原始内容返回策略
+
+| 方案 | 优点 | 缺点 | 结论 |
+|------|------|------|------|
+| 直接返回完整 raw | 简单 | 响应体过大，影响 search 性能 | ❌ 不采用 |
+| 压缩后 base64 返回 | 一次请求 | 压缩比不稳定，base64 再增大 33%，client 需解压 | ❌ 不采用 |
+| 返回 preview 截取 | 体积可控 | 信息不完整 | ✅ 作为默认行为 |
+| 二阶段 download | 解耦 search 与 download | 需要两次网络请求 | ✅ **推荐方案** |
+
+**推荐方案：二阶段 Download**
+
+- **第一阶段（search）**：返回 `memory_id`、`download_ref`、`matched_message_preview`（≤200 字符）；可选返回 `raw_content_preview`（≤500 字符，需 `include_raw_preview=true`）。
+- **第二阶段（download）**：client 使用 `download_ref` 调用 `GET /api/v1/download/memory/{memory_id}`，获取完整 `message.json`。响应 `Content-Type: application/json`，支持流式下载。
+
+**`download_ref` 格式**：`memory://download/{memory_id}`
+
+**压缩折中方案（备选，暂不实现）**：对前 10 条 messages 做 JSON + gzip + base64，压缩比约 3-8x，10 条消息约 0.7-2KB，待产品明确需要时再启用。
+
+---
+
+## 10. 目录结构与模块清单
+
+### 10.1 完整目录结构
+
+```text
+app/
+├── api/v1/
+│   ├── memory_api.py                            # 新增：MEMORY 独立导入端点，~40 行
+│   └── upload_api.py                            # 不变
+├── features/
+│   ├── memory/                                  # 全新目录（import 独立链路）
+│   │   ├── __init__.py
+│   │   ├── memory_import_service.py             # 新增：编排层，~50 行
+│   │   ├── schemas.py                           # 新增：MemoryImportAcceptedResponse 等，~30 行
+│   │   └── repositories/
+│   │       ├── __init__.py
+│   │       └── memory_upload_repository.py      # 新增：落盘 + 编排，~80 行
+│   ├── memory_internals/                        # 全新目录（内部子模块）
+│   │   ├── __init__.py
+│   │   ├── validator.py                         # 新增：~90 行
+│   │   ├── storage_mapper.py                    # 新增：~50 行
+│   │   ├── metadata_normalizer.py               # 新增：~100 行
+│   │   └── index_document_builder.py            # 新增：~120 行
+│   └── search/
+│       ├── schemas.py                           # 变更：新增 MemoryFilters, MemorySearchItem, filters/include_raw_preview
+│       ├── search_service.py                    # 变更：1 行注册变更（替换 EmptySearchRepository）
+│       └── repositories/
+│           ├── factory.py                       # 变更：3 行，注册 MemorySearchRepository
+│           └── memory/                          # 全新目录
+│               ├── __init__.py
+│               ├── repository.py                # 新增：~120 行
+│               ├── query_builder.py             # 新增：~100 行
+│               ├── filters.py                   # 新增：~60 行
+│               └── result_mapper.py             # 新增：~150 行
+└── tasks/memory_ai_extraction.py                # 新增：~120 行
+```
+
+### 10.2 函数清单
+
+| 模块 | 函数 | 输入 | 输出 | 估计行数 |
 |------|------|------|------|------|
-| app/api/v1/search_api.py | search_documents | SearchRequest | SearchResponse | 只处理 HTTP 协议与响应封装 |
-| app/features/search/search_service.py | execute_search | SearchRequest | SearchExecutionResult | 根据 tag、index_name 或 query 识别 SESSION 分支并聚合结果 |
-| app/features/search/repositories/session/filters.py | normalize_session_filters | session_filters | SessionSearchFilters | 只处理 feature/task/participant/time 等 session 专属过滤条件 |
-| app/features/search/repositories/session/query_builder.py | build_session_query_spec | query_text、search_type、filters、options | SessionQuerySpec | 只产出字段选择、过滤条件、是否启用向量与权重，不直接拼底层 DSL |
-| app/features/search/repositories/session/repository.py | search_sessions | query_spec、top_k | list[RawSessionHit] | 调用 `search_manager.py` 执行检索，不做最终响应映射 |
-| app/infrastructure/opensearch/search_manager.py | search/search_many | OpenSearchQuerySpec | ScoredSearchPage | 负责 OpenSearch DSL、`_search/_msearch` 和结果格式化 |
-| app/features/search/repositories/session/result_mapper.py | map_session_hits | raw_hits、include_raw_content、raw_content_mode | list[SessionSearchItem] | 聚合同一 `session_id` 的多 chunk 命中，并负责 warning、preview/ref 生成 |
+| `memory_api.py` | `import_memory` | `files`, `memory_id` | `MemoryImportAcceptedResponse` | ~40 |
+| `memory_import_service.py` | `MemoryImportService.import_memory` | `files`, `memory_id_hint` | `MemoryImportAcceptedResponse` | ~50 |
+| `memory/repositories/memory_upload_repository.py` | `MemoryUploadRepository.validate` | `message_json`, `meta_json`, `memory_id_hint` | `MemoryBundleValidationResult` | ~30 |
+| `memory_internals/validator.py` | `validate_memory_bundle` | `message_json`, `meta_json`, `memory_id_hint` | `MemoryBundleValidationResult` | ~90 |
+| `memory_internals/storage_mapper.py` | `build_memory_storage_layout` | `memory_id`, `base_upload_dir` | `MemoryStorageLayout` | ~40 |
+| `memory/repositories/memory_upload_repository.py` | `MemoryUploadRepository.store` | `message_bytes`, `meta_bytes`, `layout` | `StoredMemoryBundle` | ~60 |
+| `memory_internals/metadata_normalizer.py` | `normalize_memory_metadata` | `meta_json`, `stored_bundle` | `MemoryMetadataPayload` | ~100 |
+| `memory_internals/index_document_builder.py` | `build_memory_import_documents` | `metadata_payload`, `message_json` | `MemoryImportDocuments` | ~120 |
+| `tasks/memory_ai_extraction.py` | `memory_ai_extraction_task` | `memory_id`, `message_json_path` | `dict` | ~100 |
+| `tasks/memory_ai_extraction.py` | `build_extraction_prompt` | `messages`, `max_messages` | `str` | ~20 |
+| `tasks/memory_ai_extraction.py` | `merge_and_update_tags` | `existing_tags`, `ai_tags` | `dict` | ~30 |
+| `search/schemas.py` | `MemoryFilters` | — | Pydantic model | ~25 |
+| `search/schemas.py` | `MemorySearchItem` | — | Pydantic model | ~35 |
+| `search/repositories/factory.py` | `create_search_repository`（注册 MEMORY） | `tag` | `BaseSearchRepository` | ~5 |
+| `search/memory/filters.py` | `normalize_memory_filters` | `raw_filters: dict` | `MemoryFilters` | ~50 |
+| `search/memory/query_builder.py` | `build_memory_query_spec` | `query_text`, `search_type`, `filters`, ... | `MemoryQuerySpec` | ~80 |
+| `search/memory/query_builder.py` | `detect_task_id_in_query` | `query_text` | `list[str]` | ~15 |
+| `search/memory/repository.py` | `MemorySearchRepository.search` | `task`, `req`, `vector` | `list[SearchMatchRow]` | ~80 |
+| `search/memory/repository.py` | `build_query` | `task`, `req`, `vector` | `dict` | ~40 |
+| `search/memory/result_mapper.py` | `map_memory_hits` | `memory_hits`, `message_hits`, ... | `list[MemorySearchItem]` | ~80 |
+| `search/memory/result_mapper.py` | `group_hits_by_memory` | `hits` | `dict[str, list[dict]]` | ~15 |
+| `search/memory/result_mapper.py` | `merge_memory_and_message_hits` | `memory_groups`, `message_groups` | `dict[str, dict]` | ~40 |
+| `search/memory/result_mapper.py` | `build_match_reason` | `hit`, `source_index` | `list[str]` | ~30 |
+| `search/memory/result_mapper.py` | `build_message_preview` | `content`, `max_chars` | `str` | ~15 |
 
-### 6.5 search 返回边界
+---
 
-默认返回字段建议如下：
+## 11. 关键失败点与错误处理
 
-| 字段 | 默认返回 | 说明 |
+### 11.1 Import 失败点
+
+| 失败点 | 行为 | HTTP 状态 | 错误码 |
+|------|------|------|------|
+| `message.json` 缺失 | 立即拒绝，不落盘 | 400 | `MEMORY_MISSING_MESSAGE` |
+| `meta.json` 缺失 | 立即拒绝，不落盘 | 400 | `MEMORY_MISSING_META` |
+| 任一文件 JSON 解析失败 | 立即拒绝，不落盘 | 400 | `MEMORY_INVALID_JSON` |
+| `memory_id` 不一致 | 立即拒绝，不落盘 | 400 | `MEMORY_ID_MISMATCH` |
+| `messages` 为空数组 | 立即拒绝，不落盘 | 400 | `MEMORY_EMPTY_MESSAGES` |
+| `title` 缺失或为空 | 立即拒绝，不落盘 | 400 | `MEMORY_MISSING_TITLE` |
+| 文件大小超限 | 立即拒绝，不落盘 | 413 | `MEMORY_FILE_TOO_LARGE` |
+| 磁盘写入失败 | 抛出 MemoryStorageError | 500 | `MEMORY_STORAGE_ERROR` |
+| `abstract` + `overview` 均缺失 | 拒绝构建索引，文件已落盘（可重试） | 422 | `MEMORY_MISSING_SUMMARY_TEXT` |
+| OpenSearch bulk import 失败 | 沿用通用 Import 异步失败状态 | — | 异步任务状态 `failed` |
+| AI 标签提取失败 | Celery 重试 3 次，最终 `ai_tags_extracted=false`，不影响 search | — | 任务日志 |
+
+### 11.2 Search 失败点
+
+| 失败点 | 行为 | HTTP 状态 |
 |------|------|------|
-| session_id | 是 | 唯一主键 |
-| title | 是 | 展示标题 |
-| abstract | 是 | 列表摘要 |
-| overview_excerpt | 是 | 段落级节选 |
-| feature_tags/domain_tags/component_tags | 是 | 标签与过滤回显 |
-| task_ids | 选填 | 结构化任务号 |
-| participants | 选填 | 参与者 |
-| has_raw_json | 是 | 是否可返回 raw preview/ref |
-| validation_mode | 是 | strict 或 lite |
-| storage_path_ref | 推荐 | 存储引用 |
-| download_ref | 推荐 | 原始内容下载引用 |
-| match_reason | 推荐 | 命中原因 |
-| warnings | 选填 | raw_content_unavailable 等提示 |
+| `filters` 字段格式非法 | 忽略非法字段，记录 warning，继续检索 | 200（带 warnings） |
+| `task_ids` 过滤匹配不到结果 | 返回空分桶，不报错 | 200 |
+| memory-level 检索超时 | 返回部分结果 + warning | 200 |
+| message-level 检索超时 | 仅返回 memory-level 结果 + warning | 200 |
+| OpenSearch 连接异常 | 向上抛出，映射为 503 | 503 |
 
-明确边界：
+---
 
-- search 默认不直接返回完整 message.json。
-- include_raw_content=true 时，也只允许返回 raw_content_preview 或 raw_content_ref，不返回完整 raw_json。
-- has_raw_json=false 时，应返回 warning 或 unavailable 语义，而不是返回空壳 message.json。
-- 完整原始内容应通过 download 二阶段获取。
+## 12. 实现检查清单
 
-### 6.6 search 返回前的数据整合
+### Import 子任务
 
-从数据库拿回结果后，session 分支还需要额外做一次整合，避免把底层命中直接暴露给 client。
+- [ ] **T1**：定义所有数据类（`MemoryBundleValidationResult`、`MemoryStorageLayout`、`StoredMemoryBundle`、`MemoryMetadataPayload`、`MemoryImportDocuments`）
+- [ ] **T2**：实现 `memory/validator.validate_memory_bundle`
+- [ ] **T3**：实现 `memory/storage_mapper.build_memory_storage_layout`
+- [ ] **T4**：实现 `memory/repository.MemoryUploadRepository.store_memory_bundle`（原子写 + checksum）
+- [ ] **T5**：实现 `memory/metadata_normalizer.normalize_memory_metadata`（含 abstract fallback、task_ids 大写）
+- [ ] **T6**：实现 `memory/index_document_builder.build_memory_import_documents`
+- [ ] **T7**：实现 `features/memory/memory_import_service.py`（`MemoryImportService.import_memory` 完整编排）
+- [ ] **T8**：实现 `features/memory/repositories/memory_upload_repository.py`（调用各内部子模块）
+- [ ] **T9**：实现 `app/api/v1/memory_api.py`（独立端点、参数提取、错误映射、注册 router）
+- [ ] **T10**：在 `features/memory/schemas.py` 中添加 `MemoryImportAcceptedResponse`
 
-整合规则建议如下：
+### AI 标签提取子任务
 
-1. 先按 `session_id` 合并多条 chunk 命中。
-2. 对同一 session 的多条命中，保留最高分并汇总 `match_reason`。
-3. 从 `title/abstract/overview` 中选择最适合列表展示的摘要字段。
-4. 若命中的是 message chunk，则只回传受限长度的 preview，不回传完整 raw。
-5. 若 `has_raw_json=false`，补充 `warnings=["raw_content_unavailable"]`。
-6. 最终输出统一的 `SessionSearchItem`，再交给上层 SearchService 合并。
+- [ ] **T11**：实现 `tasks/memory_ai_extraction.py`（Celery 任务、prompt 构建、AI 调用、结果回写）
+- [ ] **T12**：在 Celery worker 配置中注册 `memory_ai_extraction` 任务
 
-对应到文件/函数：
+### Search 子任务
 
-| 文件 | 函数 | 职责 |
-|------|------|------|
-| `repository.py` | `search_sessions` | 获取原始 hits |
-| `result_mapper.py` | `group_hits_by_session` | 按 `session_id` 聚合 |
-| `result_mapper.py` | `build_match_reason` | 整理命中原因 |
-| `result_mapper.py` | `build_preview_or_ref` | 生成 preview/ref |
-| `result_mapper.py` | `map_session_hits` | 输出最终 `SessionSearchItem` |
+- [ ] **T13**：在 `search/schemas.py` 中添加 `MemoryFilters`、`MemorySearchItem`，扩展 `SearchRequest`（`filters` 和 `include_raw_preview` 字段）
+- [ ] **T14**：实现 `search/memory/filters.py`
+- [ ] **T15**：实现 `search/memory/query_builder.py`（含 `detect_task_id_in_query`、`build_memory_query_spec`）
+- [ ] **T16**：实现 `search/memory/repository.py`（`MemorySearchRepository`，替换 `EmptySearchRepository`）
+- [ ] **T17**：实现 `search/memory/result_mapper.py`（全部 5 个函数）
+- [ ] **T18**：在 `search/repositories/factory.py` 中注册 `MemorySearchRepository`
+- [ ] **T19**：在 `search_service.py` 中确认 MEMORY 分支走真实仓储
 
-示例：
+### OpenSearch 子任务
+
+- [ ] **T20**：添加 `bible_atlas_memory` 索引 mapping 定义
+- [ ] **T21**：添加 `bible_atlas_memory_chunks` 索引 mapping 定义
+- [ ] **T22**：在系统启动流程中注册 MEMORY 相关索引自动创建逻辑
+
+---
+
+## 附录 A：Search Response 示例
 
 ```json
 {
-  "tag": "SESSION",
-  "results": [
-    {
-      "session_id": "session-20260408-001",
-      "title": "SESSION import/search 设计讨论",
-      "abstract": "本会话围绕 SESSION 四文件职责、strict/lite 校验和 search 返回边界展开，结论是由服务端统一生成摘要与元数据，并默认只返回摘要和下载引用。",
-      "overview_excerpt": "需要把 SESSION 类型从原则说明细化为可指导实现的设计稿，重点收口到 import 与 search 分支。",
-      "feature_tags": ["session-import", "session-search"],
-      "task_ids": ["TASK-9021"],
-      "has_raw_json": true,
-      "validation_mode": "strict",
-      "download_ref": "session://download/session-20260408-001",
-      "match_reason": ["title_fuzzy", "feature_tags_exact"],
-      "raw_content_ref": "session://raw-preview/session-20260408-001"
-    }
-  ]
+  "success": true,
+  "total": 1,
+  "results": {
+    "memory": [
+      {
+        "memory_id": "memory-20260408-cni12345",
+        "title": "CNI-12345 allocate 函数 NPE 根因分析与修复",
+        "abstract": "分析 CNI-12345 中 allocate 函数在并发场景下因未判空导致 NPE 的根因，并给出修复方案。",
+        "overview_excerpt": "本次 memory 聚焦 CNI-12345 缺陷。用户提供了堆栈信息，AI 定位到 allocate() 第 87 行...",
+        "feature_tags": ["cni", "memory-allocator"],
+        "task_ids": ["CNI-12345"],
+        "domain_tags": ["concurrency", "memory-management"],
+        "component_tags": ["cpnb", "allocator"],
+        "created_at": "2026-04-08T09:30:00Z",
+        "score": 0.945,
+        "match_scope": "message",
+        "matched_message_id": "m2",
+        "matched_message_preview": "从堆栈来看，NPE 发生在 allocate() 第 87 行，原因是 context 对象在并发场景下未做判空...",
+        "download_ref": "memory://download/memory-20260408-cni12345",
+        "storage_path_ref": "memory://files/memory-20260408-cni12345",
+        "match_reason": ["task_ids_exact", "title_fuzzy", "message_semantic"],
+        "warnings": []
+      }
+    ]
+  }
 }
 ```
 
 ---
 
-## 7. 小结
+## 附录 B：Import 成功响应示例
 
-本次 session 细化结论如下：
-
-- import/search 只补 `SESSION` 分支，不改通用主流程；Import 复用 `08` 的 `ImportService` 主链路，Search 复用 `07` 的 `SearchService -> RepositoryFactory` 主链路。
-- 四文件中 `message.json` 是原始事实源，`.abstract.md` 是一句话总结，`.overview.md` 是段落级总结，`meta.json` 至少要求 `session_id` 必填。
-- 推荐采用“client 提供 `message.json`、server 统一生成其余三文件”的主路径，并保留 client 全量上传四文件的兼容入口。
-- strict/lite 继续保留，差异通过 `validation_mode` 与 `has_raw_json` 显式对外暴露。
-- OpenSearch 侧由 session 分支提供轻量文档与 chunk 文档，底层检索与 bulk 写入继续复用 `search_manager.py` 和 `document_manager.py`。
-- search 默认只返回摘要、引用或 preview/ref，不直接返回完整 `message.json`。
+```json
+{
+  "success": true,
+  "task_id": "task-uuid-abc123",
+  "memory_id": "memory-20260408-cni12345",
+  "status": "processing",
+  "accepted_files": ["message.json", "meta.json"],
+  "warnings": [
+    "raw_message_count in meta.json (8) does not match actual message count (9), using actual count"
+  ],
+  "message": "Memory import task submitted. AI tag extraction will run in background."
+}
+```
 
 ---
 
-## 8. 待讨论项
+## 附录 C：待讨论项
 
-以下内容作为方案初稿保留，尚未在本文中固化为最终规范：
-
-- client 端到底只负责“传文件并标记 session”，还是允许承担部分字段预提取职责，需要团队统一；当前本文按“API 只关心文件存在和 session 标记，内部字段提取由服务端负责”为主路径设计。
-- lite 模式最小输入集到底是“title + 任意补充文本”还是“title + meta.json”作为硬门槛，需要团队统一。
-- .overview.md 是否强制固定四段模板，还是允许可扩展模板，需要团队统一。
-- message.json 的脱敏规则、最大体积、截断策略，需要形成通用规范。
-- task_ids、feature_tags、domain_tags、participants 缺失后的回填机制与 SLA 尚未定义。
-- raw_content_preview 的默认长度、权限控制和 raw_content_ref 的使用方式仍需结合前端与安全方案继续讨论。
-- feature 号究竟统一建模为 feature_tags 还是 task_ids 的一个子类，需要团队统一，否则查询字段会漂移。
+- `meta.json.abstract` 与 `meta.json.overview` 的最小长度、格式规范和是否允许空值，需要团队统一。
+- `message.json` 的脱敏规则、最大体积、截断策略，需要形成通用规范。
+- `task_ids`、`feature_tags`、`domain_tags` 缺失后的回填机制与 SLA 尚未定义。
+- `raw_content_preview` 的默认长度、权限控制和 `raw_content_ref` 的使用方式仍需结合前端与安全方案继续讨论。
+- feature 号究竟统一建模为 `feature_tags` 还是 `task_ids` 的一个子类，需要团队统一，否则查询字段会漂移。
