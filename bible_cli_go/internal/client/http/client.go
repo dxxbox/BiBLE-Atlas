@@ -1,6 +1,7 @@
 package http
 
 import (
+	"bytes"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -69,8 +70,103 @@ func (c *Client) KnowledgeSearch(query string) (map[string]any, error) {
 	return payload, nil
 }
 
+type SearchOptions struct {
+	Query     string
+	TopK      int
+	EnableHit bool
+	HitTypes  []string
+}
+
+func (c *Client) Search(options SearchOptions) (map[string]any, error) {
+	knowledgePayload, err := c.KnowledgeSearch(options.Query)
+	if err != nil {
+		return nil, err
+	}
+
+	result := map[string]any{
+		"query":     options.Query,
+		"top_k":     options.TopK,
+		"knowledge": knowledgePayload,
+	}
+
+	if !options.EnableHit {
+		return result, nil
+	}
+
+	warnings := []string{}
+	for _, hitType := range options.HitTypes {
+		switch hitType {
+		case "skill":
+			payload, hitErr := c.searchSkill(options.Query, options.TopK)
+			if hitErr != nil {
+				warnings = append(warnings, fmt.Sprintf("skill hit failed: %s", protocol.WrapAsCLIError(hitErr).Code))
+				continue
+			}
+			result["skill"] = payload
+		case "memory":
+			payload, hitErr := c.searchMemory(options.Query, options.TopK)
+			if hitErr != nil {
+				warnings = append(warnings, fmt.Sprintf("memory hit failed: %s", protocol.WrapAsCLIError(hitErr).Code))
+				continue
+			}
+			result["memory"] = payload
+		}
+	}
+	if len(warnings) > 0 {
+		result["hit_warnings"] = warnings
+	}
+
+	return result, nil
+}
+
+func (c *Client) searchSkill(query string, topK int) (map[string]any, error) {
+	requestBody := map[string]any{
+		"query":     query,
+		"top_k":     topK,
+		"threshold": 0.0,
+	}
+	return c.postEnvelope("/api/v1/skills/search", requestBody)
+}
+
+func (c *Client) searchMemory(query string, topK int) (map[string]any, error) {
+	requestBody := map[string]any{
+		"query": query,
+		"top_k": topK,
+	}
+	return c.postEnvelope("/api/v1/memory/search", requestBody)
+}
+
 func (c *Client) getEnvelope(path string) (map[string]any, error) {
 	payload, statusCode, err := c.getJSON(path)
+	if err != nil {
+		return nil, err
+	}
+
+	status, _ := payload["status"].(string)
+	if status == "ok" {
+		result, exists := payload["result"]
+		if !exists {
+			return payload, nil
+		}
+		if resultObject, ok := result.(map[string]any); ok {
+			return resultObject, nil
+		}
+		return map[string]any{"result": result}, nil
+	}
+
+	if status == "error" {
+		return nil, parseErrorPayload(payload["error"], statusCode)
+	}
+
+	return nil, protocol.CLIError{
+		Code:     "INTERNAL",
+		Message:  "Malformed response envelope.",
+		ExitCode: 1,
+	}
+}
+
+func (c *Client) postEnvelope(path string, requestBody map[string]any) (map[string]any, error) {
+	payload, statusCode, err := c.postJSON(path, requestBody)
 	if err != nil {
 		return nil, err
 	}
@@ -121,6 +217,47 @@ func (c *Client) getJSON(path string) (map[string]any, int, error) {
 	if err != nil {
 		return nil, 0, protocol.CLIError{Code: "INVALID_ARGS", Message: err.Error(), ExitCode: 1}
 	}
+
+	response, err := c.client.Do(request)
+	if err != nil {
+		var netErr net.Error
+		if errors.As(err, &netErr) && netErr.Timeout() {
+			return nil, 0, protocol.CLIError{Code: "TIMEOUT", Message: "HTTP request timed out.", ExitCode: 1}
+		}
+		return nil, 0, protocol.CLIError{Code: "UNAVAILABLE", Message: "HTTP transport error.", ExitCode: 1}
+	}
+	defer response.Body.Close()
+
+	body, err := io.ReadAll(response.Body)
+	if err != nil {
+		return nil, response.StatusCode, protocol.CLIError{Code: "INTERNAL", Message: "Failed to read HTTP response body.", ExitCode: 1}
+	}
+
+	var payload map[string]any
+	if len(body) == 0 {
+		payload = map[string]any{}
+	} else if err := json.Unmarshal(body, &payload); err != nil {
+		return nil, response.StatusCode, protocol.CLIError{Code: "INTERNAL", Message: "Invalid JSON response.", ExitCode: 1}
+	}
+
+	if response.StatusCode >= 400 {
+		return nil, response.StatusCode, errorFromStatus(response.StatusCode, payload)
+	}
+
+	return payload, response.StatusCode, nil
+}
+
+func (c *Client) postJSON(path string, requestBody map[string]any) (map[string]any, int, error) {
+	encodedBody, err := json.Marshal(requestBody)
+	if err != nil {
+		return nil, 0, protocol.CLIError{Code: "INVALID_ARGS", Message: "Invalid request body.", ExitCode: 1}
+	}
+
+	request, err := nethttp.NewRequest(nethttp.MethodPost, c.baseURL+path, bytes.NewReader(encodedBody))
+	if err != nil {
+		return nil, 0, protocol.CLIError{Code: "INVALID_ARGS", Message: err.Error(), ExitCode: 1}
+	}
+	request.Header.Set("Content-Type", "application/json")
 
 	response, err := c.client.Do(request)
 	if err != nil {

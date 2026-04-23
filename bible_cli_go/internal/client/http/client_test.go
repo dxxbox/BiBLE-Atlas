@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	nethttp "net/http"
 	"net/http/httptest"
+	"strings"
 	"testing"
 	"time"
 
@@ -176,5 +177,128 @@ func TestHTTPTransportTimeoutMapsToTimeout(t *testing.T) {
 	}
 	if cliErr.Code != "TIMEOUT" {
 		t.Fatalf("expected TIMEOUT, got %q", cliErr.Code)
+	}
+}
+
+func TestSearchIncludesSkillAndMemoryHitsWhenEnabled(t *testing.T) {
+	server := httptest.NewServer(nethttp.HandlerFunc(func(w nethttp.ResponseWriter, r *nethttp.Request) {
+		switch r.URL.Path {
+		case "/api/v1/knowledge/search":
+			_ = json.NewEncoder(w).Encode(map[string]any{
+				"status": "ok",
+				"result": map[string]any{
+					"items": []any{map[string]any{"title": "k1"}},
+				},
+			})
+		case "/api/v1/skills/search":
+			if r.Method != nethttp.MethodPost {
+				t.Fatalf("expected POST for skills search, got %s", r.Method)
+			}
+			_ = json.NewEncoder(w).Encode(map[string]any{
+				"status": "ok",
+				"result": map[string]any{
+					"skills": []any{map[string]any{"name": "skill-a"}},
+				},
+			})
+		case "/api/v1/memory/search":
+			if r.Method != nethttp.MethodPost {
+				t.Fatalf("expected POST for memory search, got %s", r.Method)
+			}
+			_ = json.NewEncoder(w).Encode(map[string]any{
+				"status": "ok",
+				"result": map[string]any{
+					"items": []any{map[string]any{"memory_id": "m1"}},
+				},
+			})
+		default:
+			w.WriteHeader(nethttp.StatusNotFound)
+		}
+	}))
+	defer server.Close()
+
+	client := New(config.ClientConfig{BaseURL: server.URL, TimeoutSeconds: 2})
+	payload, err := client.Search(SearchOptions{
+		Query:     "faith",
+		TopK:      5,
+		EnableHit: true,
+		HitTypes:  []string{"skill", "memory"},
+	})
+	if err != nil {
+		t.Fatalf("expected no error, got %v", err)
+	}
+
+	if _, ok := payload["knowledge"]; !ok {
+		t.Fatalf("expected knowledge section in response")
+	}
+	if _, ok := payload["skill"]; !ok {
+		t.Fatalf("expected skill section in response")
+	}
+	if _, ok := payload["memory"]; !ok {
+		t.Fatalf("expected memory section in response")
+	}
+}
+
+func TestSearchHitFailureDoesNotBreakMainKnowledgeResult(t *testing.T) {
+	server := httptest.NewServer(nethttp.HandlerFunc(func(w nethttp.ResponseWriter, r *nethttp.Request) {
+		switch r.URL.Path {
+		case "/api/v1/knowledge/search":
+			_ = json.NewEncoder(w).Encode(map[string]any{
+				"status": "ok",
+				"result": map[string]any{
+					"items": []any{map[string]any{"title": "k1"}},
+				},
+			})
+		case "/api/v1/skills/search":
+			w.WriteHeader(nethttp.StatusInternalServerError)
+			_ = json.NewEncoder(w).Encode(map[string]any{
+				"status": "error",
+				"error": map[string]any{
+					"code":    "INTERNAL",
+					"message": "skill backend down",
+				},
+			})
+		case "/api/v1/memory/search":
+			_ = json.NewEncoder(w).Encode(map[string]any{
+				"status": "ok",
+				"result": map[string]any{
+					"items": []any{map[string]any{"memory_id": "m1"}},
+				},
+			})
+		default:
+			w.WriteHeader(nethttp.StatusNotFound)
+		}
+	}))
+	defer server.Close()
+
+	client := New(config.ClientConfig{BaseURL: server.URL, TimeoutSeconds: 2})
+	payload, err := client.Search(SearchOptions{
+		Query:     "faith",
+		TopK:      5,
+		EnableHit: true,
+		HitTypes:  []string{"skill", "memory"},
+	})
+	if err != nil {
+		t.Fatalf("expected no error, got %v", err)
+	}
+	if _, ok := payload["knowledge"]; !ok {
+		t.Fatalf("expected knowledge section in response")
+	}
+	if _, ok := payload["memory"]; !ok {
+		t.Fatalf("expected memory section in response")
+	}
+	if _, ok := payload["skill"]; ok {
+		t.Fatalf("did not expect skill section when skill hit fails")
+	}
+
+	warningsRaw, ok := payload["hit_warnings"]
+	if !ok {
+		t.Fatalf("expected hit warnings when skill hit fails")
+	}
+	warnings, ok := warningsRaw.([]string)
+	if !ok {
+		t.Fatalf("expected hit_warnings []string, got %T", warningsRaw)
+	}
+	if len(warnings) == 0 || !strings.Contains(warnings[0], "skill hit failed") {
+		t.Fatalf("expected skill failure warning, got %v", warnings)
 	}
 }

@@ -21,21 +21,28 @@ go run ./cmd/bible-cli --help
 ```bash
 cd bible_cli_go
 mkdir -p dist
-go build -buildvcs=false -o dist/bible-cli-go ./cmd/bible-cli
-./dist/bible-cli-go --help
+go build -buildvcs=false -o dist/bible ./cmd/bible-cli
+./dist/bible --help
 ```
 
 说明：`-buildvcs=false` 用于避免本地 VCS stamping 干扰构建。
 
+命令名约定：首选 `bible`；`bible-cli-go` 作为兼容别名保留。
+
 ## 3. 当前可用命令
 
 - `health`
+- `search --query <Q> [--top-k N] [--enable-hit] [--hit-types skill,memory]`
 - `system status`
 - `system info`
 - `knowledge list`
 - `knowledge search [query]`
 - `memory show`（已声明，暂未实现）
 - `skills list`（已声明，暂未实现）
+
+兼容别名约定：
+
+- `ls` 视为 `list` 的简写（如 `knowledge ls`、`skills ls`）。
 
 查看帮助：
 
@@ -61,18 +68,27 @@ go run ./cmd/bible-cli system info
 ### 4.3 知识库查询
 
 ```bash
+go run ./cmd/bible-cli search --query faith
+go run ./cmd/bible-cli search --query "C++ 内存泄漏" --top-k 5 --enable-hit
+go run ./cmd/bible-cli search --query "C++ 内存泄漏" --enable-hit --hit-types skill,memory
 go run ./cmd/bible-cli knowledge list
 go run ./cmd/bible-cli knowledge search
 go run ./cmd/bible-cli knowledge search faith
 ```
 
-参数说明：`knowledge search` 只接受一个可选参数 `query`。
+参数说明：
+
+- `search --query` 为顶层检索入口。
+- `--enable-hit` 打开附带检索；默认附带类型为 `skill,memory`。
+- `--hit-types` 可显式指定附带类型（当前支持：`skill,memory`）。
+- `knowledge search` 仍保留为兼容路径（仅接受一个可选参数 `query`）。
 
 ### 4.4 未实现命令
 
 ```bash
 go run ./cmd/bible-cli memory show
 go run ./cmd/bible-cli skills list
+go run ./cmd/bible-cli skills ls
 ```
 
 上述命令当前会返回 `CLI_NOT_IMPLEMENTED`，这是预期行为。
@@ -184,6 +200,12 @@ go run ./cmd/bible-cli system status
 
 - `system status` -> `/api/v1/system/status`，若 404 则回退 `/health`
 - `system info` -> `/api/v1/system/info`，若 404 则回退 `/info`
+- `search --query` -> `/api/v1/knowledge/search?query=...`
+- `search --enable-hit` 时附带调用：
+  - `POST /api/v1/skills/search`
+  - `POST /api/v1/memory/search`
+
+说明：附带检索分支失败不影响主检索；CLI 会在响应 `data.hit_warnings` 中返回降级信息。
 
 建议服务端返回 envelope：
 
@@ -209,8 +231,8 @@ go test ./...
 ```bash
 cd bible_cli_go
 mkdir -p dist
-GOOS=linux GOARCH=amd64 CGO_ENABLED=0 go build -buildvcs=false -o dist/bible-cli-go_linux_amd64 ./cmd/bible-cli
-GOOS=darwin GOARCH=arm64 CGO_ENABLED=0 go build -buildvcs=false -o dist/bible-cli-go_darwin_arm64 ./cmd/bible-cli
+GOOS=linux GOARCH=amd64 CGO_ENABLED=0 go build -buildvcs=false -o dist/bible_linux_amd64 ./cmd/bible-cli
+GOOS=darwin GOARCH=arm64 CGO_ENABLED=0 go build -buildvcs=false -o dist/bible_darwin_arm64 ./cmd/bible-cli
 ```
 
 ## 10. 参考文档

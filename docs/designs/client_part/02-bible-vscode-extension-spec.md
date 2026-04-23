@@ -33,7 +33,7 @@
 
 ## Part A：Go CLI
 
-> 命令前缀约定：本文命令示例使用 `bible ...` 表达语义；当前实际运行默认二进制名为 `bible-cli-go`，可通过 PATH alias 映射为 `bible`。
+> 命令前缀约定：本文命令示例使用 `bible ...`，并且默认二进制名为 `bible`；`bible-cli-go` 仅作为兼容别名保留。
 
 ### A1. 项目结构
 
@@ -181,6 +181,7 @@ func Load() (*Config, error) {
 当前 `bible_cli_go` 实际可用/占位命令如下：
 
 - `health`
+- `search --query <string> [--top-k <int>] [--enable-hit] [--hit-types skill,memory]`
 - `system status`
 - `system info`
 - `knowledge list`
@@ -193,15 +194,18 @@ func Load() (*Config, error) {
 1. 上述已存在子命令（含占位）后续统一按本规格收敛到目标命令模型。
 2. `skills list` 将收敛为 `skills ls`（可在迁移窗口保留 alias）。
 3. `knowledge search` 将收敛为顶层 `search`（可在迁移窗口保留 alias）。
-#### `bible search` — 知识库搜索，附带 skill 命中
+4. 简写与全写保持兼容：`ls` 等价 `list`。
+#### `bible search` — 知识库搜索，附带 skill/memory 命中（可降级）
 
 Server API：`POST /api/v1/search`
 
 ```
-bible search --query <string> [--top-k <int, default 5>] [--enable-hit]
+bible search --query <string> [--top-k <int, default 5>] [--enable-hit] [--hit-types <csv, default: skill,memory>]
 ```
 
-`--enable-hit`：附带关联 skill 搜索结果，`data.skill` 存在且非空。
+`--enable-hit`：附带关联命中结果。默认同时附带 `skill` 与 `memory`（等价 `--hit-types skill,memory`）。
+
+降级规则：附带检索分支（skill 或 memory）失败不影响主知识检索返回；失败分支写入 `data.hit_warnings`。
 
 ```json
 {
@@ -225,6 +229,14 @@ bible search --query <string> [--top-k <int, default 5>] [--enable-hit]
         "score": 0.87
       }
     ],
+    "memory": [
+      {
+        "memory_id": "mem-001",
+        "title": "CNI-12345 并发修复记录",
+        "abstract": "并发场景下 context 未初始化导致 NPE，建议入口判空。",
+        "score": 0.83
+      }
+    ],
     "total": 42,
     "query": "C++ 内存泄漏处理"
   }
@@ -240,6 +252,8 @@ Server API：`GET /api/v1/skills?page=N&limit=N&tag=TAG`
 ```
 bible skills ls [--page <int, default 1>] [--limit <int, default 20>] [--tag <string>]
 ```
+
+兼容说明：`bible skills list ...` 与 `bible skills ls ...` 等价。
 
 ```json
 {
@@ -571,8 +585,8 @@ bible-vscode/
       "properties": {
         "bible.cliPath": {
           "type": "string",
-          "default": "bible-cli-go",
-          "description": "Path to the bible CLI binary. Defaults to 'bible-cli-go' (resolved from PATH)."
+          "default": "bible",
+          "description": "Path to the bible CLI binary. Defaults to 'bible' (resolved from PATH)."
         }
       }
     },
@@ -592,8 +606,8 @@ bible-vscode/
       {
         "name": "bible_knowledge_search",
         "displayName": "Search Knowledge Base",
-        "modelDescription": "Semantically search the user's personal knowledge base. Returns ranked knowledge entries AND related skill metadata. When skill results are returned, consider using bible_skill_get to load skill instructions as additional context. Always call this before answering domain-specific questions.",
-        "userDescription": "Search bible knowledge base (includes related skills)",
+        "modelDescription": "Semantically search the user's personal knowledge base. Returns ranked knowledge entries and optional related skill/memory hits. When skill results are returned, consider using bible_skill_get to load skill instructions as additional context. Always call this before answering domain-specific questions.",
+        "userDescription": "Search bible knowledge base (includes related skill/memory hits)",
         "toolReferenceName": "bibleSearch",
         "canBeReferencedInPrompt": true,
         "tags": ["bible"],
@@ -603,7 +617,12 @@ bible-vscode/
           "properties": {
             "query":     { "type": "string",  "description": "Natural language search query" },
             "topK":      { "type": "number",  "description": "Max knowledge results to return (default 5)" },
-            "enableHit": { "type": "boolean", "description": "Whether to include related skill hits (default true)" }
+            "enableHit": { "type": "boolean", "description": "Whether to include related skill/memory hits (default true)" },
+            "hitTypes": {
+              "type": "array",
+              "description": "Optional hit types to include when enableHit=true. Defaults to ['skill','memory'].",
+              "items": { "type": "string", "enum": ["skill", "memory"] }
+            }
           },
           "required": ["query"]
         }
@@ -834,7 +853,7 @@ interface CliResponse<T> {
 export async function runCli<T>(args: string[]): Promise<T> {
   const cliPath = vscode.workspace
     .getConfiguration('bible')
-    .get<string>('cliPath', 'bible-cli-go');
+    .get<string>('cliPath', 'bible');
 
   let stdout: string;
   try {
@@ -898,6 +917,7 @@ interface Input {
   query: string;
   topK?: number;
   enableHit?: boolean;
+  hitTypes?: ('skill' | 'memory')[];
 }
 
 interface KnowledgeHit {
@@ -907,9 +927,14 @@ interface SkillHit {
   skill_id: string; name: string; description: string;
   author: string; tags: string[]; score: number;
 }
+interface MemoryHit {
+  memory_id: string; title: string; abstract: string; score: number;
+}
 interface SearchData {
   knowledge: KnowledgeHit[];
-  skill: SkillHit[];
+  skill?: SkillHit[];
+  memory?: MemoryHit[];
+  hit_warnings?: string[];
   total: number;
   query: string;
 }
@@ -919,9 +944,12 @@ export class KnowledgeSearchTool implements vscode.LanguageModelTool<Input> {
     options: vscode.LanguageModelToolInvocationOptions<Input>,
     _token: vscode.CancellationToken
   ): Promise<vscode.LanguageModelToolResult> {
-    const { query, topK = 5, enableHit = true } = options.input;
+    const { query, topK = 5, enableHit = true, hitTypes = ['skill', 'memory'] } = options.input;
     const args = ['search', '--query', query, '--top-k', String(topK)];
-    if (enableHit) args.push('--enable-hit');
+    if (enableHit) {
+      args.push('--enable-hit');
+      args.push('--hit-types', hitTypes.join(','));
+    }
 
     const data = await runCli<SearchData>(args);
     const parts: string[] = [];
@@ -941,6 +969,18 @@ export class KnowledgeSearchTool implements vscode.LanguageModelTool<Input> {
         const tagStr = s.tags.length ? ` [${s.tags.join(', ')}]` : '';
         parts.push(`- \`${s.name}\` (score: ${s.score.toFixed(2)}): ${s.description}${tagStr}`);
       });
+    }
+
+    if (data.memory?.length > 0) {
+      parts.push('\n**Related Memory:**');
+      data.memory.forEach(m => {
+        parts.push(`- **${m.title}** (score: ${m.score.toFixed(2)}): ${m.abstract}`);
+      });
+    }
+
+    if (data.hit_warnings?.length) {
+      parts.push('\n**Hit Warnings:**');
+      data.hit_warnings.forEach(w => parts.push(`- ${w}`));
     }
 
     return new vscode.LanguageModelToolResult([
@@ -1420,7 +1460,7 @@ export function registerCommands(context: vscode.ExtensionContext): void {
         async () => {
           try {
             const data = await runCli<any>([
-              'search', '--query', query, '--top-k', '5', '--enable-hit'
+              'search', '--query', query, '--top-k', '5', '--enable-hit', '--hit-types', 'skill,memory'
             ]);
             const items: vscode.QuickPickItem[] = [
               ...(data.knowledge ?? []).map((h: any) => ({
@@ -1432,6 +1472,11 @@ export function registerCommands(context: vscode.ExtensionContext): void {
                 label: `$(tools) [skill] ${s.name}`,
                 description: `score: ${s.score.toFixed(2)} — ${s.tags?.join(', ') ?? ''}`,
                 detail: s.description,
+              })),
+              ...(data.memory ?? []).map((m: any) => ({
+                label: `$(history) [memory] ${m.title}`,
+                description: `score: ${m.score.toFixed(2)}`,
+                detail: m.abstract ?? '',
               })),
             ];
             if (items.length === 0) {
@@ -1502,13 +1547,13 @@ const execFileAsync = promisify(execFile);
 export async function checkCliAvailable(): Promise<void> {
   const cliPath = vscode.workspace
     .getConfiguration('bible')
-    .get<string>('cliPath', 'bible-cli-go');
+    .get<string>('cliPath', 'bible');
 
   try {
     await execFileAsync(cliPath, ['--version'], { timeout: 5000 });
   } catch {
     const action = await vscode.window.showWarningMessage(
-      `Bible CLI not found${cliPath !== 'bible-cli-go' ? ` at "${cliPath}"` : ''}. ` +
+      `Bible CLI not found${cliPath !== 'bible' ? ` at "${cliPath}"` : ''}. ` +
       `Install it to enable bible tools in Copilot.`,
       'Installation Guide',
       'Set CLI Path'
@@ -1599,6 +1644,9 @@ export function deactivate(): void {}
 | `health` | `GET /api/v1/system/status` | 若 404 回退 `GET /health` |
 | `system status` | `GET /api/v1/system/status` | 若 404 回退 `GET /health` |
 | `system info` | `GET /api/v1/system/info` | 若 404 回退 `GET /info` |
+| `search --query <q>` | `GET /api/v1/knowledge/search?query=...` | 已实现（主检索） |
+| `search --enable-hit` | `POST /api/v1/skills/search` | 已实现（附带命中，失败可降级） |
+| `search --enable-hit` | `POST /api/v1/memory/search` | 已实现（附带命中，失败可降级） |
 | `knowledge list` | `GET /api/v1/knowledge/list` | 已实现 |
 | `knowledge search [query]` | `GET /api/v1/knowledge/search?query=...` | query 可选 |
 

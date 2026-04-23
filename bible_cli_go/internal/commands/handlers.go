@@ -33,6 +33,10 @@ func (d *Dispatcher) Handle(command string, action string, query string) (map[st
 	}
 }
 
+func (d *Dispatcher) Search(options clienthttp.SearchOptions) (map[string]any, error) {
+	return d.client.Search(options)
+}
+
 func (d *Dispatcher) handleSystem(action string) (map[string]any, error) {
 	switch action {
 	case "status":

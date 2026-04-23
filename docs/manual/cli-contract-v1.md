@@ -26,6 +26,7 @@
 
 - 参数错误统一为 `INVALID_ARGS`
 - 未实现命令保留 `CLI_NOT_IMPLEMENTED`（并保持 `exit=3`）
+- 子命令短写与长写需兼容（示例：`ls` 等价 `list`）
 
 ### 3.2 HTTP 映射关键规则
 
@@ -33,6 +34,13 @@
 - `501 -> SEV_NOT_IMPLEMENTED`
 - 超时对外主码统一为 `TIMEOUT`
 - `DEADLINE_EXCEEDED` 与 `TIMEOUT` 做兼容归一（输出层以 `TIMEOUT` 为主）
+
+### 3.3 `search --enable-hit` 契约
+
+- 顶层检索命令：`search --query <q> [--top-k N] [--enable-hit] [--hit-types skill,memory]`
+- 当设置 `--enable-hit` 且未显式指定 `--hit-types` 时，默认附带 `skill,memory`
+- 附带检索遵循降级策略：`skill` 或 `memory` 任一分支失败，不影响主检索成功返回
+- 发生降级时，在 `data.hit_warnings` 返回失败分支信息（调用方据此提示，不应将主请求判为失败）
 
 ## 4. 配置来源优先级
 
@@ -51,6 +59,7 @@
 4. 占位命令保持 `CLI_NOT_IMPLEMENTED` 且退出码 `3`。
 5. 配置可从 env/user/system 三层解析并有优先级。
 6. `go test ./...` 全通过，golden 用例被执行。
+7. `search --enable-hit` 默认附带 `skill,memory`，且附带分支失败时主检索仍成功并返回 `hit_warnings`。
 
 ## 6. 验收记录（2026-04-23）
 
@@ -70,6 +79,9 @@
 - 门槛 6（全量测试 + golden）：
 	- `go test ./...` 通过。
 	- `testdata/golden` 已包含新增用例：`success`、`invalid-args`、`not-found-404`、`server-5xx`、`timeout`、`cli-not-implemented`。
+- 门槛 7（search hit 默认值与降级）：
+	- `internal/client/http`：`TestSearchIncludesSkillAndMemoryHitsWhenEnabled` 与 `TestSearchHitFailureDoesNotBreakMainKnowledgeResult` 通过。
+	- `internal/cli`：`TestRunSearchEnableHitReturnsKnowledgeAndMemoryWhenSkillFails` 通过。
 
 ## 7. 关联文档
 

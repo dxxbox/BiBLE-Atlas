@@ -170,6 +170,132 @@ func TestRunSkillsListNotImplemented(t *testing.T) {
 	}
 }
 
+func TestRunSkillsLsAliasMatchesListNotImplemented(t *testing.T) {
+	var out bytes.Buffer
+	var err bytes.Buffer
+
+	exitCode := Run([]string{"skills", "ls"}, &out, &err)
+	if exitCode != 3 {
+		t.Fatalf("expected exit code 3, got %d", exitCode)
+	}
+	response := decodeRunResponse(t, out.String())
+	if response.Error == nil || response.Error.Code != "CLI_NOT_IMPLEMENTED" {
+		t.Fatalf("expected CLI_NOT_IMPLEMENTED response, got %q", out.String())
+	}
+	if !strings.Contains(response.Error.Message, "skills list") {
+		t.Fatalf("expected alias to normalize to skills list, got %q", response.Error.Message)
+	}
+}
+
+func TestRunKnowledgeLsAliasMapsToKnowledgeList(t *testing.T) {
+	server := httptest.NewServer(nethttp.HandlerFunc(func(w nethttp.ResponseWriter, r *nethttp.Request) {
+		switch r.URL.Path {
+		case "/api/v1/knowledge/list":
+			_ = json.NewEncoder(w).Encode(map[string]any{
+				"status": "ok",
+				"result": map[string]any{"count": 1},
+			})
+		default:
+			w.WriteHeader(nethttp.StatusNotFound)
+		}
+	}))
+	defer server.Close()
+
+	t.Setenv("BIBLE_CLI_BASE_URL", server.URL)
+
+	var out bytes.Buffer
+	var err bytes.Buffer
+	exitCode := Run([]string{"knowledge", "ls"}, &out, &err)
+	if exitCode != 0 {
+		t.Fatalf("expected exit code 0, got %d", exitCode)
+	}
+	response := decodeRunResponse(t, out.String())
+	if !response.OK {
+		t.Fatalf("expected ok=true response, got %q", out.String())
+	}
+	dataMap, ok := response.Data.(map[string]any)
+	if !ok {
+		t.Fatalf("expected object data payload, got %T", response.Data)
+	}
+	if dataMap["count"] != float64(1) {
+		t.Fatalf("expected count 1, got %v", dataMap["count"])
+	}
+}
+
+func TestRunSearchRequiresQueryFlag(t *testing.T) {
+	var out bytes.Buffer
+	var err bytes.Buffer
+
+	exitCode := Run([]string{"search"}, &out, &err)
+	if exitCode != 1 {
+		t.Fatalf("expected exit code 1, got %d", exitCode)
+	}
+	response := decodeRunResponse(t, out.String())
+	if response.Error == nil || response.Error.Code != "INVALID_ARGS" {
+		t.Fatalf("expected INVALID_ARGS response, got %q", out.String())
+	}
+}
+
+func TestRunSearchEnableHitReturnsKnowledgeAndMemoryWhenSkillFails(t *testing.T) {
+	server := httptest.NewServer(nethttp.HandlerFunc(func(w nethttp.ResponseWriter, r *nethttp.Request) {
+		switch r.URL.Path {
+		case "/api/v1/knowledge/search":
+			_ = json.NewEncoder(w).Encode(map[string]any{
+				"status": "ok",
+				"result": map[string]any{
+					"items": []any{map[string]any{"title": "k1"}},
+				},
+			})
+		case "/api/v1/skills/search":
+			w.WriteHeader(nethttp.StatusServiceUnavailable)
+			_ = json.NewEncoder(w).Encode(map[string]any{
+				"status": "error",
+				"error": map[string]any{
+					"code":    "UNAVAILABLE",
+					"message": "skill service down",
+				},
+			})
+		case "/api/v1/memory/search":
+			_ = json.NewEncoder(w).Encode(map[string]any{
+				"status": "ok",
+				"result": map[string]any{
+					"items": []any{map[string]any{"memory_id": "m1"}},
+				},
+			})
+		default:
+			w.WriteHeader(nethttp.StatusNotFound)
+		}
+	}))
+	defer server.Close()
+
+	t.Setenv("BIBLE_CLI_BASE_URL", server.URL)
+
+	var out bytes.Buffer
+	var err bytes.Buffer
+	exitCode := Run([]string{"search", "--query", "faith", "--enable-hit"}, &out, &err)
+	if exitCode != 0 {
+		t.Fatalf("expected exit code 0, got %d, stderr=%q", exitCode, err.String())
+	}
+
+	response := decodeRunResponse(t, out.String())
+	if !response.OK {
+		t.Fatalf("expected ok=true response, got %q", out.String())
+	}
+	dataMap, ok := response.Data.(map[string]any)
+	if !ok {
+		t.Fatalf("expected object data payload, got %T", response.Data)
+	}
+	if _, exists := dataMap["knowledge"]; !exists {
+		t.Fatalf("expected knowledge payload in search response")
+	}
+	if _, exists := dataMap["memory"]; !exists {
+		t.Fatalf("expected memory payload in search response")
+	}
+	if _, exists := dataMap["skill"]; exists {
+		t.Fatalf("did not expect skill payload when skill hit fails")
+	}
+}
+
 func TestRunLegacyStderrCompatibility(t *testing.T) {
 	t.Setenv("BIBLE_CLI_LEGACY_STDERR", "1")
 
