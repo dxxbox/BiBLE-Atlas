@@ -23,6 +23,9 @@ jobs:
       os_json: '["ubuntu-24.04"]'
       python_json: '["3.10", "3.11", "3.12"]'
 
+  go-cli:
+    uses: ./.github/workflows/_go_cli.yml
+
   check-dependencies:
     runs-on: ubuntu-24.04
     steps:

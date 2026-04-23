@@ -1,0 +1,91 @@
+name: 13. _Go CLI Checks
+
+on:
+  workflow_call:
+  workflow_dispatch:
+
+jobs:
+  go-test:
+    runs-on: ubuntu-24.04
+    steps:
+    - uses: actions/checkout@v6
+
+    - name: Set up Go
+      uses: actions/setup-go@v6
+      with:
+        go-version-file: bible_cli_go/go.mod
+
+    - name: Run go vet
+      working-directory: bible_cli_go
+      run: |
+        go vet ./...
+
+    - name: Run staticcheck (if available)
+      working-directory: bible_cli_go
+      run: |
+        if command -v staticcheck >/dev/null 2>&1; then
+          staticcheck ./...
+        else
+          echo "staticcheck not available; skipping"
+        fi
+
+    - name: Run Go tests
+      working-directory: bible_cli_go
+      run: |
+        go test ./...
+
+    - name: Run contract regression
+      working-directory: bible_cli_go
+      run: |
+        set -euo pipefail
+        mkdir -p ../.ci-artifacts/contract
+
+        go test ./internal/cli -run 'TestRunGoldenScenarios|TestRunUnknownCommand|TestRunSkillsListNotImplemented' -v | tee ../.ci-artifacts/contract/cli-contract.txt
+        go test ./internal/client/http -run 'TestErrorEnvelopeMapsToCLIError|TestErrorEnvelopeFor501ForcesSEVNotImplemented|TestTimeoutCompatibilityCodeNormalization|TestHTTPTransportTimeoutMapsToTimeout' -v | tee ../.ci-artifacts/contract/http-contract.txt
+        go test ./internal/config -run 'TestLoadResolvedConfigDefaults|TestLoadResolvedConfigPrioritySystemUserEnv|TestLoadResolvedConfigUsesAtlasFallback|TestLoadResolvedConfigInvalidValuesFallback' -v | tee ../.ci-artifacts/contract/config-contract.txt
+
+    - name: Upload contract regression reports
+      uses: actions/upload-artifact@v4
+      with:
+        name: go-cli-contract-report
+        path: .ci-artifacts/contract/
+        if-no-files-found: error
+
+  go-build:
+    runs-on: ubuntu-24.04
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - goos: linux
+            goarch: amd64
+            output: bible-cli-go_linux_amd64
+          - goos: darwin
+            goarch: arm64
+            output: bible-cli-go_darwin_arm64
+          - goos: windows
+            goarch: amd64
+            output: bible-cli-go_windows_amd64.exe
+    steps:
+    - uses: actions/checkout@v6
+
+    - name: Set up Go
+      uses: actions/setup-go@v6
+      with:
+        go-version-file: bible_cli_go/go.mod
+
+    - name: Build binary
+      working-directory: bible_cli_go
+      env:
+        GOOS: ${{ matrix.goos }}
+        GOARCH: ${{ matrix.goarch }}
+        CGO_ENABLED: 0
+      run: |
+        mkdir -p dist
+        go build -buildvcs=false -trimpath -ldflags="-s -w" -o "dist/${{ matrix.output }}" ./cmd/bible-cli
+
+    - name: Upload artifacts
+      uses: actions/upload-artifact@v4
+      with:
+        name: ${{ matrix.output }}
+        path: bible_cli_go/dist/${{ matrix.output }}

@@ -1,0 +1,1 @@
+Error[CLI_NOT_IMPLEMENTED]: Command 'skills list' is not implemented yet.
