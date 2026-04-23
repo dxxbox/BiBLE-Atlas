@@ -44,6 +44,7 @@ overview: 面向 VSCode/Cursor 插件调用场景，规划以 Go 对现有 `bibl
 4. 配置加载已实现 `env > user > system > default`，并保留 `BIBLE_ATLAS_*` 回退。
 5. golden 场景已补齐（success / invalid args / 404 / 5xx / timeout / cli not implemented）。
 6. CI 已接入 `go vet`、可选 `staticcheck`、并增加 `windows-amd64` 构建。
+7. 顶层 `search --query` 与 `--enable-hit` 已落地；默认附带 `skill,memory`，并实现“附带分支失败不阻断主检索”的降级语义（通过 `hit_warnings` 暴露分支失败信息）。
 
 未完成（后续阶段）：
 
@@ -313,7 +314,7 @@ bible_cli_go/
 
 ### 9.3 产物规范
 
-1. 二进制命名统一：`bible-cli-go_<os>_<arch>`。
+1. 二进制命名统一：`bible_<os>_<arch>`（并保留 `bible-cli-go_<os>_<arch>` 兼容别名产物）。
 2. 每个产物附带 `sha256sum` 文件。
 3. 发布附命令兼容变更说明。
 

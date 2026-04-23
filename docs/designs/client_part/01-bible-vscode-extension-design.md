@@ -95,12 +95,13 @@
 - 用户独立安装和升级，不依赖 VSCode Extension 的发布周期
 - 未来在其他平台（终端工作流、Raycast、CI/CD）复用同一个 CLI，无需适配
 
-**分发策略：** 用户通过包管理器（Homebrew tap、`go install`、GitHub Releases）独立安装。默认可执行名为 `bible-cli-go`（建议通过 `PATH` 提供），`bible` 可作为可选别名。Extension 通过 `PATH` 查找或 `bible.cliPath` 配置项定位二进制。
+**分发策略：** 用户通过包管理器（Homebrew tap、`go install`、GitHub Releases）独立安装。默认可执行名为 `bible`（建议通过 `PATH` 提供），`bible-cli-go` 作为兼容别名保留。Extension 通过 `PATH` 查找或 `bible.cliPath` 配置项定位二进制。
 
 **可执行名约定（当前）**：
-- 默认：`bible-cli-go`
-- 可选别名：`bible`
-- 文档示例中的 `bible ...` 表示命令语义，实际运行时可替换为 `bible-cli-go ...`
+- 默认：`bible`
+- 兼容别名：`bible-cli-go`
+- 文档示例中的 `bible ...` 为首选调用方式
+- 子命令短写兼容：`ls` 视为 `list` 简写（例如 `skills ls` 等价 `skills list`）
 
 **不选 Python/Node.js 的原因：** Python 需要 virtualenv 或 pipx，跨平台分发体验差；Node.js 单文件打包（pkg/ncc）在 Windows 上有已知问题，且体积大。
 
@@ -176,7 +177,9 @@ tags: [cpp, memory, analysis]      # 可选，辅助过滤和检索
 
 ### 4.4 被动搜索设计
 
-知识库检索（`bible search --enable-hit`）自动附带 skill 命中结果，单独设置 `top_k` 和 `threshold`，skill 搜索失败不影响主检索返回。这意味着用户在做知识查询时，agent 会自动获知哪些 skill 可能有用，无需再额外调用一次搜索。
+知识库检索统一使用顶层命令 `bible search --query <Q>`。当启用 `--enable-hit` 时，默认同时附带 `skill` 与 `memory` 两类命中（默认 `--hit-types=skill,memory`）。
+
+附带检索遵循降级原则：`skill` 或 `memory` 任一分支失败，不影响主知识检索返回；CLI 在结果中附带 `hit_warnings` 说明失败分支，调用方可继续消费主结果与其余成功命中。
 
 ---
 
@@ -200,18 +203,20 @@ vscode.lm.registerTool('bible_knowledge_search', new KnowledgeSearchTool())
 
 所有 CLI 命令（交互式命令除外）均有对应 VSCode 工具：
 
-| 工具名 | 对应 CLI 命令 | 类型 | 是否需要确认 |
-|---|---|---|---|
-| `bible_knowledge_search` | `bible search --query Q [--enable-hit]` | 只读 | 否 |
-| `bible_skill_list` | `bible skills ls [--tag TAG]` | 只读 | 否 |
-| `bible_skill_search` | `bible skills search --query Q` | 只读 | 否 |
-| `bible_skill_get` | `bible skills get <name> --content` | 只读 | 否 |
-| `bible_skill_upload` | `bible skills upload --file PATH` | 写 | 是 |
-| `bible_skill_download` | `bible skills download <name>` | 写（本地文件） | 是 |
-| `bible_session_list` | `bible session list [--limit N]` | 只读 | 否 |
-| `bible_session_get` | `bible session get --id ID` | 只读 | 否 |
-| `bible_session_save` | `bible session save --input JSON` | 写 | 是 |
-| `bible_data_delete` | `bible data delete --key KEY [--hard]` | 写 | 是 |
+| 工具名 | 对应 CLI 命令 | 类型 | 是否需要确认 | Status |
+|---|---|---|---|---|
+| `bible_knowledge_search` | `bible search --query Q [--top-k N] [--enable-hit] [--hit-types skill,memory]` | 只读 | 否 | Planned |
+| `bible_skill_list` | `bible skills ls [--tag TAG]` | 只读 | 否 | Planned |
+| `bible_skill_search` | `bible skills search --query Q` | 只读 | 否 | Planned |
+| `bible_skill_get` | `bible skills get <name> --content` | 只读 | 否 | Planned |
+| `bible_skill_upload` | `bible skills upload --file PATH` | 写 | 是 | Planned |
+| `bible_skill_download` | `bible skills download <name>` | 写（本地文件） | 是 | Planned |
+| `bible_session_list` | `bible session list [--limit N]` | 只读 | 否 | Planned |
+| `bible_session_get` | `bible session get --id ID` | 只读 | 否 | Planned |
+| `bible_session_save` | `bible session save --input JSON` | 写 | 是 | Planned |
+| `bible_data_delete` | `bible data delete --key KEY [--hard]` | 写 | 是 | Planned |
+
+说明：本表命令优先使用简写风格（如 `skills ls`）；CLI 兼容全写别名（如 `skills list`）。
 
 ### 5.3 工具调用确认规则
 
@@ -388,7 +393,7 @@ bible_session_save.invoke()
 
 | 阶段 | 交付物 | 验收标准 |
 |---|---|---|
-| **M0** | Go CLI 骨架：search/skills/session/data 所有命令框架，统一 JSON 输出 | `bible-cli-go search --query test` 返回合法 JSON；`bible-cli-go --help` 列出所有子命令 |
+| **M0** | Go CLI 骨架：search/skills/session/data 所有命令框架，统一 JSON 输出 | `bible search --query test` 返回合法 JSON；`bible --help` 列出所有子命令 |
 | **M1** | VSCode Extension 骨架：10 个工具注册，`bible_knowledge_search` 端到端工作 | 在 Copilot agent mode 里，agent 能自动调用 `bible_knowledge_search` 并得到知识库结果 |
 | **M2** | Skill 读取链路：`bible_skill_list`、`bible_skill_search`、`bible_skill_get`、`bible_skill_download` | 从 agent 说"查找内存相关的 skill"到完整读取 SKILL.md 内容全部可用 |
 | **M3** | Skill 写入链路：`bible_skill_upload`（含确认）；VSCode 命令 `bible.uploadSkill` | 工具和命令两路均可上传 `.skill` 包，同名覆盖有提示 |

@@ -60,13 +60,19 @@ jobs:
         include:
           - goos: linux
             goarch: amd64
-            output: bible-cli-go_linux_amd64
+            output: bible_linux_amd64
+            legacy_output: bible-cli-go_linux_amd64
+            package_suffix: linux_amd64
           - goos: darwin
             goarch: arm64
-            output: bible-cli-go_darwin_arm64
+            output: bible_darwin_arm64
+            legacy_output: bible-cli-go_darwin_arm64
+            package_suffix: darwin_arm64
           - goos: windows
             goarch: amd64
-            output: bible-cli-go_windows_amd64.exe
+            output: bible_windows_amd64.exe
+            legacy_output: bible-cli-go_windows_amd64.exe
+            package_suffix: windows_amd64
     steps:
     - uses: actions/checkout@v6
 
@@ -75,6 +81,16 @@ jobs:
       with:
         go-version-file: bible_cli_go/go.mod
         cache-dependency-path: bible_cli_go/go.mod
+
+    - name: Resolve build version
+      id: version
+      run: |
+        if [[ "${GITHUB_REF_TYPE}" == "tag" ]]; then
+          VERSION="${GITHUB_REF_NAME}"
+        else
+          VERSION="dev-${GITHUB_SHA::7}"
+        fi
+        echo "version=${VERSION}" >> "${GITHUB_OUTPUT}"
 
     - name: Build binary
       working-directory: bible_cli_go
@@ -85,9 +101,39 @@ jobs:
       run: |
         mkdir -p dist
         go build -buildvcs=false -trimpath -ldflags="-s -w" -o "dist/${{ matrix.output }}" ./cmd/bible-cli
+        cp -f "dist/${{ matrix.output }}" "dist/${{ matrix.legacy_output }}"
 
-    - name: Upload artifacts
+    - name: Package versioned archive
+      id: package
+      working-directory: bible_cli_go
+      run: |
+        set -euo pipefail
+        VERSION="${{ steps.version.outputs.version }}"
+        SUFFIX="${{ matrix.package_suffix }}"
+        mkdir -p dist/packages
+        if [[ "${{ matrix.goos }}" == "windows" ]]; then
+          PACKAGE_FILE="bible_${VERSION}_${SUFFIX}.zip"
+          zip -q -j "dist/packages/${PACKAGE_FILE}" "dist/${{ matrix.output }}"
+        else
+          PACKAGE_FILE="bible_${VERSION}_${SUFFIX}.tar.gz"
+          tar -C dist -czf "dist/packages/${PACKAGE_FILE}" "${{ matrix.output }}"
+        fi
+        echo "file=${PACKAGE_FILE}" >> "${GITHUB_OUTPUT}"
+
+    - name: Upload primary artifacts
       uses: actions/upload-artifact@v4
       with:
         name: ${{ matrix.output }}
         path: bible_cli_go/dist/${{ matrix.output }}
+
+    - name: Upload legacy-compatible artifacts
+      uses: actions/upload-artifact@v4
+      with:
+        name: ${{ matrix.legacy_output }}
+        path: bible_cli_go/dist/${{ matrix.legacy_output }}
+
+    - name: Upload versioned package
+      uses: actions/upload-artifact@v4
+      with:
+        name: ${{ steps.package.outputs.file }}
+        path: bible_cli_go/dist/packages/${{ steps.package.outputs.file }}
