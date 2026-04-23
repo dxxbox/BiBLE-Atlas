@@ -14,6 +14,7 @@ jobs:
       uses: actions/setup-go@v6
       with:
         go-version-file: bible_cli_go/go.mod
+        cache-dependency-path: bible_cli_go/go.mod
 
     - name: Run go vet
       working-directory: bible_cli_go
@@ -73,6 +74,7 @@ jobs:
       uses: actions/setup-go@v6
       with:
         go-version-file: bible_cli_go/go.mod
+        cache-dependency-path: bible_cli_go/go.mod
 
     - name: Build binary
       working-directory: bible_cli_go
