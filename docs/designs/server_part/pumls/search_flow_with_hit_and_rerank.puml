@@ -1,6 +1,5 @@
 @startuml search_flow_with_hit_and_rerank
-title 通用检索流程（CODE / SCT / BUILD / SKILL / …）
-note "MEMORY 独立链路见 memory_search_flow.puml\nPOST /api/v1/memory/search" as MEMORY_NOTE
+title 通用检索流程（CODE / SCT / BUILD / SKILL / MEMORY /…）
 
 |Client|
 start

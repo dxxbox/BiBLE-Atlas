@@ -1,142 +1,35 @@
 @startuml memory_import_flow
-title MEMORY 导入 — 文件 / 类 / 函数调用链
+title MEMORY 导入流程（独立链路）
 
 |Client|
 start
-:POST /api/v1/memory/import\nmultipart/form-data:\n  files[]: message.json, meta.json\n  memory_id?: str (可选，校验用);
+:POST /api/v1/memory/import\nmultipart/form-data: files[message.json, meta.json], memory_id?;
 
 |app/api/v1/memory_api.py|
-:async def import_memory(\n    files: list[UploadFile],\n    memory_id: Optional[str] = Form(None),\n    service: MemoryImportService = Depends(...)\n) -> MemoryImportAcceptedResponse;
+:memory_api.import_memory(files, memory_id)\n→ 文件预检（个数/MIME/大小）\n→ MemoryImportService.import_memory(files, memory_id);
 
 note right
-  文件预检（在 service 之前）：
-  • 两文件必须同时存在 → 400
-  • Content-Type: application/json → 400
-  • message.json ≤ max_raw_file_size_mb → 413
-end note
-
-if (预检失败?) then (是)
-  :返回 400 / 413;
-  stop
-endif
-
-:service.import_memory(files, memory_id_hint=memory_id);
-
-|features/memory/memory_import_service.py|
-:class MemoryImportService:\n  async def import_memory(\n      files: list[UploadFile],\n      memory_id_hint: Optional[str]\n  ) -> MemoryImportAcceptedResponse;
-
-:读取文件字节流\nmessage_bytes, meta_bytes = await read_files(files)\nmessage_json = json.loads(message_bytes)\nmeta_json    = json.loads(meta_bytes);
-
-if (JSON 解析失败?) then (是)
-  :raise MemoryValidationError(MEMORY_INVALID_JSON) → 400;
-  stop
-endif
-
-|features/memory/validator.py|
-:result = validate_memory_bundle(\n    message_json: dict,\n    meta_json: dict,\n    memory_id_hint: Optional[str]\n) -> MemoryBundleValidationResult;
-
-note right
-  校验规则（任一失败 → errors 非空）：
-  • message_json["memory_id"] 非空
-  • meta_json["memory_id"] == message_json["memory_id"]
-  • message_json["messages"] 非空数组
-  • 每条 message 有合法 role + 非空 content
-  • meta_json["title"] 非空
-  • 若提供 memory_id_hint，需与文件内一致
-  warnings（不阻塞）：时间一致性，raw_message_count 一致性
+  预检失败：
+  - 缺文件 / 非 JSON → 400
+  - message.json 超 max_raw_file_size_mb → 413
 end note
 
 |features/memory/memory_import_service.py|
-if (result.errors 非空?) then (是)
-  :raise MemoryValidationError(result.errors) → 400;
-  stop
-endif
-
-|features/memory/storage_mapper.py|
-:layout = build_memory_storage_layout(\n    memory_id: str,\n    base_upload_dir: str   # 从配置读取\n) -> MemoryStorageLayout;
+:MemoryImportService.import_memory(files, memory_id)\n① 读字节流 + json.loads → message_json, meta_json\n② validator.validate_memory_bundle(...) → errors / warnings\n③ storage_mapper.build_memory_storage_layout(memory_id) → MemoryStorageLayout\n④ MemoryUploadRepository.store(msg_bytes, meta_bytes, layout) → StoredMemoryBundle\n⑤ metadata_normalizer.normalize_memory_metadata(meta_json, bundle) → MemoryMetadataPayload\n⑥ index_document_builder.build_memory_import_documents(payload, message_json) → MemoryImportDocuments\n⑦ document_manager.bulk_import(bible_atlas_memory / _chunks)\n⑧ memory_ai_extraction_task.apply_async(memory_id, message_json_path);
 
 note right
-  MemoryStorageLayout:
-    base_dir          = /app/uploads/memory/{memory_id}/
-    message_json_path = .../message.json
-    meta_json_path    = .../meta.json
-    storage_path_ref  = memory://files/{memory_id}
-  纯路径规划，不做 IO
-end note
-
-|features/memory/repositories/memory_upload_repository.py|
-:bundle = MemoryUploadRepository.store(\n    message_content: bytes,\n    meta_content: bytes,\n    storage_layout: MemoryStorageLayout\n) -> StoredMemoryBundle;
-
-note right
-  StoredMemoryBundle:
-    memory_id, storage_layout
-    message_json_bytes, meta_json_bytes
-    message_checksum (SHA-256), meta_checksum
-    stored_at: datetime
-  原子写：tmpfile → rename，失败 → MemoryStorageError → 500
-end note
-
-|features/memory/metadata_normalizer.py|
-:payload = normalize_memory_metadata(\n    meta_json: dict,\n    stored_bundle: StoredMemoryBundle\n) -> MemoryMetadataPayload;
-
-note right
-  MemoryMetadataPayload 关键字段：
-    memory_id, title, abstract, overview
-    task_ids（大写规范化）, feature_tags
-    domain_tags, component_tags
-    storage_path_ref, raw_message_count
-    ai_tags_extracted = False
-  abstract fallback：若缺失截取 overview 前 500 字符
-end note
-
-|features/memory/memory_import_service.py|
-if (abstract + overview 均缺失?) then (是)
-  :raise MemoryValidationError(MEMORY_MISSING_SUMMARY_TEXT) → 422\n(文件已落盘，client 修正 meta.json 后可重试);
-  stop
-endif
-
-|features/memory/index_document_builder.py|
-:docs = build_memory_import_documents(\n    payload: MemoryMetadataPayload,\n    message_json: dict\n) -> MemoryImportDocuments;
-
-note right
-  MemoryImportDocuments:
-    memory_doc  → bible_atlas_memory
-      fields: memory_id, document_key, title, abstract
-              overview, task_ids, feature_tags
-              domain_tags, component_tags, participants
-              storage_path_ref, raw_message_count
-              abstract_vector  ← embed(abstract)
-    message_chunks → bible_atlas_memory_chunks
-      abstract chunk  (source="abstract")
-      overview chunk  (source="overview", 若存在)
-      messages[] 按 500 tokens 切分，每条 chunk:
-        chunk_id, memory_id, document_key
-        message_id, role, source="message"
-        content, content_vector, chunk_index, token_count
-  ⛔ 禁止将完整 message.json 写入任何索引字段
-end note
-
-|infrastructure/opensearch/document_manager.py|
-:document_manager.bulk_import(\n    index_name="bible_atlas_memory",\n    docs=[memory_doc]\n);
-:document_manager.bulk_import(\n    index_name="bible_atlas_memory_chunks",\n    docs=message_chunks\n);
-
-|tasks/memory_ai_extraction.py  [Celery — fire & forget]|
-:memory_ai_extraction_task.apply_async(\n    args=[memory_id, layout.message_json_path]\n);
-
-note right
-  memory_ai_extraction_task(memory_id, message_json_path):
-    1. 读取 message.json 前 50 条消息
-    2. build_extraction_prompt(messages) → prompt
-    3. AI 模型调用 → {domain_tags, feature_tags,
-                       component_tags, task_ids}
-    4. merge_and_update_tags(existing, ai_tags) → merged
-    5. OpenSearch update：写回标签字段
-       ai_tags_extracted=True, ai_tags_extracted_at=now()
-  失败自动重试 3 次
+  任一错误码触发拒绝：
+  - MEMORY_INVALID_JSON (400)
+  - MEMORY_ID_MISMATCH / _EMPTY_MESSAGES / _MISSING_TITLE (400)
+  - MEMORY_MISSING_SUMMARY_TEXT (422，文件已落盘)
+  - MemoryStorageError (500)
 end note
 
 |app/api/v1/memory_api.py|
-:return 202 MemoryImportAcceptedResponse(\n    task_id, memory_id, status="processing",\n    accepted_files=["message.json","meta.json"],\n    warnings=result.warnings\n);
+:202 MemoryImportAcceptedResponse\n(task_id, memory_id, accepted_files, warnings);
+
+|tasks/memory_ai_extraction.py  [Celery]|
+:memory_ai_extraction_task(memory_id, message_json_path)\n→ 读前 50 条消息 → AI 提取 {domain_tags, feature_tags, component_tags, task_ids}\n→ merge_and_update_tags + OpenSearch update\n→ ai_tags_extracted=True;
 
 |Client|
 :GET /api/v1/tasks/{task_id}  → 轮询完成;
