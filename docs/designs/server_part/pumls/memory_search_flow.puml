@@ -1,133 +1,35 @@
 @startuml memory_search_flow
-title MEMORY 检索 — 文件 / 类 / 函数调用链
+title MEMORY 检索流程（独立链路）
 
 |Client|
 start
-:POST /api/v1/memory/search\n{\n  "query": "CNI-12345 allocate NPE",\n  "search_type": "hybrid",\n  "top_k": 10,\n  "filters": {\n    "task_ids": ["CNI-12345"],\n    "feature_tags": ["cni"],\n    "created_after": "2026-01-01T00:00:00Z"\n  },\n  "include_raw_preview": false\n};
+:POST /api/v1/memory/search\n{query, search_type, top_k, filters, include_raw_preview};
 
 |app/api/v1/memory_api.py|
-:async def search_memory(\n    req: MemorySearchRequest,\n    service: MemorySearchService = Depends(...)\n) -> MemorySearchResponse;
-
-note right
-  MemorySearchRequest (Pydantic):
-    query: str
-    search_type: Literal["keyword","vector","hybrid"]  default "hybrid"
-    top_k: int  default 10
-    filters: MemorySearchFilters (可选)
-    include_raw_preview: bool  default False
-end note
-
-if (Pydantic 校验失败?) then (是)
-  :返回 422;
-  stop
-endif
-
-:service.search(req);
+:memory_api.search_memory(req)\n→ Pydantic 校验 MemorySearchRequest\n→ MemorySearchService.search(req);
 
 |features/memory/memory_search_service.py|
-:class MemorySearchService:\n  def search(\n      req: MemorySearchRequest\n  ) -> MemorySearchResponse;
-
-if (req.search_type in ["vector","hybrid"]?) then (是)
-  :query_vector = VectorTool.embed(\n      text=req.query,\n      model=config.default_vector_model\n  ) -> list[float];
-else (否)
-  :query_vector = None;
-endif
-
-:memory_hits, message_hits =\n  self.repository.search(\n      req=req, query_vector=query_vector\n  );
+:MemorySearchService.search(req)\n① 若 search_type ∈ {vector, hybrid}：VectorTool.embed(query) → query_vector\n② MemorySearchRepository.search(req, query_vector) → (memory_hits, message_hits)\n③ result_mapper.map_memory_hits(memory_hits, message_hits, include_raw_preview) → list[MemorySearchItem]\n④ 封装 MemorySearchResponse;
 
 |features/memory/repositories/memory_search_repository.py|
-:class MemorySearchRepository:\n  def search(\n      req: MemorySearchRequest,\n      query_vector: Optional[list[float]]\n  ) -> tuple[list[RawHit], list[RawHit]];
-
-|features/memory/filters.py|
-:filters = normalize_memory_filters(\n    raw: MemorySearchFilters\n) -> NormalizedMemoryFilters;
+:MemorySearchRepository.search(req, query_vector)\n→ filters.normalize_memory_filters(req.filters) → NormalizedMemoryFilters\n→ query_builder.detect_task_id_in_query(req.query) → auto_task_ids\n→ query_builder.build_memory_query_spec(query, search_type, filters, top_k) → MemoryQuerySpec\n→ _build_memory_dsl(spec, query_vector) → dsl\n→ SearchClient.search("bible_atlas_memory", dsl) → memory_hits\n→ [enable_message_level] _build_message_dsl + SearchClient.search("bible_atlas_memory_chunks") → message_hits;
 
 note right
-  NormalizedMemoryFilters:
-    task_ids: list[str]  ← 大写规范化 cni-12345→CNI-12345
-    feature_tags: list[str]
-    created_after / created_before: Optional[datetime]
-  未知字段静默忽略，时间解析失败记 warning
-end note
-
-|features/memory/query_builder.py|
-:auto_task_ids = detect_task_id_in_query(\n    query: str\n) -> list[str];
-
-note right
-  从 query 文本中 regex 匹配 [A-Z]+-\d+ 格式任务号
-  追加到 filters.task_ids 做 terms 精确匹配兜底
-end note
-
-:spec = build_memory_query_spec(\n    query: str,\n    search_type: str,\n    filters: NormalizedMemoryFilters,\n    top_k: int\n) -> MemoryQuerySpec;
-
-note right
-  MemoryQuerySpec:
-    title_boost=3.0, abstract_boost=2.0, overview_boost=1.5
-    task_ids_boost=3.0, feature_tags_boost=2.5
-    use_vector = (search_type != "keyword")
-    vector_field = "abstract_vector"
-    enable_message_level = (top_k ≤ 20)
-end note
-
-|features/memory/repositories/memory_search_repository.py|
-:memory_dsl = _build_memory_dsl(\n    spec: MemoryQuerySpec,\n    query_vector: Optional[list[float]]\n) -> dict;
-
-note right
-  bible_atlas_memory 索引查询字段：
-    task_ids    (keyword terms, boost 3.0)
-    feature_tags (keyword + text, boost 2.5)
-    title        (text + keyword, boost 3.0)
-    abstract     (text, boost 2.0)
-    overview     (text, boost 1.5)
-    abstract_vector (knn — hybrid 模式)
-end note
-
-:memory_hits = search_client.search(\n    index="bible_atlas_memory",\n    body=memory_dsl\n) -> list[RawHit];
-
-if (spec.enable_message_level?) then (是)
-  :candidate_ids = [h.memory_id for h in memory_hits]\nmessage_dsl = _build_message_dsl(\n    spec, candidate_ids, query_vector\n) -> dict;
-  :message_hits = search_client.search(\n    index="bible_atlas_memory_chunks",\n    body=message_dsl\n) -> list[RawHit];
-else (否)
-  :message_hits = [];
-endif
-
-:return (memory_hits, message_hits);
-
-|features/memory/result_mapper.py|
-:items = map_memory_hits(\n    memory_hits: list[RawHit],\n    message_hits: list[RawHit],\n    include_raw_preview: bool\n) -> list[MemorySearchItem];
-
-note right
-  map_memory_hits 内部步骤：
-  1. _group_hits_by_memory(memory_hits, message_hits)
-       → dict[memory_id, MergedHitGroup]
-  2. _build_memory_search_item(group):
-       match_scope = "memory" | "message"
-       matched_message_preview ≤ 200 字符（message 命中时）
-       overview_excerpt = group.overview[:300]
-         ← 运行时截取，不来自 OpenSearch 存储
-       match_reason = _build_match_reason(group)
-         → ["task_ids_exact","title_fuzzy","message_semantic",...]
-  3. sorted(items, key=score, reverse=True)[:top_k]
+  字段优先级（memory_doc）：
+    task_ids(3.0) / title(3.0) / feature_tags(2.5)
+    abstract(2.0) / overview(1.5) / abstract_vector(knn)
+  message 级兜底：content + content_vector
 end note
 
 |features/memory/memory_search_service.py|
-:return MemorySearchResponse(\n    success=True,\n    total=len(items),\n    memories=items,\n    warnings=warnings\n);
-
-note right
-  MemorySearchItem:
-    memory_id, title, abstract
-    overview_excerpt (截取，非索引字段)
-    feature_tags, domain_tags, task_ids
-    match_scope, matched_message_preview
-    storage_path_ref   ← 下载时使用
-    match_reason, score
-end note
+:result_mapper.map_memory_hits(...)\n→ _group_hits_by_memory\n→ _build_memory_search_item (match_scope / matched_message_preview / overview_excerpt / match_reason)\n→ sorted by score [:top_k];
 
 |app/api/v1/memory_api.py|
-:return 200 + MemorySearchResponse;
+:200 + MemorySearchResponse\n(success, total, memories, warnings);
 
 |Client|
-:接收检索结果;
-:若需原始内容：\nGET /api/v1/download/memory/{memory_id}\n  server 读取 storage_path_ref → 返回 message.json;
+:接收结果;
+:若需原始内容：GET /api/v1/download/memory/{memory_id}\n  server 依据 storage_path_ref 读取 message.json;
 
 stop
 

@@ -1,6 +1,5 @@
 @startuml upload_import_flow
-title 上传导入流程概览（CODE / SCT / BUILD / SKILL）
-note "MEMORY 独立链路见 memory_import_flow.puml\nPOST /api/v1/memory/import" as MEMORY_NOTE
+title 上传导入流程概览（CODE / SCT / BUILD / SKILL / MEMORY）
 
 |Client|
 start

@@ -1,0 +1,64 @@
+@startuml memory_import_flow_sequence
+title MEMORY 导入时序 - 独立链路 (POST /api/v1/memory/import)
+
+actor Client
+participant "API\nmemory_api.py" as Api
+participant "Service\nmemory_import_service.py" as Service
+participant "Validator\nvalidator.py" as Validator
+participant "StorageMapper\nstorage_mapper.py" as StorageMapper
+participant "Repository\nmemory_upload_repository.py" as Repository
+participant "Normalizer\nmetadata_normalizer.py" as Normalizer
+participant "IndexBuilder\nindex_document_builder.py" as IndexBuilder
+participant "DocumentManager\ndocument_manager.py" as DocMgr
+participant "Celery\nmemory_ai_extraction.py" as Celery
+
+Client -> Api: POST /api/v1/memory/import\n(files, memory_id?)
+Api -> Api: 文件预检 (个数/MIME/大小)
+alt 预检失败
+  Api --> Client: 400 / 413
+end
+
+Api -> Service: import_memory(files, memory_id)
+Service -> Service: json.loads → message_json, meta_json
+
+Service -> Validator: validate_memory_bundle(message_json, meta_json, memory_id)
+Validator --> Service: MemoryBundleValidationResult (errors / warnings)
+alt errors 非空
+  Service --> Api: MemoryValidationError
+  Api --> Client: 400
+end
+
+Service -> StorageMapper: build_memory_storage_layout(memory_id)
+StorageMapper --> Service: MemoryStorageLayout
+
+Service -> Repository: store(msg_bytes, meta_bytes, layout)
+Repository --> Service: StoredMemoryBundle (checksum, bytes)
+
+Service -> Normalizer: normalize_memory_metadata(meta_json, bundle)
+Normalizer --> Service: MemoryMetadataPayload
+alt abstract + overview 均缺失
+  Service --> Api: MemoryValidationError
+  Api --> Client: 422 (文件已落盘)
+end
+
+Service -> IndexBuilder: build_memory_import_documents(payload, message_json)
+IndexBuilder --> Service: MemoryImportDocuments\n(memory_doc, message_chunks)
+
+Service -> DocMgr: bulk_import("bible_atlas_memory", [memory_doc])
+Service -> DocMgr: bulk_import("bible_atlas_memory_chunks", message_chunks)
+
+Service -> Celery: apply_async(memory_ai_extraction_task,\n  args=[memory_id, message_json_path])
+note right of Celery
+  fire & forget
+  失败自动重试 3 次
+end note
+
+Service --> Api: MemoryImportAcceptedResponse
+Api --> Client: 202 (task_id, memory_id, warnings)
+
+== 后台异步 ==
+Celery -> Celery: 读 message.json 前 50 条
+Celery -> Celery: AI 提取 domain/feature/component/task_ids
+Celery -> DocMgr: update tags + ai_tags_extracted=True
+
+@enduml
