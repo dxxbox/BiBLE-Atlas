@@ -1,198 +1,36 @@
 @startuml search_flow_with_hit_and_rerank
-title 检索流程 - 支持 enable_hit、Rerank、AI 增强检索（分层架构）
+title 通用检索流程（CODE / SCT / BUILD / SKILL / …）
+note "MEMORY 独立链路见 memory_search_flow.puml\nPOST /api/v1/memory/search" as MEMORY_NOTE
 
 |Client|
 start
-
 repeat
-:用户输入请求描述;
-:从请求描述中提取关键字\n组成 query;
+  :POST /api/v1/search\n{query, index_name, tag, enable_hit, top_k, search_type, ...};
 
-:按照检索 API 格式\n组成消息;
-note right
-  消息包含：
-  - index_name
-  - query
-  - tag (可选)
-  - enable_hit (可选)
-  - top_k (可选)
-  - 其他参数...
-end note
+  |app/api/v1/search_api.py|
+  :search_documents(req: SearchRequest)\n→ SearchService.search(req);
 
-:发送 POST /api/v1/search;
+  |features/search/search_service.py|
+  :SearchService.search(req)\n① 解析 query/TAG → index_name 列表\n② enable_hit → 追加 hit_list 索引（CODE/BUILD/SKILL）\n③ top_k × rerank/ai multiplier 扩召回\n④ 并发遍历 list[IndexSearchTask];
 
-|API层\napp/api/v1/search_api.py|
-:接收 HTTP 请求;
-:验证请求参数\n(SearchRequest，API 入参 DTO);
-:调用 search_documents(request: SearchRequest)\n-> SearchResponse;
-:调用 SearchService.search(req: SearchRequest);
-
-|Service层\nfeatures/search/search_service.py|
-
-note right
-  关键类 / 接口：
-  - SearchService.search(req: SearchRequest)
-  - SearchService._build_index_search_tasks(...)
-  - SearchService._search_one_task(task: IndexSearchTask, ...)
-  - SearchService._merge_results(...)
-
-  DTO 边界：
-  - 输入：SearchRequest
-  - 内部任务：list[IndexSearchTask]
-  - 输出：SearchResponse
-end note
-
-partition "解析 query 和 TAG" {
-  :解析 query;
-  if (query 中包含 [TAG]?) then (是)
-    :提取 TAG;
-    :从配置读取 tag_to_index_mapping;
-    :根据 TAG 设定 index_name;
-  else (否)
-    :使用消息中的 index_name;
-  endif
-  :解析主检索目标;
-}
-
-partition "解析 enable_hit" {
-  if (消息中有 enable_hit\n且为 true?) then (是)
-    :从配置读取 hit_list;
-    note right
-      hit_list 默认包含:
-      - CODE
-      - BUILD
-      - SESSION
-      - SKILL
-    end note
-
-    :将 hit_list 中的每个 tag\n通过 tag_to_index_mapping\n转换为 index_name;
-    :补充关联检索目标;
-  endif
-}
-
-partition "解析 top_k 与扩召回" {
-  if (消息中有 top_k?) then (是)
-    :top_k = 消息中的 top_k;
-  else (否)
-    :从配置读取默认 top_k;
-  endif
-
-  :original_top_k = top_k;
-
-  if (rerank 使能 或 ai_enable?) then (是)
-    :从配置读取对应 multiplier;
-    note right
-      仅 Rerank:
-      top_k = original_top_k × rerank_multiplier
-
-      仅 AI:
-      top_k = original_top_k × ai_multiplier
-
-      二者同时开启:
-      top_k = original_top_k × max(rerank_multiplier, ai_multiplier)
-    end note
-  endif
-}
-
-:调用 index_search_tasks\n生成 list[IndexSearchTask];
-:遍历 list[IndexSearchTask];
-
-|Service层\nfeatures/search/search_service.py|
-
-while (还有索引未处理?) is (是)
-  :获取下一个 IndexSearchTask;
-
-  :根据 index 类型\n从工厂获取对应的 Repository;
   note right
-    SearchRepositoryFactory.create(task.index_tag, ...)
-    -> BaseSearchRepository
-
-    具体返回类：
-    - CodeSearchRepository (code.py)
-    - SctSearchRepository (sct.py)
-    - BuildSearchRepository (build.py)
-    - SyntaxSearchRepository (syntax.py)
-    - SpecSearchRepository (spec.py)
-    - AlgorithmSearchRepository (alg.py)
-    - DesignSearchRepository (design.py)
-    - FlowSearchRepository (flow.py)
-    - CustomVectorSearchRepository (custom.py)
-    - EmptySearchRepository (SESSION/SKILL 本切片占位)
+    hit_list 不含 MEMORY
+    （MEMORY 独立端点）
   end note
 
-  :校验仓储能力\n(supported_search_types / default_search_type);
-  if (是否要对 query 做向量化?) then (是)
-    note right
-      判断依据：
-      - repository.requires_query_embedding(...)
-      - 例如 vector / hybrid
-      - 或 CUSTOM(vector)
-    end note
-    :内部调用 VectorTool\n生成 query vector;
-  else (否)
-    :vector = None;
-  endif
+  |features/search/repositories/  [每个 IndexSearchTask]|
+  :SearchRepositoryFactory.create(index_tag)  → XxxSearchRepository\n→ [可选] VectorTool.embed(query)  → query_vector\n→ repository.build_query(task, req, vector)  → dsl\n→ SearchClient.search(index_name, dsl)  → raw_hits\n→ repository.map_backend_response_to_items(raw_hits)  → list[SearchMatchRow]\n→ [可选] RerankTool.rerank(rows)  → reranked\n→ [可选] AiRankingRunner.run(rows)  → filtered\n→ format_bucket_items(rows[:top_k])  → bucket;
 
-  |Repository层\nfeatures/search/repositories/|
-  :调用 BaseSearchRepository.search(\n task: IndexSearchTask,\n req: SearchRequest,\n vector,\n ...);
-  note right
-    共享接口：
-    - build_query(...)
-    - SearchClient.search(...)
-    - map_backend_response_to_items(...)  -> list[SearchMatchRow]
-    - RerankTool.rerank(...)  输入/输出: list[SearchMatchRow]
-    - AiRankingRunner(...)  输入/输出: list[SearchMatchRow]
-    - format_bucket_items(...) -> bucket items
-  end note
+  |features/search/search_service.py|
+  :_merge_results(task_results)  → SearchResponse\n(total, results: {tag: [items]});
 
-  :Repository 构建查询;
-  :调用 SearchClient.search(...)\n执行底层检索;
-  :映射 raw response\n-> list[SearchMatchRow];
+  |app/api/v1/search_api.py|
+  :200 + SearchResponse;
 
-  if (rerank 使能?) then (是)
-    :调用 RerankTool.rerank(...)\n处理 SearchMatchRow 列表;
-  endif
-
-  if (ai_enable?) then (是)
-    :调用 AiRankingRunner\n(Copilot CLI) 进一步筛选;
-    :返回 SearchMatchRow 列表\n并取前 original_top_k;
-  else (否)
-    if (rerank 使能?) then (是)
-      :取精排后的 SearchMatchRow\n前 original_top_k;
-    else (否)
-      :取原始 SearchMatchRow\n前 original_top_k;
-    endif
-  endif
-
-  :调用 format_bucket_items(...)\n映射为当前 results_key 对应分桶;
-  :返回该索引的检索结果片段;
-
-  |Service层\nfeatures/search/search_service.py|
-  :收集该索引的最终结果;
-endwhile (否)
-
-|Service层\nfeatures/search/search_service.py|
-:合并所有索引的结果;
-:调用 _merge_results(task_results);
-:计算 total = 各分桶长度之和;
-:格式化响应数据\n(SearchResponse);
-:返回 SearchResponse;
-
-|API层\napp/api/v1/search_api.py|
-:构建 HTTP 响应\n(SearchResponse，API 出参 DTO);
-:返回 JSON 响应;
-
-|Client|
-:接收响应;
-
-note right
-  可以多次提取关键字，
-  但每次都要等待响应
-  才能发送下一次
-end note
-
-backward :继续检索?;
-repeat while (是否继续?) is (是)
+  |Client|
+  :接收结果;
+  backward :继续检索?;
+repeat while (是) is (是)
 ->否;
 
 stop

@@ -59,7 +59,7 @@ MEMORY 在 BiBLE-Atlas 中代表工程师与 AI 工具（Cursor、VSCode Copilot
 
 - `message.json` 永远只做原始事实，不进入 search 主响应。
 - `meta.json` 由 client 负责生成，server 负责校验与补充服务端字段。
-- search 返回只携带 `meta.json` 中的摘要字段 + 服务端补充的 `download_ref`，不直接返回 `message.json` 内容。
+- search 返回只携带 `meta.json` 中的摘要字段 + 服务端补充的 `storage_path_ref`，server 根据 `storage_path_ref` 直接定位并下载，不直接返回 `message.json` 内容。
 - `meta.json` 内部直接承载 `abstract` 与 `overview` 字段，不再单独保存 `.abstract.md` 与 `.overview.md` 文件。
 
 ### 2.3 主链路衔接
@@ -81,22 +81,27 @@ POST /api/v1/memory/import
 
 > **后续合并备注**：当前为独立链路，实现完成后可考虑通过 `tag=MEMORY` 接入通用 `POST /api/v1/upload` 链路，届时 `memory_api.py` 可作为 `upload_api.py` 的 MEMORY 分支入口。
 
-Search 链路（接入通用 search 链路，替换 EmptySearchRepository 占位）：
+Search 链路（独立端点，不接入通用 search 链路）：
 ```
-search_api.py
-  → SearchService.search(req) (识别 MEMORY 分支)
-    → SearchRepositoryFactory → MemorySearchRepository
-      → filters.py (归一化 memory 专属过滤)
-      → query_builder.py (生成 MemoryQuerySpec)
-      → repository.py (调用 search_manager.py 执行双路检索)
-    → result_mapper.py (聚合、整形、边界控制)
-  → SearchResponse (返回 memory 分桶结果)
+POST /api/v1/memory/search
+  → memory_api.py (app/api/v1/memory_api.py)
+    → MemorySearchService (features/memory/memory_search_service.py)
+      → MemorySearchRepository (features/memory/repositories/memory_search_repository.py)
+        → filters.normalize_memory_filters(req.filters) → MemoryFilters
+        → query_builder.detect_task_id_in_query(query)
+        → query_builder.build_memory_query_spec(...) → MemoryQuerySpec
+        → memory-level 检索（bible_atlas_memory）
+        → message-level 检索（bible_atlas_memory_chunks，可选）
+      → result_mapper.map_memory_hits(memory_hits, message_hits, ...)
+    → MemorySearchResponse
 ```
 
-memory 分支只负责以下增量职责，下列能力继续显式复用通用框架：
+> **后续合并备注**：Search 同样独立实现，后续可按需接入通用 Search 链路（通过注册 `MemorySearchRepository` 到 `SearchRepositoryFactory`）。
 
-- **memory 负责**：独立接收 MEMORY import 请求；把原始对话事实规整为两文件集合和稳定的 `memory_id/document_key`；构建适合 OpenSearch 的 memory 文档模型；对 memory 搜索结果做聚合、裁剪和 raw 内容返回边界控制。
-- **通用框架负责**：异步任务状态机、Celery 提交与重试；Search 的 `enable_hit`、多索引并发、分桶合并、统一响应结构；OpenSearch 的底层 DSL、`bulk_import`、索引 mapping 管理；download、安全权限、全局治理。
+memory 完全独立，只复用 OpenSearch 基础设施：
+
+- **memory 负责**：独立接收 import 和 search 请求；管理两文件落盘与元数据规范化；构建 memory 文档模型；搜索结果聚合、裁剪和 raw 内容返回边界控制。
+- **通用框架负责**：异步任务状态机、Celery 提交与重试；OpenSearch 的底层 DSL、`bulk_import`、索引 mapping 管理；download、安全权限、全局治理。
 
 ---
 
@@ -192,8 +197,7 @@ memory 分支只负责以下增量职责，下列能力继续显式复用通用�
 | `component_tags` | array[string] | 选填 | client/AI | 组件标签，如 `["cpnb", "search_service"]` |
 | `source_client` | string | 选填 | client | 来源工具标识，如 `"cursor"`, `"vscode"` |
 | `language` | string | 选填 | client | 会话主要语言，`"zh"` / `"en"` |
-| `storage_path_ref` | string | 服务端补充 | server | 落盘后由 server 回填，`message.json` 的逻辑路径 |
-| `download_ref` | string | 服务端补充 | server | 下载引用 URI，格式 `memory://download/<memory_id>` |
+| `storage_path_ref` | string | 服务端补充 | server | 落盘后由 server 回填，格式 `memory://files/<memory_id>`；server 凭此定位并提供下载 |
 | `raw_message_count` | integer | 服务端补充 | server | 由 server 从 `message.json` 统计后回填 |
 | `ai_tags_extracted` | boolean | 服务端补充 | server | AI 标签提取是否完成，初始 `false` |
 | `ai_tags_extracted_at` | string (ISO8601) | 服务端补充 | server | AI 标签提取完成时间 |
@@ -247,19 +251,17 @@ app/
 │       ├── memory_api.py                    # 新增：MEMORY 独立入口
 │       └── upload_api.py                    # 现有文件，不修改
 ├── features/
-│   ├── memory/                              # 全新目录
-│   │   ├── __init__.py
-│   │   ├── memory_import_service.py         # MEMORY import 编排服务
-│   │   ├── schemas.py                       # MemoryImportAcceptedResponse 等
-│   │   └── repositories/
-│   │       ├── __init__.py
-│   │       └── memory_upload_repository.py  # 落盘 + 主编排（含子模块调用）
-│   └── memory_internals/                    # 内部实现子模块
+│   └── memory/                              # 全新目录
 │       ├── __init__.py
+│       ├── memory_import_service.py         # MEMORY import 编排服务
+│       ├── schemas.py                       # MemoryImportAcceptedResponse 等
 │       ├── validator.py                     # 两文件校验
 │       ├── storage_mapper.py                # 落盘路径规划
 │       ├── metadata_normalizer.py           # 规范化 meta.json
-│       └── index_document_builder.py        # 构建索引文档
+│       ├── index_document_builder.py        # 构建索引文档
+│       └── repositories/
+│           ├── __init__.py
+│           └── memory_upload_repository.py  # 落盘 + 主编排（调用同目录子模块）
 ├── infrastructure/
 │   └── opensearch/
 │       └── document_manager.py              # 现有文件，继续复用
@@ -386,7 +388,6 @@ class MemoryStorageLayout:
     message_json_path: str     # 例：/app/uploads/memory/memory-20260408-cni12345/message.json
     meta_json_path: str        # 例：/app/uploads/memory/memory-20260408-cni12345/meta.json
     storage_path_ref: str      # 逻辑引用：memory://files/memory-20260408-cni12345
-    download_ref: str          # 下载 URI：memory://download/memory-20260408-cni12345
 
 def build_memory_storage_layout(
     memory_id: str,
@@ -442,7 +443,7 @@ class MemoryMetadataPayload:
     title: str
     abstract: str                     # 优先从 meta_json 读取，fallback 从 overview 截取前 500 字符
     overview: Optional[str]
-    overview_excerpt: str             # overview 的前 300 字符，用于列表展示
+    overview_excerpt: Optional[str] = None  # 查询时由 result_mapper 从 overview 截取，不写入 OpenSearch
     created_at: datetime
     updated_at: Optional[datetime]
     task_ids: list[str]
@@ -452,7 +453,6 @@ class MemoryMetadataPayload:
     source_client: Optional[str]
     language: Optional[str]
     storage_path_ref: str             # 服务端补充
-    download_ref: str                 # 服务端补充
     raw_message_count: int            # 服务端补充
     ai_tags_extracted: bool           # 初始 False
     document_key: str                 # = memory_id，供 OpenSearch 幂等写入
@@ -464,8 +464,7 @@ def normalize_memory_metadata(
     """
     1. 提取 meta_json 中所有字段并做类型规范化
     2. abstract fallback：若缺失则截取 overview 前 500 字符
-    3. overview_excerpt：截取 overview 前 300 字符（UTF-8 安全截断）
-    4. 补充服务端字段：storage_path_ref, download_ref, raw_message_count
+    3. 补充服务端字段：storage_path_ref, raw_message_count
     5. task_ids 统一大写处理（如 "cni-12345" → "CNI-12345"）
     6. 所有 tags 列表去重、去空值
     7. ai_tags_extracted 初始化为 False
@@ -642,7 +641,6 @@ def merge_and_update_tags(
 | `title` | `text` (analyzer: ik_max_word) + `keyword` | 标题，兼顾中文分词与精确匹配 |
 | `abstract` | `text` (analyzer: ik_max_word) | 一句话摘要 |
 | `overview` | `text` (analyzer: ik_max_word) | 段落级概览 |
-| `overview_excerpt` | `keyword` | overview 前 300 字符，不索引，仅用于返回展示 |
 | `task_ids` | `keyword` (array) | 任务单号，精确匹配 |
 | `feature_tags` | `keyword` (array) + 子字段 `text` | 精确 + 模糊兜底 |
 | `domain_tags` | `keyword` (array) | 领域标签 |
@@ -650,7 +648,6 @@ def merge_and_update_tags(
 | `source_client` | `keyword` | 来源工具 |
 | `language` | `keyword` | 会话语言 |
 | `storage_path_ref` | `keyword` | 逻辑存储路径，不索引 |
-| `download_ref` | `keyword` | 下载引用，不索引 |
 | `raw_message_count` | `integer` | 消息条数 |
 | `ai_tags_extracted` | `boolean` | AI 标签提取状态 |
 | `ai_tags_extracted_at` | `date` | AI 标签提取时间 |
@@ -672,7 +669,6 @@ def merge_and_update_tags(
       },
       "abstract":  { "type": "text", "analyzer": "ik_max_word" },
       "overview":  { "type": "text", "analyzer": "ik_max_word" },
-      "overview_excerpt": { "type": "keyword", "index": false },
       "task_ids":  { "type": "keyword" },
       "feature_tags": {
         "type": "keyword",
@@ -681,7 +677,6 @@ def merge_and_update_tags(
       "domain_tags":    { "type": "keyword" },
       "component_tags": { "type": "keyword" },
       "storage_path_ref": { "type": "keyword", "index": false },
-      "download_ref":     { "type": "keyword", "index": false },
       "raw_message_count":  { "type": "integer" },
       "ai_tags_extracted":  { "type": "boolean" },
       "ai_tags_extracted_at": { "type": "date" },
@@ -728,41 +723,63 @@ def merge_and_update_tags(
 
 ### 7.1 目录结构
 
+Search 分支与 Import 分支共享 `features/memory/` 目录，不依赖 `features/search/` 公共链路。
+
 ```text
 app/
 ├── api/
 │   └── v1/
-│       └── search_api.py                    # 现有文件，MEMORY 走统一路由
+│       └── memory_api.py                    # 已有：新增 search 端点
 ├── features/
-│   └── search/
-│       ├── search_service.py                # 现有文件，MEMORY 占位替换为真实仓储
-│       ├── schemas.py                       # 现有文件，补充 MemorySearchItem/MemoryFilters
+│   └── memory/
+│       ├── memory_search_service.py         # 新增：Search 编排服务
+│       ├── schemas.py                       # 已有：补充 MemorySearchRequest/MemorySearchResponse/MemoryFilters/MemorySearchItem
+│       ├── filters.py                       # 新增：归一化 memory 专属过滤条件
+│       ├── query_builder.py                 # 新增：生成 MemoryQuerySpec
+│       ├── result_mapper.py                 # 新增：命中整形与返回边界控制
 │       └── repositories/
-│           ├── factory.py                   # 现有文件，注册 MemorySearchRepository
-│           └── memory/                      # 新增目录
-│               ├── __init__.py
-│               ├── repository.py            # 主仓储：调用 search_manager 执行检索
-│               ├── query_builder.py         # 生成 MemoryQuerySpec
-│               ├── filters.py               # 归一化 memory 专属过滤条件
-│               └── result_mapper.py         # 命中整形与返回边界控制
+│           └── memory_search_repository.py  # 新增：执行双路 OpenSearch 检索
 ```
 
-### 7.2 schemas.py 扩展
+### 7.2 API 层（`memory_api.py` 新增端点）
+
+**端点**：`POST /api/v1/memory/search`
+
+```python
+@router.post("/search", response_model=MemorySearchResponse, status_code=200)
+async def search_memory(
+    req: MemorySearchRequest,
+    service: MemorySearchService = Depends(get_memory_search_service),
+) -> MemorySearchResponse:
+    """MEMORY 独立检索端点。"""
+```
+
+### 7.3 schemas.py 扩展
 
 **`MemoryFilters`（新增）**：
 
 ```python
 class MemoryFilters(BaseModel):
-    """MEMORY 专属过滤条件，通过 SearchRequest.filters 传入。"""
     task_ids: Optional[list[str]] = None          # 精确匹配任务单号，支持多值 OR
-    feature_tags: Optional[list[str]] = None       # 精确匹配 feature tag
+    feature_tags: Optional[list[str]] = None
     domain_tags: Optional[list[str]] = None
     component_tags: Optional[list[str]] = None
     source_client: Optional[str] = None
     language: Optional[str] = None
-    created_after: Optional[datetime] = None       # 时间范围过滤（起始）
-    created_before: Optional[datetime] = None      # 时间范围过滤（结束）
-    ai_tags_extracted: Optional[bool] = None       # 过滤 AI 标签提取状态
+    created_after: Optional[datetime] = None
+    created_before: Optional[datetime] = None
+    ai_tags_extracted: Optional[bool] = None
+```
+
+**`MemorySearchRequest`（新增）**：
+
+```python
+class MemorySearchRequest(BaseModel):
+    query: str
+    search_type: str = "hybrid"            # keyword / vector / hybrid
+    top_k: int = 10
+    filters: Optional[MemoryFilters] = None
+    include_raw_preview: bool = False
 ```
 
 **`MemorySearchItem`（新增）**：
@@ -772,7 +789,7 @@ class MemorySearchItem(BaseModel):
     memory_id: str
     title: str
     abstract: str
-    overview_excerpt: Optional[str]
+    overview_excerpt: Optional[str]        # result_mapper 从 overview 截取 ≤300 字符，非 OpenSearch 存储字段
     feature_tags: list[str]
     task_ids: list[str]
     domain_tags: list[str]
@@ -780,28 +797,26 @@ class MemorySearchItem(BaseModel):
     created_at: Optional[datetime]
     source_client: Optional[str]
     score: float
-    match_scope: Literal["memory", "message"]    # 命中发生在哪个层级
-    matched_message_id: Optional[str]            # 若 match_scope=="message"，命中的消息 ID
-    matched_message_preview: Optional[str]       # 命中消息的局部预览（≤200 字符）
-    download_ref: str
+    match_scope: Literal["memory", "message"]
+    matched_message_id: Optional[str]
+    matched_message_preview: Optional[str]  # ≤200 字符
     storage_path_ref: str
-    match_reason: list[str]                      # 如 ["title_fuzzy", "task_ids_exact"]
-    raw_content_preview: Optional[str] = None   # 仅 include_raw_preview=true 时返回，≤500 字符
+    match_reason: list[str]
+    raw_content_preview: Optional[str] = None  # include_raw_preview=true 时，≤500 字符
     warnings: list[str] = []
 ```
 
-**`SearchRequest` 扩展**（最小改动方式）：
+**`MemorySearchResponse`（新增）**：
 
 ```python
-class SearchRequest(BaseModel):
-    # ... 现有字段不变 ...
-    filters: Optional[dict] = None         # 新增：通用过滤字段，MEMORY 时解析为 MemoryFilters
-    include_raw_preview: bool = False      # 新增：是否在结果中包含 raw 内容预览
+class MemorySearchResponse(BaseModel):
+    success: bool = True
+    total: int
+    memories: list[MemorySearchItem]
+    warnings: list[str] = []
 ```
 
-> `filters` 字段使用 `dict` 类型而非直接引用 `MemoryFilters`，保持 API 对所有类型通用，避免每种 doc_type 都扩展一次 SearchRequest schema。各类型 Repository 内部负责将 `filters` 解析为自己的 filters 模型。
-
-### 7.3 filters.py
+### 7.4 filters.py
 
 ```python
 def normalize_memory_filters(
@@ -816,7 +831,7 @@ def normalize_memory_filters(
     """
 ```
 
-### 7.4 query_builder.py
+### 7.5 query_builder.py
 
 ```python
 @dataclass
@@ -862,37 +877,35 @@ def build_memory_query_spec(
     """
 ```
 
-### 7.5 repository.py（MemorySearchRepository）
+### 7.6 memory_search_repository.py
 
 ```python
-class MemorySearchRepository(BaseSearchRepository):
-    """替换 07 中 MEMORY 的 EmptySearchRepository 占位仓储。"""
+class MemorySearchRepository:
+    """MEMORY 专属检索仓储，不继承 BaseSearchRepository。"""
 
     async def search(
         self,
-        task: IndexSearchTask,
-        req: SearchRequest,
-        vector: Optional[list[float]],
-    ) -> list[SearchMatchRow]:
+        req: MemorySearchRequest,
+        query_vector: Optional[list[float]],
+    ) -> tuple[list[dict], list[dict]]:
         """
-        1. 调用 filters.normalize_memory_filters(req.filters)
-        2. 调用 query_builder.build_memory_query_spec(...)
-        3. 先执行 memory-level 检索：
-           - 向 search_manager.search(memory_index, memory_level_spec) 发起检索
-        4. 若 spec.enable_message_level：
-           - 向 search_manager.search(chunks_index, message_level_spec) 发起检索
-        5. 将两路 hits 传入 result_mapper.map_memory_hits(...)
-        6. 返回 list[SearchMatchRow]（兼容 BaseSearchRepository 接口）
+        1. 调用 filters.normalize_memory_filters(req.filters) → MemoryFilters
+        2. 调用 query_builder.detect_task_id_in_query(req.query) → auto_task_ids
+        3. 调用 query_builder.build_memory_query_spec(...) → MemoryQuerySpec
+        4. memory-level 检索：search_client.search("bible_atlas_memory", memory_dsl)
+        5. 若 spec.enable_message_level：
+           search_client.search("bible_atlas_memory_chunks", message_dsl)
+        6. 返回 (memory_hits, message_hits)
         """
 
-    def build_query(self, task: IndexSearchTask, req: SearchRequest, vector) -> dict:
-        """构建 memory-level OpenSearch Query DSL（由 search_manager 执行）。"""
+    def _build_memory_dsl(self, spec: MemoryQuerySpec, vector: Optional[list[float]]) -> dict:
+        """构建 memory-level OpenSearch Query DSL。"""
 
-    def map_backend_response_to_items(self, raw_response: dict) -> list[SearchMatchRow]:
-        """将 OpenSearch 原始 hits 映射为 SearchMatchRow。"""
+    def _build_message_dsl(self, spec: MemoryQuerySpec, candidate_memory_ids: list[str], vector: Optional[list[float]]) -> dict:
+        """构建 message-level OpenSearch Query DSL，可按候选 memory_id 范围缩小检索。"""
 ```
 
-### 7.6 result_mapper.py
+### 7.7 result_mapper.py
 
 ```python
 def map_memory_hits(
@@ -929,24 +942,24 @@ def build_match_reason(hit: dict, source_index: str) -> list[str]: ...
 def build_message_preview(content: str, max_chars: int) -> str: ...
 ```
 
-### 7.7 Search 返回字段边界
+### 7.8 Search 返回字段边界
 
 | 字段 | 默认返回 | 条件返回 | 不返回 |
 |------|------|------|------|
 | `memory_id` | ✅ | | |
 | `title` | ✅ | | |
 | `abstract` | ✅ | | |
-| `overview_excerpt` | ✅ | | |
+| `overview_excerpt` | | 由 result_mapper 从 `overview` 截取，≤300 字符 | |
 | `feature_tags` / `task_ids` / `domain_tags` / `component_tags` | ✅ | | |
 | `created_at` / `score` | ✅ | | |
 | `match_scope` / `match_reason` | ✅ | | |
-| `download_ref` / `storage_path_ref` | ✅ | | |
+| `storage_path_ref` | ✅ | | |
 | `matched_message_id` | | `match_scope=="message"` 时 | |
 | `matched_message_preview` | | `match_scope=="message"` 时 | |
 | `raw_content_preview` | | `include_raw_preview=true` 时，≤500 字符 | |
 | `message.json` 完整内容 | | | ❌ 永不直接返回 |
 
-### 7.8 Search 返回前的数据整合
+### 7.9 Search 返回前的数据整合
 
 1. 把 `memory-level hits` 与 `message-level hits` 分开接收。
 2. 按 `memory_id` 合并多条命中。
@@ -955,42 +968,20 @@ def build_message_preview(content: str, max_chars: int) -> str: ...
 5. 若某个 `message_id` 命中占优，则设置 `match_scope="message"`，补充 `matched_message_id` 与 `matched_message_preview`。
 6. 从 `title/abstract/overview` 中选择最适合列表展示的摘要字段。
 7. 若命中的是 message chunk，则只回传受限长度的 preview，不回传完整 raw。
-8. 最终输出统一的 `MemorySearchItem`，再交给上层 `SearchService` 合并。
+8. 最终输出统一的 `MemorySearchItem` 列表，由 `MemorySearchService` 封装为 `MemorySearchResponse` 返回。
 
 ---
 
-## 8. Search API 兼容性分析与扩展方案
+## 8. MEMORY Search API 说明
 
-### 8.1 现有 Search API 能力评估
-
-| 检索需求 | 现有 API 是否支持 | 评估 |
-|------|------|------|
-| 按标题模糊匹配（如 "allocate NPE"） | ✅ 支持 | `query` + `search_type=hybrid` 可覆盖 |
-| 按任务单号精确匹配（如 "CNI-12345"） | ⚠️ 部分支持 | `query="CNI-12345"` 可触发 BM25，但无法精确过滤 |
-| 按任务单号前缀模糊匹配（如 "CNI-12*"） | ❌ 不支持 | 需要 `prefix` query，现有 API 无法传入 |
-| 按 feature_tag 过滤（如只看 "CNI" 相关） | ❌ 不支持 | 需要结构化过滤，现有 API 无此字段 |
-| 按时间范围过滤（如最近 30 天） | ❌ 不支持 | 需要 date range filter |
-| 语义检索（向量相似度） | ✅ 支持 | `search_type=vector/hybrid` |
-| 多索引并发检索（enable_hit） | ✅ 支持 | 现有 `enable_hit` 机制 |
-
-### 8.2 推荐扩展方案（最小改动）
-
-**结论：在 `SearchRequest` 中新增 `filters: Optional[dict]` 字段**，不新增 MEMORY 专属 API 端点。
-
-理由：
-1. 避免为每种 doc_type 增加专属 API，维护成本低。
-2. `dict` 类型的 `filters` 不破坏现有 `SearchRequest` 的 Pydantic 校验。
-3. 各类型 Repository 内部负责解析 `filters`，与 Service 层解耦。
-4. 若未来其他类型（SKILL 等）也需要结构化过滤，可复用同一机制。
+MEMORY 使用独立端点 `POST /api/v1/memory/search`，请求字段原生支持所有过滤需求，无需兼容通用 Search API。
 
 **客户端使用示例**：
 
 ```json
-POST /api/v1/search
+POST /api/v1/memory/search
 {
-  "index_name": "bible_atlas_memory",
   "query": "allocate NPE 并发",
-  "tag": "MEMORY",
   "search_type": "hybrid",
   "top_k": 10,
   "filters": {
@@ -1001,16 +992,16 @@ POST /api/v1/search
 }
 ```
 
-**任务单号自动识别**（无需 client 显式传 filters）：
+**任务单号自动识别**（无需 client 显式传 `filters.task_ids`）：
 
 ```
 query = "CNI-12345 的 allocate 崩溃"
-         ↓
-query_builder 检测到 CNI-12345
-         ↓
+         ↓ query_builder.detect_task_id_in_query
 自动在 task_ids 字段做 terms 精确匹配
 + 同时对 title/abstract/overview 做全文检索兜底
 ```
+
+> 后续若需要与通用 `enable_hit` 机制联动（跨类型检索），可注册 `MemorySearchRepository` 到 `SearchRepositoryFactory`。
 
 ---
 
@@ -1025,10 +1016,10 @@ query_builder 检测到 CNI-12345
 
 **推荐方案：二阶段 Download**
 
-- **第一阶段（search）**：返回 `memory_id`、`download_ref`、`matched_message_preview`（≤200 字符）；可选返回 `raw_content_preview`（≤500 字符，需 `include_raw_preview=true`）。
-- **第二阶段（download）**：client 使用 `download_ref` 调用 `GET /api/v1/download/memory/{memory_id}`，获取完整 `message.json`。响应 `Content-Type: application/json`，支持流式下载。
+- **第一阶段（search）**：返回 `memory_id`、`storage_path_ref`、`matched_message_preview`（≤200 字符）；可选返回 `raw_content_preview`（≤500 字符，需 `include_raw_preview=true`）。
+- **第二阶段（download）**：client 使用 `memory_id` 调用 `GET /api/v1/download/memory/{memory_id}`，server 根据 `storage_path_ref` 定位文件并返回完整 `message.json`。响应 `Content-Type: application/json`，支持流式下载。
 
-**`download_ref` 格式**：`memory://download/{memory_id}`
+**`storage_path_ref` 格式**：`memory://files/{memory_id}`（server 内部解析为实际磁盘路径，client 无需关心）
 
 **压缩折中方案（备选，暂不实现）**：对前 10 条 messages 做 JSON + gzip + base64，压缩比约 3-8x，10 条消息约 0.7-2KB，待产品明确需要时再启用。
 
@@ -1041,34 +1032,26 @@ query_builder 检测到 CNI-12345
 ```text
 app/
 ├── api/v1/
-│   ├── memory_api.py                            # 新增：MEMORY 独立导入端点，~40 行
+│   ├── memory_api.py                            # 新增：import + search 两个独立端点，~80 行
 │   └── upload_api.py                            # 不变
 ├── features/
-│   ├── memory/                                  # 全新目录（import 独立链路）
-│   │   ├── __init__.py
-│   │   ├── memory_import_service.py             # 新增：编排层，~50 行
-│   │   ├── schemas.py                           # 新增：MemoryImportAcceptedResponse 等，~30 行
-│   │   └── repositories/
-│   │       ├── __init__.py
-│   │       └── memory_upload_repository.py      # 新增：落盘 + 编排，~80 行
-│   ├── memory_internals/                        # 全新目录（内部子模块）
-│   │   ├── __init__.py
-│   │   ├── validator.py                         # 新增：~90 行
-│   │   ├── storage_mapper.py                    # 新增：~50 行
-│   │   ├── metadata_normalizer.py               # 新增：~100 行
-│   │   └── index_document_builder.py            # 新增：~120 行
-│   └── search/
-│       ├── schemas.py                           # 变更：新增 MemoryFilters, MemorySearchItem, filters/include_raw_preview
-│       ├── search_service.py                    # 变更：1 行注册变更（替换 EmptySearchRepository）
+│   └── memory/                                  # 全新目录（import + search 独立链路）
+│       ├── __init__.py
+│       ├── memory_import_service.py             # 新增：import 编排，~50 行
+│       ├── memory_search_service.py             # 新增：search 编排，~40 行
+│       ├── schemas.py                           # 新增：所有 MEMORY 相关 schema，~100 行
+│       ├── validator.py                         # 新增：两文件校验，~90 行
+│       ├── storage_mapper.py                    # 新增：落盘路径规划，~50 行
+│       ├── metadata_normalizer.py               # 新增：规范化 meta.json，~100 行
+│       ├── index_document_builder.py            # 新增：构建索引文档，~120 行
+│       ├── filters.py                           # 新增：search 过滤归一化，~60 行
+│       ├── query_builder.py                     # 新增：生成 MemoryQuerySpec，~100 行
+│       ├── result_mapper.py                     # 新增：命中整形与边界控制，~150 行
 │       └── repositories/
-│           ├── factory.py                       # 变更：3 行，注册 MemorySearchRepository
-│           └── memory/                          # 全新目录
-│               ├── __init__.py
-│               ├── repository.py                # 新增：~120 行
-│               ├── query_builder.py             # 新增：~100 行
-│               ├── filters.py                   # 新增：~60 行
-│               └── result_mapper.py             # 新增：~150 行
-└── tasks/memory_ai_extraction.py                # 新增：~120 行
+│           ├── __init__.py
+│           ├── memory_upload_repository.py      # 新增：落盘 + import 编排，~80 行
+│           └── memory_search_repository.py      # 新增：双路 OpenSearch 检索，~120 行
+└── tasks/memory_ai_extraction.py                # 新增：AI 标签提取 Celery 任务，~120 行
 ```
 
 ### 10.2 函数清单
@@ -1076,29 +1059,28 @@ app/
 | 模块 | 函数 | 输入 | 输出 | 估计行数 |
 |------|------|------|------|------|
 | `memory_api.py` | `import_memory` | `files`, `memory_id` | `MemoryImportAcceptedResponse` | ~40 |
-| `memory_import_service.py` | `MemoryImportService.import_memory` | `files`, `memory_id_hint` | `MemoryImportAcceptedResponse` | ~50 |
-| `memory/repositories/memory_upload_repository.py` | `MemoryUploadRepository.validate` | `message_json`, `meta_json`, `memory_id_hint` | `MemoryBundleValidationResult` | ~30 |
-| `memory_internals/validator.py` | `validate_memory_bundle` | `message_json`, `meta_json`, `memory_id_hint` | `MemoryBundleValidationResult` | ~90 |
-| `memory_internals/storage_mapper.py` | `build_memory_storage_layout` | `memory_id`, `base_upload_dir` | `MemoryStorageLayout` | ~40 |
+| `memory_api.py` | `search_memory` | `MemorySearchRequest` | `MemorySearchResponse` | ~20 |
+| `memory/memory_import_service.py` | `MemoryImportService.import_memory` | `files`, `memory_id_hint` | `MemoryImportAcceptedResponse` | ~50 |
+| `memory/memory_search_service.py` | `MemorySearchService.search` | `MemorySearchRequest` | `MemorySearchResponse` | ~40 |
+| `memory/validator.py` | `validate_memory_bundle` | `message_json`, `meta_json`, `memory_id_hint` | `MemoryBundleValidationResult` | ~90 |
+| `memory/storage_mapper.py` | `build_memory_storage_layout` | `memory_id`, `base_upload_dir` | `MemoryStorageLayout` | ~40 |
 | `memory/repositories/memory_upload_repository.py` | `MemoryUploadRepository.store` | `message_bytes`, `meta_bytes`, `layout` | `StoredMemoryBundle` | ~60 |
-| `memory_internals/metadata_normalizer.py` | `normalize_memory_metadata` | `meta_json`, `stored_bundle` | `MemoryMetadataPayload` | ~100 |
-| `memory_internals/index_document_builder.py` | `build_memory_import_documents` | `metadata_payload`, `message_json` | `MemoryImportDocuments` | ~120 |
+| `memory/metadata_normalizer.py` | `normalize_memory_metadata` | `meta_json`, `stored_bundle` | `MemoryMetadataPayload` | ~100 |
+| `memory/index_document_builder.py` | `build_memory_import_documents` | `metadata_payload`, `message_json` | `MemoryImportDocuments` | ~120 |
 | `tasks/memory_ai_extraction.py` | `memory_ai_extraction_task` | `memory_id`, `message_json_path` | `dict` | ~100 |
 | `tasks/memory_ai_extraction.py` | `build_extraction_prompt` | `messages`, `max_messages` | `str` | ~20 |
 | `tasks/memory_ai_extraction.py` | `merge_and_update_tags` | `existing_tags`, `ai_tags` | `dict` | ~30 |
-| `search/schemas.py` | `MemoryFilters` | — | Pydantic model | ~25 |
-| `search/schemas.py` | `MemorySearchItem` | — | Pydantic model | ~35 |
-| `search/repositories/factory.py` | `create_search_repository`（注册 MEMORY） | `tag` | `BaseSearchRepository` | ~5 |
-| `search/memory/filters.py` | `normalize_memory_filters` | `raw_filters: dict` | `MemoryFilters` | ~50 |
-| `search/memory/query_builder.py` | `build_memory_query_spec` | `query_text`, `search_type`, `filters`, ... | `MemoryQuerySpec` | ~80 |
-| `search/memory/query_builder.py` | `detect_task_id_in_query` | `query_text` | `list[str]` | ~15 |
-| `search/memory/repository.py` | `MemorySearchRepository.search` | `task`, `req`, `vector` | `list[SearchMatchRow]` | ~80 |
-| `search/memory/repository.py` | `build_query` | `task`, `req`, `vector` | `dict` | ~40 |
-| `search/memory/result_mapper.py` | `map_memory_hits` | `memory_hits`, `message_hits`, ... | `list[MemorySearchItem]` | ~80 |
-| `search/memory/result_mapper.py` | `group_hits_by_memory` | `hits` | `dict[str, list[dict]]` | ~15 |
-| `search/memory/result_mapper.py` | `merge_memory_and_message_hits` | `memory_groups`, `message_groups` | `dict[str, dict]` | ~40 |
-| `search/memory/result_mapper.py` | `build_match_reason` | `hit`, `source_index` | `list[str]` | ~30 |
-| `search/memory/result_mapper.py` | `build_message_preview` | `content`, `max_chars` | `str` | ~15 |
+| `memory/filters.py` | `normalize_memory_filters` | `raw_filters: MemoryFilters \| None` | `MemoryFilters` | ~50 |
+| `memory/query_builder.py` | `build_memory_query_spec` | `query_text`, `search_type`, `filters`, ... | `MemoryQuerySpec` | ~80 |
+| `memory/query_builder.py` | `detect_task_id_in_query` | `query_text` | `list[str]` | ~15 |
+| `memory/repositories/memory_search_repository.py` | `MemorySearchRepository.search` | `req`, `query_vector` | `(memory_hits, message_hits)` | ~80 |
+| `memory/repositories/memory_search_repository.py` | `_build_memory_dsl` | `spec`, `vector` | `dict` | ~40 |
+| `memory/repositories/memory_search_repository.py` | `_build_message_dsl` | `spec`, `candidate_ids`, `vector` | `dict` | ~40 |
+| `memory/result_mapper.py` | `map_memory_hits` | `memory_hits`, `message_hits`, ... | `list[MemorySearchItem]` | ~80 |
+| `memory/result_mapper.py` | `group_hits_by_memory` | `hits` | `dict[str, list[dict]]` | ~15 |
+| `memory/result_mapper.py` | `merge_memory_and_message_hits` | `memory_groups`, `message_groups` | `dict[str, dict]` | ~40 |
+| `memory/result_mapper.py` | `build_match_reason` | `hit`, `source_index` | `list[str]` | ~30 |
+| `memory/result_mapper.py` | `build_message_preview` | `content`, `max_chars` | `str` | ~15 |
 
 ---
 
@@ -1154,13 +1136,13 @@ app/
 
 ### Search 子任务
 
-- [ ] **T13**：在 `search/schemas.py` 中添加 `MemoryFilters`、`MemorySearchItem`，扩展 `SearchRequest`（`filters` 和 `include_raw_preview` 字段）
-- [ ] **T14**：实现 `search/memory/filters.py`
-- [ ] **T15**：实现 `search/memory/query_builder.py`（含 `detect_task_id_in_query`、`build_memory_query_spec`）
-- [ ] **T16**：实现 `search/memory/repository.py`（`MemorySearchRepository`，替换 `EmptySearchRepository`）
-- [ ] **T17**：实现 `search/memory/result_mapper.py`（全部 5 个函数）
-- [ ] **T18**：在 `search/repositories/factory.py` 中注册 `MemorySearchRepository`
-- [ ] **T19**：在 `search_service.py` 中确认 MEMORY 分支走真实仓储
+- [ ] **T13**：在 `memory/schemas.py` 中添加 `MemoryFilters`、`MemorySearchRequest`、`MemorySearchItem`、`MemorySearchResponse`
+- [ ] **T14**：实现 `memory/filters.py`（`normalize_memory_filters`）
+- [ ] **T15**：实现 `memory/query_builder.py`（`detect_task_id_in_query`、`build_memory_query_spec`）
+- [ ] **T16**：实现 `memory/repositories/memory_search_repository.py`（`MemorySearchRepository`，双路检索）
+- [ ] **T17**：实现 `memory/result_mapper.py`（全部 5 个函数）
+- [ ] **T18**：实现 `memory/memory_search_service.py`（`MemorySearchService.search` 编排）
+- [ ] **T19**：在 `memory_api.py` 中添加 `POST /api/v1/memory/search` 端点
 
 ### OpenSearch 子任务
 
@@ -1176,29 +1158,26 @@ app/
 {
   "success": true,
   "total": 1,
-  "results": {
-    "memory": [
-      {
-        "memory_id": "memory-20260408-cni12345",
-        "title": "CNI-12345 allocate 函数 NPE 根因分析与修复",
-        "abstract": "分析 CNI-12345 中 allocate 函数在并发场景下因未判空导致 NPE 的根因，并给出修复方案。",
-        "overview_excerpt": "本次 memory 聚焦 CNI-12345 缺陷。用户提供了堆栈信息，AI 定位到 allocate() 第 87 行...",
-        "feature_tags": ["cni", "memory-allocator"],
-        "task_ids": ["CNI-12345"],
-        "domain_tags": ["concurrency", "memory-management"],
-        "component_tags": ["cpnb", "allocator"],
-        "created_at": "2026-04-08T09:30:00Z",
-        "score": 0.945,
-        "match_scope": "message",
-        "matched_message_id": "m2",
-        "matched_message_preview": "从堆栈来看，NPE 发生在 allocate() 第 87 行，原因是 context 对象在并发场景下未做判空...",
-        "download_ref": "memory://download/memory-20260408-cni12345",
-        "storage_path_ref": "memory://files/memory-20260408-cni12345",
-        "match_reason": ["task_ids_exact", "title_fuzzy", "message_semantic"],
-        "warnings": []
-      }
-    ]
-  }
+  "memories": [
+    {
+      "memory_id": "memory-20260408-cni12345",
+      "title": "CNI-12345 allocate 函数 NPE 根因分析与修复",
+      "abstract": "分析 CNI-12345 中 allocate 函数在并发场景下因未判空导致 NPE 的根因，并给出修复方案。",
+      "overview_excerpt": "本次 memory 聚焦 CNI-12345 缺陷。用户提供了堆栈信息，AI 定位到 allocate() 第 87 行...",
+      "feature_tags": ["cni", "memory-allocator"],
+      "task_ids": ["CNI-12345"],
+      "domain_tags": ["concurrency", "memory-management"],
+      "component_tags": ["cpnb", "allocator"],
+      "created_at": "2026-04-08T09:30:00Z",
+      "score": 0.945,
+      "match_scope": "message",
+      "matched_message_id": "m2",
+      "matched_message_preview": "从堆栈来看，NPE 发生在 allocate() 第 87 行，原因是 context 对象在并发场景下未做判空...",
+      "storage_path_ref": "memory://files/memory-20260408-cni12345",
+      "match_reason": ["task_ids_exact", "title_fuzzy", "message_semantic"],
+      "warnings": []
+    }
+  ]
 }
 ```
 
