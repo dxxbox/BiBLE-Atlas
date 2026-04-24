@@ -189,15 +189,64 @@ func Load() (*Config, error) {
 - `memory show`（占位，返回 `CLI_NOT_IMPLEMENTED`）
 - `skills list`（占位，返回 `CLI_NOT_IMPLEMENTED`）
 
-迁移说明：
+说明：
 
 1. 上述已存在子命令（含占位）后续统一按本规格收敛到目标命令模型。
-2. `skills list` 将收敛为 `skills ls`（可在迁移窗口保留 alias）。
-3. `knowledge search` 将收敛为顶层 `search`（可在迁移窗口保留 alias）。
-4. 简写与全写保持兼容：`ls` 等价 `list`。
+2. `knowledge search` 在核心使用上被顶层 `search` 替代， `knowledge search` 无`enable-hit`等扩展能力。
+3. 后续开发需保持简写与全写保持兼容：`ls` 等价 `list`。
+
+#### `bible health` - 知识库心跳包
+
+Server API：`GET /health`
+
+```json
+{
+  "ok": true,
+  "data": {
+    "service": "alive" | "bare" | "not_configured"
+  }
+}
+```
+
+#### `bible system info` - 返回Bible Server Info & readiness
+
+Server API: `GET /api/v1/system/info`
+
+```json
+{
+  "ok": true,
+  "data": {
+    "server":    "0.1.dev51",
+    "vectordb":   "ok" | "unhealthy" | "not_configured",
+    "fs":         "ok",
+    "apimanager": "ok" | "not_configured"
+  }
+}
+```
+
+#### `bible system status` - 返回系统工作状态（兼容回退）
+
+Server API: `GET /api/v1/system/status`
+
+兼容回退：当 `/api/v1/system/status` 返回 404 时，回退调用 `GET /health`。
+
+```json
+{
+  "ok": true,
+  "data": {
+    "service": "up"
+  }
+}
+```
+
 #### `bible search` — 知识库搜索，附带 skill/memory 命中（可降级）
 
-Server API：`POST /api/v1/search`
+Server API：`POST /api/v1/knowledge/search`
+
+语义说明：
+- `bible search` 是 CLI 聚合入口（面向工具调用的统一命令）。
+- 当前实现中，主检索底层调用 `knowledge search` 对应接口，并在 `--enable-hit` 时附带调用 `skills/memory` 命中检索。
+- 因此 `bible search` 与 `knowledge search` 是“入口与底层能力”的关系，不是冲突的两套功能定义。
 
 ```
 bible search --query <string> [--top-k <int, default 5>] [--enable-hit] [--hit-types <csv, default: skill,memory>]
@@ -402,8 +451,10 @@ bible skills download <name_or_id> [--output <dir, default: ~/.claude/skills/>]
 #### `bible session list` — 列出历史会话
 
 ```
-bible session list [--limit <int, default 10>]
+bible session list [--limit <int, default 10>] [--uid <string>]
 ```
+
+从bible server 查询 `uid`名下的 [--limit] 条session memory, 默认查询本客户端 `uid` 名下的session memory.
 
 ```json
 {
@@ -716,14 +767,15 @@ bible-vscode/
       {
         "name": "bible_session_list",
         "displayName": "List Sessions",
-        "modelDescription": "List recent conversation sessions saved in bible. Use when the user asks about past conversations, 'what we discussed before', or wants to recall previous context.",
+        "modelDescription": "List recent conversation sessions saved in bible. Use when the user asks about past conversations, 'what we discussed before', or wants to recall previous context. Optionally pass uid to list sessions under a specific user scope.",
         "userDescription": "List saved bible sessions",
         "tags": ["bible"],
         "icon": "$(history)",
         "inputSchema": {
           "type": "object",
           "properties": {
-            "limit": { "type": "number", "description": "Max sessions to return (default 10)" }
+            "limit": { "type": "number", "description": "Max sessions to return (default 10)" },
+            "uid": { "type": "string", "description": "Optional user scope. If omitted, use current client uid context." }
           }
         }
       },
@@ -1236,7 +1288,7 @@ export class SkillDownloadTool implements vscode.LanguageModelTool<Input> {
 import * as vscode from 'vscode';
 import { runCli } from '../cli';
 
-interface Input { limit?: number; }
+interface Input { limit?: number; uid?: string; }
 interface SessionItem { id: string; title: string; created_at: string; message_count: number; preview: string; }
 interface SessionListData { sessions: SessionItem[]; total: number; }
 
@@ -1245,8 +1297,12 @@ export class SessionListTool implements vscode.LanguageModelTool<Input> {
     options: vscode.LanguageModelToolInvocationOptions<Input>,
     _token: vscode.CancellationToken
   ): Promise<vscode.LanguageModelToolResult> {
-    const { limit = 10 } = options.input;
-    const data = await runCli<SessionListData>(['session', 'list', '--limit', String(limit)]);
+    const { limit = 10, uid } = options.input;
+    const args = ['session', 'list', '--limit', String(limit)];
+    if (uid && uid.trim().length > 0) {
+      args.push('--uid', uid.trim());
+    }
+    const data = await runCli<SessionListData>(args);
 
     if (data.sessions.length === 0) {
       return new vscode.LanguageModelToolResult([
@@ -1637,13 +1693,15 @@ export function deactivate(): void {}
 | `bible session save` | `POST /api/v1/sessions` |
 | `bible data delete` | `DELETE /api/v1/data/{key}` |
 
+补充说明：D1 的 `bible search -> POST /api/v1/search` 表示目标态统一聚合端点；在当前过渡实现（D2）中，`bible search` 的主检索路径仍落到 `knowledge search`，并可附带 `skills/memory` 命中查询。
+
 ### D2. 当前骨架已实现 API（`bible_cli_go` 现状）
 
 | 当前 CLI 命令 | 当前请求路径 | 备注 |
 |---|---|---|
-| `health` | `GET /api/v1/system/status` | 若 404 回退 `GET /health` |
+| `health` | `GET /health` | 无 |
 | `system status` | `GET /api/v1/system/status` | 若 404 回退 `GET /health` |
-| `system info` | `GET /api/v1/system/info` | 若 404 回退 `GET /info` |
+| `system info` | `GET /api/v1/system/info` | 若 404 回退 `GET /health` |
 | `search --query <q>` | `GET /api/v1/knowledge/search?query=...` | 已实现（主检索） |
 | `search --enable-hit` | `POST /api/v1/skills/search` | 已实现（附带命中，失败可降级） |
 | `search --enable-hit` | `POST /api/v1/memory/search` | 已实现（附带命中，失败可降级） |

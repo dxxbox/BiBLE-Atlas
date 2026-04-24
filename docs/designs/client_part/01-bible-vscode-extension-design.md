@@ -205,13 +205,16 @@ vscode.lm.registerTool('bible_knowledge_search', new KnowledgeSearchTool())
 
 | 工具名 | 对应 CLI 命令 | 类型 | 是否需要确认 | Status |
 |---|---|---|---|---|
+| `bible_health` | `health` | 只读 | 否 | Implemented |
+| `bible_info` | `system info` | 只读 | 否 | Planned |
+| `bible_status` | `system status` | 只读 | 否 | Planned |
 | `bible_knowledge_search` | `bible search --query Q [--top-k N] [--enable-hit] [--hit-types skill,memory]` | 只读 | 否 | Planned |
 | `bible_skill_list` | `bible skills ls [--tag TAG]` | 只读 | 否 | Planned |
 | `bible_skill_search` | `bible skills search --query Q` | 只读 | 否 | Planned |
 | `bible_skill_get` | `bible skills get <name> --content` | 只读 | 否 | Planned |
 | `bible_skill_upload` | `bible skills upload --file PATH` | 写 | 是 | Planned |
 | `bible_skill_download` | `bible skills download <name>` | 写（本地文件） | 是 | Planned |
-| `bible_session_list` | `bible session list [--limit N]` | 只读 | 否 | Planned |
+| `bible_session_list` | `bible session list [--limit N] [--uid UID]` | 只读 | 否 | Planned |
 | `bible_session_get` | `bible session get --id ID` | 只读 | 否 | Planned |
 | `bible_session_save` | `bible session save --input JSON` | 写 | 是 | Planned |
 | `bible_data_delete` | `bible data delete --key KEY [--hard]` | 写 | 是 | Planned |

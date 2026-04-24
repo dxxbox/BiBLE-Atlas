@@ -117,11 +117,10 @@ func TestRunKnowledgeSearchWithTooManyArgs(t *testing.T) {
 func TestRunHealthSuccess(t *testing.T) {
 	server := httptest.NewServer(nethttp.HandlerFunc(func(w nethttp.ResponseWriter, r *nethttp.Request) {
 		switch r.URL.Path {
+		case "/health":
+			_ = json.NewEncoder(w).Encode(map[string]any{"service": "up"})
 		case "/api/v1/system/status":
-			_ = json.NewEncoder(w).Encode(map[string]any{
-				"status": "ok",
-				"result": map[string]any{"service": "up"},
-			})
+			t.Fatalf("did not expect /api/v1/system/status for health command")
 		default:
 			w.WriteHeader(nethttp.StatusNotFound)
 		}
@@ -319,11 +318,8 @@ func TestRunGoldenScenarios(t *testing.T) {
 		expected := loadGoldenExpectation(t, "success.json")
 
 		server := httptest.NewServer(nethttp.HandlerFunc(func(w nethttp.ResponseWriter, r *nethttp.Request) {
-			if r.URL.Path == "/api/v1/system/status" {
-				_ = json.NewEncoder(w).Encode(map[string]any{
-					"status": "ok",
-					"result": map[string]any{"service": "up"},
-				})
+			if r.URL.Path == "/health" {
+				_ = json.NewEncoder(w).Encode(map[string]any{"service": "up"})
 				return
 			}
 			w.WriteHeader(nethttp.StatusNotFound)
