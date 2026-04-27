@@ -5,6 +5,7 @@ import (
 	nethttp "net/http"
 	"net/http/httptest"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -33,6 +34,53 @@ func TestStatusFallbackToHealthEndpoint(t *testing.T) {
 	}
 	if payload["status"] != "ok" {
 		t.Fatalf("expected status ok, got %v", payload["status"])
+	}
+}
+
+func TestHealthRequestsHealthEndpointDirectly(t *testing.T) {
+	server := httptest.NewServer(nethttp.HandlerFunc(func(w nethttp.ResponseWriter, r *nethttp.Request) {
+		switch r.URL.Path {
+		case "/health":
+			_ = json.NewEncoder(w).Encode(map[string]any{"service": "alive"})
+		case "/api/v1/system/status":
+			t.Fatalf("did not expect /api/v1/system/status for health command")
+		default:
+			w.WriteHeader(nethttp.StatusNotFound)
+		}
+	}))
+	defer server.Close()
+
+	client := New(config.ClientConfig{BaseURL: server.URL, TimeoutSeconds: 2})
+	payload, err := client.Health()
+	if err != nil {
+		t.Fatalf("expected no error, got %v", err)
+	}
+	if payload["service"] != "alive" {
+		t.Fatalf("expected service alive, got %v", payload["service"])
+	}
+}
+
+func TestInfoFallbackToHealthEndpoint(t *testing.T) {
+	server := httptest.NewServer(nethttp.HandlerFunc(func(w nethttp.ResponseWriter, r *nethttp.Request) {
+		switch r.URL.Path {
+		case "/api/v1/system/info":
+			w.WriteHeader(nethttp.StatusNotFound)
+			_ = json.NewEncoder(w).Encode(map[string]any{"detail": "missing"})
+		case "/health":
+			_ = json.NewEncoder(w).Encode(map[string]any{"service": "alive"})
+		default:
+			w.WriteHeader(nethttp.StatusNotFound)
+		}
+	}))
+	defer server.Close()
+
+	client := New(config.ClientConfig{BaseURL: server.URL, TimeoutSeconds: 2})
+	payload, err := client.Info()
+	if err != nil {
+		t.Fatalf("expected no error, got %v", err)
+	}
+	if payload["service"] != "alive" {
+		t.Fatalf("expected fallback /health payload, got %v", payload)
 	}
 }
 
@@ -235,6 +283,73 @@ func TestSearchIncludesSkillAndMemoryHitsWhenEnabled(t *testing.T) {
 	}
 	if _, ok := payload["memory"]; !ok {
 		t.Fatalf("expected memory section in response")
+	}
+}
+
+func TestSearchHitRequestsRunConcurrently(t *testing.T) {
+	var (
+		mu               sync.Mutex
+		skillRequestTime time.Time
+		memoryRequestTime time.Time
+	)
+
+	server := httptest.NewServer(nethttp.HandlerFunc(func(w nethttp.ResponseWriter, r *nethttp.Request) {
+		switch r.URL.Path {
+		case "/api/v1/knowledge/search":
+			_ = json.NewEncoder(w).Encode(map[string]any{
+				"status": "ok",
+				"result": map[string]any{"items": []any{}},
+			})
+		case "/api/v1/skills/search":
+			mu.Lock()
+			skillRequestTime = time.Now()
+			mu.Unlock()
+			time.Sleep(200 * time.Millisecond)
+			_ = json.NewEncoder(w).Encode(map[string]any{
+				"status": "ok",
+				"result": map[string]any{"skills": []any{}},
+			})
+		case "/api/v1/memory/search":
+			mu.Lock()
+			memoryRequestTime = time.Now()
+			mu.Unlock()
+			time.Sleep(200 * time.Millisecond)
+			_ = json.NewEncoder(w).Encode(map[string]any{
+				"status": "ok",
+				"result": map[string]any{"items": []any{}},
+			})
+		default:
+			w.WriteHeader(nethttp.StatusNotFound)
+		}
+	}))
+	defer server.Close()
+
+	client := New(config.ClientConfig{BaseURL: server.URL, TimeoutSeconds: 2})
+	_, err := client.Search(SearchOptions{
+		Query:     "faith",
+		TopK:      5,
+		EnableHit: true,
+		HitTypes:  []string{"skill", "memory"},
+	})
+	if err != nil {
+		t.Fatalf("expected no error, got %v", err)
+	}
+
+	mu.Lock()
+	skillAt := skillRequestTime
+	memoryAt := memoryRequestTime
+	mu.Unlock()
+
+	if skillAt.IsZero() || memoryAt.IsZero() {
+		t.Fatalf("expected both skill and memory search requests to be sent")
+	}
+
+	diff := skillAt.Sub(memoryAt)
+	if diff < 0 {
+		diff = -diff
+	}
+	if diff > 120*time.Millisecond {
+		t.Fatalf("expected hit requests to start concurrently, got start diff %s", diff)
 	}
 }
 

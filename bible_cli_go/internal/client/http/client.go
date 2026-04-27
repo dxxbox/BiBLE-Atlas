@@ -10,6 +10,7 @@ import (
 	nethttp "net/http"
 	"net/url"
 	"strings"
+	"sync"
 	"time"
 
 	"bible-cli-go/internal/config"
@@ -31,7 +32,11 @@ func New(cfg config.ClientConfig) *Client {
 }
 
 func (c *Client) Health() (map[string]any, error) {
-	return c.Status()
+	payload, _, err := c.getJSON("/health")
+	if err != nil {
+		return nil, err
+	}
+	return payload, nil
 }
 
 func (c *Client) Status() (map[string]any, error) {
@@ -43,7 +48,7 @@ func (c *Client) Status() (map[string]any, error) {
 }
 
 func (c *Client) Info() (map[string]any, error) {
-	payload, err := c.getEnvelopeOrPlain("/api/v1/system/info", "/info")
+	payload, err := c.getEnvelopeOrPlain("/api/v1/system/info", "/health")
 	if err != nil {
 		return nil, err
 	}
@@ -77,6 +82,18 @@ type SearchOptions struct {
 	HitTypes  []string
 }
 
+type searchHitTask struct {
+	index   int
+	hitType string
+}
+
+type searchHitOutcome struct {
+	index   int
+	hitType string
+	payload map[string]any
+	err     error
+}
+
 func (c *Client) Search(options SearchOptions) (map[string]any, error) {
 	knowledgePayload, err := c.KnowledgeSearch(options.Query)
 	if err != nil {
@@ -93,23 +110,61 @@ func (c *Client) Search(options SearchOptions) (map[string]any, error) {
 		return result, nil
 	}
 
-	warnings := []string{}
-	for _, hitType := range options.HitTypes {
+	tasks := make([]searchHitTask, 0, len(options.HitTypes))
+	for idx, hitType := range options.HitTypes {
 		switch hitType {
-		case "skill":
-			payload, hitErr := c.searchSkill(options.Query, options.TopK)
-			if hitErr != nil {
-				warnings = append(warnings, fmt.Sprintf("skill hit failed: %s", protocol.WrapAsCLIError(hitErr).Code))
-				continue
-			}
-			result["skill"] = payload
-		case "memory":
-			payload, hitErr := c.searchMemory(options.Query, options.TopK)
-			if hitErr != nil {
-				warnings = append(warnings, fmt.Sprintf("memory hit failed: %s", protocol.WrapAsCLIError(hitErr).Code))
-				continue
-			}
-			result["memory"] = payload
+		case "skill", "memory":
+			tasks = append(tasks, searchHitTask{
+				index:   idx,
+				hitType: hitType,
+			})
+		}
+	}
+
+	outcomes := make([]searchHitOutcome, len(tasks))
+	if len(tasks) > 0 {
+		outcomeCh := make(chan searchHitOutcome, len(tasks))
+		var wg sync.WaitGroup
+		wg.Add(len(tasks))
+		for taskIndex, task := range tasks {
+			go func(slot int, currentTask searchHitTask) {
+				defer wg.Done()
+
+				var (
+					payload map[string]any
+					hitErr  error
+				)
+				switch currentTask.hitType {
+				case "skill":
+					payload, hitErr = c.searchSkill(options.Query, options.TopK)
+				case "memory":
+					payload, hitErr = c.searchMemory(options.Query, options.TopK)
+				}
+
+				outcomeCh <- searchHitOutcome{
+					index:   slot,
+					hitType: currentTask.hitType,
+					payload: payload,
+					err:     hitErr,
+				}
+			}(taskIndex, task)
+		}
+
+		wg.Wait()
+		close(outcomeCh)
+		for outcome := range outcomeCh {
+			outcomes[outcome.index] = outcome
+		}
+	}
+
+	warnings := []string{}
+	for _, outcome := range outcomes {
+		if outcome.err != nil {
+			warnings = append(warnings, fmt.Sprintf("%s hit failed: %s", outcome.hitType, protocol.WrapAsCLIError(outcome.err).Code))
+			continue
+		}
+		if outcome.payload != nil {
+			result[outcome.hitType] = outcome.payload
 		}
 	}
 	if len(warnings) > 0 {
