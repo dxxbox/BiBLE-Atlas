@@ -1,0 +1,226 @@
+@startuml memory_download_flow
+title v4 MEMORY 下载流程（类/接口级时序）
+
+autonumber
+skinparam sequenceMessageAlign center
+skinparam responseMessageBelowArrow true
+
+actor Client as C
+participant "AppStartup\napp/main.py" as BOOT
+participant "ConfigManager\napp/config/config_manager.py" as CFG
+database "AppConfigYaml\napp/config/application.yaml" as CF
+participant "MemoryDownloadAPI\napp/api/download/memory_download_api.py" as API
+participant "AdminControlAPI\napp/api/control/admin_api.py" as ADM
+participant "AsyncTaskService\napp/features/async_task/service.py" as ATS
+database "AsyncTaskRepository\napp/features/async_task/repository.py" as ATR
+participant "CeleryBroker\nmemory:// / redis:// / amqp://" as BRK
+participant "CeleryWorker\ncelery worker process" as WRK
+participant "DownloadTaskExecutor\napp/features/async_task/executors/download_task_executor.py" as DEX
+participant "MemoryDownloadService\napp/features/download/memory_download/memory_download_service.py" as SVC
+participant "DownloadArtifactStore\napp/features/download/common/artifact_store.py" as ART
+participant "DownloadZipBuilder\napp/features/download/common/zip_builder.py" as ZIP
+participant "DatabaseFactory\napp/infrastructure/database/factory.py" as DBF
+participant "IDatabaseWriter\napp/infrastructure/database/base.py" as IDB
+participant "OpenSearchWriter\napp/infrastructure/database/opensearch/writer.py" as OSW
+participant "FileSystemFactory\napp/infrastructure/file_system/factory.py" as FSF
+participant "IFileSystemGateway\napp/infrastructure/file_system/base.py" as IFS
+participant "LocalFileSystemGateway\napp/infrastructure/file_system/local.py" as LFS
+participant "ArtifactSweeper\nscheduler/cron" as SWP
+
+== 程序启动阶段（仅一次） ==
+BOOT -> CFG: initialize()
+CFG -> CF: load()
+CF --> CFG: full_config
+CFG -> CFG: build_cache()\n按用途/范围切分配置
+
+== HTTP 接入（任务提交） ==
+C -> API: POST /api/download/memory/file|batch (application/json)\n{tag, storage_path(s), ...}
+API -> API: parse_json_body()
+API -> CFG: get_int(scope="download.max_batch_size")
+CFG --> API: max_batch_size
+API -> CFG: get_int(scope="download.artifact_ttl_hours")
+CFG --> API: artifact_ttl_hours
+API -> API: validate_request()\n- tag required\n- 路径格式合法\n- batch 数量 <= max_batch_size
+
+alt 参数非法
+  API --> C: 400 INVALID_ARGUMENT / DOWNLOAD_LIMIT_EXCEEDED
+  return
+end
+
+API -> API: assert tag == "memory"
+alt tag 非 memory
+  API --> C: 400 TAG_INVALID
+  return
+end
+
+API -> ATS: submit(task_type="download.memory.file|download.memory.batch", payload)
+ATS -> ATR: create(task_id, status=queued, payload)
+ATS -> BRK: send_task("async.dispatch", task_id, task_type, payload)
+ATS --> API: {task_id, status=queued}
+API --> C: 202 Accepted\n{task_id, domain=MEMORY, tag=memory, status=queued}
+
+note over API,SVC
+当前流程仅覆盖 file/batch。
+by-search 下载属于后续演进能力。
+end note
+
+... Celery Worker 异步消费 ...
+
+BRK -> WRK: deliver dispatch_task(task_id, task_type, payload)
+WRK -> ATR: update_status(task_id, running)
+WRK -> DEX: execute(task_id, task_type, payload)
+
+alt task_type == download.memory.file
+  DEX -> SVC: execute_single_task(task_id, payload)
+else task_type == download.memory.batch
+  DEX -> SVC: execute_batch_task(task_id, payload)
+end
+
+== 绑定读取 ==
+SVC -> DBF: get_writer(domain=MEMORY)
+DBF --> SVC: IDatabaseWriter
+SVC -> IDB: get_binding_by_domain_tag(MEMORY, tag=memory)
+IDB -> OSW: get_binding_by_domain_tag(...)
+OSW --> IDB: binding?
+IDB --> SVC: binding?
+
+alt 未找到绑定
+  SVC -> WRK: raise DomainError(INDEX_NOT_BOUND)
+  return
+end
+
+== 任务执行 ==
+alt 单文件任务
+  SVC -> IDB: get_file_registry_by_storage_path(index=kb_index, storage_path)
+  IDB -> OSW: query file registry by path
+  OSW --> IDB: file_record?
+  IDB --> SVC: file_record?
+
+  alt 注册记录缺失
+    SVC -> WRK: raise DomainError(FILE_REGISTRY_NOT_FOUND)
+    return
+  end
+
+  SVC -> FSF: get_gateway()
+  FSF --> SVC: IFileSystemGateway
+  SVC -> IFS: exists(storage_path)
+  IFS -> LFS: exists(...)
+  LFS --> IFS: true/false
+  IFS --> SVC: exists?
+
+  alt 文件丢失
+    SVC -> WRK: raise DomainError(FILE_NOT_FOUND)
+    return
+  end
+
+  SVC -> ART: create_from_single_file(task_id,\ndomain=MEMORY,\nsource_storage_path,\nartifact_name,\nexpires_at)
+  ART -> FSF: get_gateway()
+  FSF --> ART: IFileSystemGateway
+  ART -> IFS: open_read(source_storage_path)
+  IFS -> LFS: open_read(...)
+  LFS --> IFS: source_stream
+  IFS --> ART: source_stream
+  ART -> IFS: store(file_stream=source_stream,\ndomain=MEMORY,\nkb_index,\nfilename=artifact_name,\ntask_id)
+  IFS -> LFS: store(...)
+  LFS --> IFS: {artifact_storage_path, size_bytes, file_hash}
+  IFS --> ART: store_result
+  ART --> SVC: artifact_meta
+
+else 批量任务
+  SVC -> SVC: normalize/deduplicate storage_paths
+  SVC -> SVC: assert size <= max_batch_size
+  alt 数量超限
+    SVC -> WRK: raise DomainError(DOWNLOAD_LIMIT_EXCEEDED)
+    return
+  end
+
+  SVC -> IDB: get_file_registry_by_storage_paths(index=kb_index, storage_paths)
+  IDB -> OSW: query file registry by paths
+  OSW --> IDB: file_records[]
+  IDB --> SVC: file_records[]
+  SVC -> SVC: assert all requested paths registered
+  alt 存在未注册路径
+    SVC -> WRK: raise DomainError(FILE_REGISTRY_NOT_FOUND)
+    return
+  end
+
+  SVC -> FSF: get_gateway()
+  FSF --> SVC: IFileSystemGateway
+  loop for each storage_path
+    SVC -> IFS: exists(storage_path)
+    IFS -> LFS: exists(...)
+    LFS --> IFS: true/false
+    IFS --> SVC: exists?
+    alt 文件丢失
+      SVC -> WRK: raise DomainError(FILE_NOT_FOUND)
+      return
+    end
+  end
+
+  SVC -> ZIP: build_zip(file_records,\npackage_name,\ninclude_metadata)
+  ZIP --> SVC: {zip_bytes, item_count}
+  alt ZIP 生成失败
+    SVC -> WRK: raise DomainError(ZIP_BUILD_FAILED)
+    return
+  end
+
+  SVC -> ART: create_from_zip_bytes(task_id,\ndomain=MEMORY,\nzip_bytes,\nartifact_name,\nexpires_at)
+  ART -> FSF: get_gateway()
+  FSF --> ART: IFileSystemGateway
+  ART -> IFS: store(file_stream=zip_bytes_stream,\ndomain=MEMORY,\nkb_index,\nfilename=artifact_name,\ntask_id)
+  IFS -> LFS: store(...)
+  LFS --> IFS: {artifact_storage_path, size_bytes, file_hash}
+  IFS --> ART: store_result
+  ART --> SVC: artifact_meta
+end
+
+SVC --> DEX: {artifact_id, artifact_name,\ncontent_type, size_bytes,\nexpires_at, item_count?}
+DEX --> WRK: task_result
+WRK -> ATR: update_status(task_id, completed, task_result)
+
+== 客户端轮询任务状态 ==
+loop until status in {completed, failed, cancelled}
+  C -> ADM: GET /api/control/admin/tasks/{task_id}
+  ADM -> ATS: get(task_id)
+  ATS -> ATR: get(task_id)
+  ATR --> ATS: task_record
+  ATS --> ADM: task_view
+  ADM --> C: {task_id, status, result?}
+end
+
+== 产物拉取 ==
+C -> API: GET /api/download/memory/artifact/{artifact_id}
+API -> ART: get(artifact_id)
+ART --> API: artifact_meta?
+alt artifact 不存在
+  API --> C: 404 DOWNLOAD_ARTIFACT_NOT_FOUND
+  return
+end
+
+API -> API: validate domain==MEMORY and expires_at
+alt artifact 已过期
+  API --> C: 410 DOWNLOAD_ARTIFACT_EXPIRED
+  return
+end
+
+API -> FSF: get_gateway()
+FSF --> API: IFileSystemGateway
+API -> IFS: open_read(artifact_storage_path)
+IFS -> LFS: open_read(...)
+LFS --> IFS: artifact_stream
+IFS --> API: artifact_stream
+API --> C: 200 StreamingResponse\nContent-Disposition / Content-Type
+
+== 过期清理（定时） ==
+SWP -> ART: sweep_expired(now_iso)
+ART -> FSF: get_gateway()
+FSF --> ART: IFileSystemGateway
+loop each expired artifact
+  ART -> IFS: delete(artifact_storage_path)
+  IFS -> LFS: delete(...)
+  LFS --> IFS: deleted?
+  IFS --> ART: deleted?
+end
+ART --> SWP: cleaned_count
+
+@enduml

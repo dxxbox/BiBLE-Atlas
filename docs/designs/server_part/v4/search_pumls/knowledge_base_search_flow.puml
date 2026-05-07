@@ -1,0 +1,142 @@
+@startuml knowledge_base_search_flow
+title v4 KNOWLEDGE_BASE 检索流程（类/接口级时序）
+
+autonumber
+skinparam sequenceMessageAlign center
+skinparam responseMessageBelowArrow true
+
+actor Client as C
+participant "AppStartup\napp/main.py" as BOOT
+participant "ConfigManager\napp/config/config_manager.py" as CFG
+database "AppConfigYaml\napp/config/application.yaml" as CF
+participant "VectorModelPreloader\napp/infrastructure/vector/model_preloader.py" as VMP
+participant "VectorTool\napp/infrastructure/vector/vector_tool.py" as VEC
+participant "KnowledgeBaseSearchAPI\napp/api/search/knowledge_base_search_api.py" as API
+participant "KnowledgeBaseSearchService\napp/features/search/knowledge_base_search/knowledge_base_search_service.py" as SVC
+participant "KnowledgeBaseSearcher\napp/features/search/knowledge_base_search/searcher/search_knowledge_base.py" as SRCH
+participant "QueryProfileCompiler\napp/features/search/common/query_profile_compiler.py" as QPC
+participant "DatabaseFactory\napp/infrastructure/database/factory.py" as DBF
+participant "IDatabaseGateway\napp/infrastructure/database/base.py" as IDB
+participant "OpenSearchWriter\napp/infrastructure/database/opensearch/writer.py" as OSW
+
+== 程序启动阶段（仅一次） ==
+BOOT -> CFG: initialize()
+CFG -> CF: load()
+CF --> CFG: full_config
+CFG -> CFG: build_cache()\n按用途/范围切分配置
+
+BOOT -> CFG: get_bool(scope="vector.preload_on_startup")
+alt 启用向量模型预加载
+  CFG --> BOOT: true
+  BOOT -> VMP: preload_all_models_async()
+  VMP -> CFG: get_list(scope="vector.available_models")
+  CFG --> VMP: model_list[]
+  loop for each model in model_list
+    VMP -> VEC: ensure_model_ready(model)
+    alt 本地缓存命中
+      VEC --> VMP: ready(local_cache)
+    else 本地缓存未命中
+      VEC -> VEC: download_from_huggingface(model)
+      VEC --> VMP: ready(downloaded)
+    end
+  end
+else 关闭向量模型预加载
+  CFG --> BOOT: false
+  BOOT -> BOOT: skip preload
+end
+
+== HTTP 接入 ==
+C -> API: POST /api/search/knowledge-base (application/json)\n{query, tag, search_type?, top_k?, vector_model?, vector_weight?}
+API -> API: parse_json_body()
+
+== 读取缓存配置并校验请求 ==
+API -> CFG: get_int(scope="search.default_top_k")
+CFG --> API: default_top_k
+API -> CFG: get_int(scope="search.max_top_k")
+CFG --> API: max_top_k
+API -> API: validate_request()\n- query non-empty\n- tag required\n- search_type in allowed\n- 1 <= top_k <= max_top_k\n- 0 <= vector_weight <= 1
+alt 参数非法
+  API --> C: 400 INVALID_ARGUMENT / SEARCH_TYPE_INVALID
+  return
+end
+
+API -> API: validate required fields(tag)
+alt tag 缺失
+  API --> C: 400 TAG_REQUIRED
+  return
+end
+
+API -> SVC: search(query, tag,\nsearch_type, top_k, vector_model, vector_weight)
+
+== 读取绑定与一致性检查 ==
+SVC -> DBF: get_writer(domain=KNOWLEDGE_BASE)
+DBF --> SVC: IDatabaseGateway
+SVC -> IDB: get_binding_by_domain_tag(KNOWLEDGE_BASE, tag)
+IDB -> OSW: get_binding_by_domain_tag(...)
+OSW --> IDB: binding?
+IDB --> SVC: binding?
+
+alt 未找到绑定
+  SVC --> API: INDEX_NOT_BOUND
+  API --> C: 404 INDEX_NOT_BOUND
+  return
+end
+
+SVC -> SVC: effective_search_type = normalize(search_type, default=text)
+SVC -> SVC: normalized_top_k / normalized_vector_weight
+
+alt 请求携带 vector_model 且与绑定不一致
+  SVC --> API: VECTOR_MODEL_CONFLICT
+  API --> C: 409 VECTOR_MODEL_CONFLICT
+  return
+end
+
+== 检索执行 ==
+SVC -> SRCH: search(kb_index, query, effective_search_type,\nnormalized_top_k, binding.search_profile,\nbinding.vector_model, normalized_vector_weight,\ndb_gateway=IDB)
+
+group DSL 编译阶段
+  alt search_type in {vector, hybrid}
+    SRCH -> VEC: ensure_model_ready(binding.vector_model)
+    alt 本地缓存命中
+      VEC --> SRCH: ready(local_cache)
+    else 本地缓存未命中
+      VEC -> VEC: download_from_huggingface(binding.vector_model)
+      VEC --> SRCH: ready(downloaded)
+    end
+    SRCH -> VEC: embed_query(query, binding.vector_model)
+    VEC --> SRCH: query_vector
+  end
+
+  SRCH -> QPC: compile(\nsearch_profile,\nsearch_type=effective_search_type,\nquery,\ntop_k,\nvector_weight,\nquery_vector?\n)
+  QPC -> QPC: apply KB rules\nkeyword/title/text/vector/hybrid\nfrom bound search_profile
+  QPC --> SRCH: search_dsl + response_fields
+
+  alt 编译失败
+    SRCH --> SVC: SEARCH_PROFILE_INVALID
+    SVC --> API: SEARCH_PROFILE_INVALID
+    API --> C: 422 SEARCH_PROFILE_INVALID
+    return
+  end
+end
+
+SRCH -> IDB: search_content_docs(index=kb_index, dsl=search_dsl)
+IDB -> OSW: search(index=kb_index, body=search_dsl)
+OSW --> IDB: hits(total, _score, _source)
+IDB --> SRCH: hits
+
+alt 查询失败
+  SRCH --> SVC: INTERNAL_ERROR
+  SVC --> API: INTERNAL_ERROR
+  API --> C: 500 INTERNAL_ERROR
+  return
+end
+
+SRCH -> SRCH: map_hits()\n- output fields from response_fields\n- score <- _score
+SRCH --> SVC: {kb_index, total, items[]}
+
+== 响应组装 ==
+SVC -> SVC: build_response()\n- domain=KNOWLEDGE_BASE\n- keep tag as requested\n- exclude chunk_id/took_ms
+SVC --> API: search_result
+API --> C: 200 OK\n{success, domain, kb_index, tag,\ntotal, results.knowledge_base[]}
+
+@enduml

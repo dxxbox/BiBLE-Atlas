@@ -1,0 +1,215 @@
+@startuml knowledge_base_import_flow
+title v4 KNOWLEDGE_BASE 导入流程（类/接口级时序）
+
+autonumber
+skinparam sequenceMessageAlign center
+skinparam responseMessageBelowArrow true
+
+actor Client as C
+participant "AppStartup\napp/main.py" as BOOT
+participant "ConfigManager\napp/config/config_manager.py" as CFG
+database "AppConfigYaml\napp/config/application.yaml" as CF
+participant "VectorModelPreloader\napp/infrastructure/vector/model_preloader.py" as VMP
+participant "VectorTool\napp/infrastructure/vector/vector_tool.py" as VEC
+participant "KnowledgeBaseImportAPI\napp/api/import/knowledge_base_import_api.py" as API
+participant "AsyncTaskService\napp/features/async_task/service.py" as ATS
+database "AsyncTaskRepository\napp/features/async_task/repository.py" as ATR
+participant "CeleryBroker\nmemory:// / redis:// / amqp://" as BRK
+participant "CeleryWorker\ncelery worker process" as WRK
+participant "ImportTaskExecutor\napp/features/import/import_task_executor.py" as IEX
+participant "KnowledgeBaseImportService\napp/features/import/knowledge_base_import/knowledge_base_import_service.py" as SVC
+database "KBParsersDir\napp/features/import/knowledge_base_import/parsers/" as PSD
+participant "ASTGuard\napp/features/import/parser_runtime/ast_guard.py" as AST
+participant "SandboxRunner\napp/features/import/parser_runtime/sandbox_runner.py" as RUN
+participant "StoreKnowledgeBase\napp/features/import/knowledge_base_import/storage/store_knowledge_base.py" as STOR
+participant "DatabaseFactory\napp/infrastructure/database/factory.py" as DBF
+participant "IDatabaseWriter\napp/infrastructure/database/base.py" as IDB
+participant "OpenSearchWriter\napp/infrastructure/database/opensearch/writer.py" as OSW
+
+== 程序启动阶段（仅一次） ==
+BOOT -> CFG: initialize()
+CFG -> CF: load()
+CF --> CFG: full_config
+CFG -> CFG: build_cache()\n按用途/范围切分配置
+
+BOOT -> CFG: get_bool(scope="vector.preload_on_startup")
+alt 启用向量模型预加载
+  CFG --> BOOT: true
+  BOOT -> VMP: preload_all_models_async()
+  VMP -> CFG: get_list(scope="vector.available_models")
+  CFG --> VMP: model_list[]
+  loop for each model in model_list
+    VMP -> VEC: ensure_model_ready(model)
+    alt 本地缓存命中
+      VEC --> VMP: ready(local_cache)
+    else 本地缓存未命中
+      VEC -> VEC: download_from_huggingface(model)
+      VEC --> VMP: ready(downloaded)
+    end
+  end
+else 关闭向量模型预加载
+  CFG --> BOOT: false
+  BOOT -> BOOT: skip preload
+end
+
+== HTTP 接入 ==
+C -> API: POST /api/import/knowledge-base (multipart/form-data)\nfiles[] + kb_index + tag + parser_script? + vector_model?
+API -> API: 解析请求体并提取 UploadFile[]
+
+== 读取缓存配置并校验上传 ==
+API -> CFG: get_upload_constraints(scope="import.knowledge_base.upload")
+CFG --> API: {supported_types,max_file_size,max_total_size,max_file_count}
+API -> API: validate_files(files, limits)\n- 文件扩展名在 supported_types\n- 每个文件 <= max_file_size\n- 总大小 <= max_total_size\n- 文件数量 <= max_file_count
+
+alt 校验失败
+  API --> C: 400 INVALID_ARGUMENT\n(文件类型/文件大小/总大小/总数量不合法)
+  return
+end
+
+API -> API: validate required fields(kb_index, tag)
+alt tag 缺失或非法
+  API --> C: 400 TAG_REQUIRED / TAG_INVALID
+  return
+end
+
+== 异步任务创建 ==
+API -> ATS: submit(task_type="import.knowledge_base", payload)
+ATS -> ATR: create(task_id, status=queued, payload)
+ATS -> BRK: send_task("async_task.dispatch", task_id, task_type, payload)
+ATS --> API: {task_id, status=queued}
+API --> C: 202 Accepted\n{task_id, domain=KNOWLEDGE_BASE, kb_index, tag, status=queued}
+
+... Celery Worker 异步消费 ...
+
+BRK -> WRK: deliver dispatch_task(task_id, task_type, payload)
+WRK -> ATR: update_status(task_id, running)
+note over WRK
+dispatch_task 统一捕获 DomainError/Exception
+失败时写 ATR failed，成功时写 ATR completed
+end note
+WRK -> IEX: execute(task_id, task_type, payload)
+IEX -> SVC: execute_task(task_id, payload, files)
+note over SVC
+execute_task 使用 try/except/finally
+所有失败 return 分支在返回前都会进入 finally 清理
+end note
+
+== 解析脚本选择 ==
+alt 请求携带 parser_script
+  SVC -> SVC: save_uploaded_parser(parser_script,\nparsers_dir, target_name="parse_<tag>.py")
+  SVC -> PSD: write("parse_<tag>.py")
+  PSD --> SVC: saved_path
+  SVC -> SVC: parser_script_source = upload
+else 请求未携带 parser_script
+  SVC -> PSD: exists("parse_<tag>.py")?
+  alt 命中 parse_<tag>.py
+    PSD --> SVC: true
+    SVC -> SVC: parser_script_path = "parsers/parse_<tag>.py"\nparser_script_source = dir_discovery
+  else 未命中 parse_<tag>.py
+    PSD --> SVC: false
+    SVC -> PSD: exists("parse_default.py")?
+    alt 命中 parse_default.py
+      PSD --> SVC: true
+      SVC -> SVC: parser_script_path = "parsers/parse_default.py"\nparser_script_source = default
+    else 默认脚本缺失
+      PSD --> SVC: false
+      SVC -> WRK: raise DomainError(PARSER_SCRIPT_NOT_FOUND)
+      return
+    end
+  end
+end
+
+== 安全门禁 ==
+SVC -> AST: validate(parser_script_path)
+AST --> SVC: pass/fail
+alt AST 失败
+  SVC -> WRK: raise DomainError(PARSER_SCRIPT_RISK)
+  return
+end
+
+== 解析执行 ==
+loop for each file in files[]
+  SVC -> RUN: run_parse(parser_script_path,\nfile_path, parser_context)
+  RUN --> SVC: parse_result {chunks, search_profile}
+  SVC -> SVC: validate_parse_result_schema(parse_result)
+  alt parse_result 非法
+    SVC -> WRK: raise DomainError(PARSE_RESULT_SCHEMA_INVALID)
+    return
+  end
+end
+
+SVC -> SVC: merge_chunks_and_check_profile_consistency()
+
+== 索引绑定检查与持久化（收敛在 store_knowledge_base.py） ==
+note right of STOR
+  不单独拆 search_profile_store.py
+  绑定读写 + 内容入库都在 store_knowledge_base.py
+end note
+
+SVC -> STOR: get_binding_by_domain_index(\nKNOWLEDGE_BASE, kb_index)
+STOR -> DBF: get_writer(domain=KNOWLEDGE_BASE)
+DBF --> STOR: IDatabaseWriter
+STOR -> IDB: get_binding_by_domain_index(\nKNOWLEDGE_BASE, kb_index)
+IDB -> OSW: get_binding_by_domain_index(...)
+OSW --> IDB: existing_binding?
+IDB --> STOR: existing_binding?
+STOR --> SVC: existing_binding?
+
+alt 首次绑定
+  SVC -> STOR: create_binding(\nkb_index, tag, parser_script_source,\nparser_script_sha256, vector_model, search_profile)
+  STOR -> IDB: create_index_binding(binding_doc)
+  IDB -> OSW: create_index_binding(binding_doc)
+  OSW --> IDB: created
+  IDB --> STOR: created
+  STOR --> SVC: created
+else 已存在绑定
+  SVC -> STOR: assert_binding_consistency(\nexisting_binding, parser_script_sha256,\nvector_model, search_profile_sha256)
+  STOR --> SVC: ok/fail
+  alt 绑定冲突
+    SVC -> WRK: raise DomainError(INDEX_BINDING_CONFLICT)
+    return
+  end
+end
+
+== 向量化与内容入库 ==
+SVC -> STOR: store(chunks, kb_index, tag, vector_model, search_profile)
+alt 请求携带 vector_model
+  STOR -> VEC: ensure_model_ready(vector_model)
+  alt 本地缓存命中
+    VEC --> STOR: ready(local_cache)
+  else 本地缓存未命中
+    VEC -> VEC: download_from_huggingface(vector_model)
+    VEC --> STOR: ready(downloaded)
+  end
+  STOR -> VEC: embed_chunks(chunks,\nvector_model,\nsource_template=search_profile.vector.source_template)
+  VEC --> STOR: chunks_with_vector(content_vector[])
+else 未携带 vector_model
+  STOR -> STOR: keep original chunks (no vector field)
+end
+
+STOR -> IDB: bulk_upsert_content_docs(index=kb_index, docs)
+IDB -> OSW: bulk_upsert_content_docs(index=kb_index, docs)
+OSW --> IDB: {success_count, fail_count}
+IDB --> STOR: store_result
+STOR --> SVC: store_result
+
+alt 入库失败
+  SVC -> WRK: raise DomainError(INTERNAL_ERROR)
+  return
+end
+
+== 任务结束与审计 ==
+SVC --> IEX: task_result\n{imported_docs, parser_script_source,\nsearch_profile_sha256, database_write_status}
+IEX --> WRK: task_result
+WRK -> ATR: update_status(task_id, completed, task_result)
+
+== 任务临时目录清理（finally） ==
+SVC -> SVC: cleanup_task_workspace(task_id)
+alt 失败且 keep_failed_workspace=true
+  SVC -> SVC: 保留 <import_work_root>/<task_id>/ 供排障
+else 默认（成功或失败）
+  SVC -> SVC: 删除 <import_work_root>/<task_id>/\n(含 staged/ 与中间清单文件，若存在)
+end
+SVC -> SVC: sweep_expired_task_workspaces(ttl_hours)
+
+@enduml

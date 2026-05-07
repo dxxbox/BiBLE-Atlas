@@ -1,0 +1,248 @@
+@startuml skill_import_flow
+title v4 SKILL 导入流程（类/接口级时序）
+
+autonumber
+skinparam sequenceMessageAlign center
+skinparam responseMessageBelowArrow true
+
+actor Client as C
+participant "AppStartup\napp/main.py" as BOOT
+participant "ConfigManager\napp/config/config_manager.py" as CFG
+database "AppConfigYaml\napp/config/application.yaml" as CF
+participant "VectorModelPreloader\napp/infrastructure/vector/model_preloader.py" as VMP
+participant "VectorTool\napp/infrastructure/vector/vector_tool.py" as VEC
+participant "SkillImportAPI\napp/api/import/skill_import_api.py" as API
+participant "AsyncTaskService\napp/features/async_task/service.py" as ATS
+database "AsyncTaskRepository\napp/features/async_task/repository.py" as ATR
+participant "CeleryBroker\nmemory:// / redis:// / amqp://" as BRK
+participant "CeleryWorker\ncelery worker process" as WRK
+participant "ImportTaskExecutor\napp/features/import/import_task_executor.py" as IEX
+participant "SkillImportService\napp/features/import/skill_import/skill_import_service.py" as SVC
+database "SkillParsersDir\napp/features/import/skill_import/parsers/" as PSD
+participant "ASTGuard\napp/features/import/parser_runtime/ast_guard.py" as AST
+participant "SandboxRunner\napp/features/import/parser_runtime/sandbox_runner.py" as RUN
+participant "StoreSkill\napp/features/import/skill_import/storage/store_skill.py" as STOR
+participant "FileSystemFactory\napp/infrastructure/file_system/factory.py" as FSF
+participant "IFileSystemGateway\napp/infrastructure/file_system/base.py" as IFS
+participant "LocalFileSystemGateway\napp/infrastructure/file_system/local.py" as LFS
+participant "DatabaseFactory\napp/infrastructure/database/factory.py" as DBF
+participant "IDatabaseWriter\napp/infrastructure/database/base.py" as IDB
+participant "OpenSearchWriter\napp/infrastructure/database/opensearch/writer.py" as OSW
+
+== 程序启动阶段（仅一次） ==
+BOOT -> CFG: initialize()
+CFG -> CF: load()
+CF --> CFG: full_config
+CFG -> CFG: build_cache()\n按用途/范围切分配置
+
+BOOT -> CFG: get_bool(scope="vector.preload_on_startup")
+alt 启用向量模型预加载
+  CFG --> BOOT: true
+  BOOT -> VMP: preload_all_models_async()
+  VMP -> CFG: get_list(scope="vector.available_models")
+  CFG --> VMP: model_list[]
+  loop for each model in model_list
+    VMP -> VEC: ensure_model_ready(model)
+    alt 本地缓存命中
+      VEC --> VMP: ready(local_cache)
+    else 本地缓存未命中
+      VEC -> VEC: download_from_huggingface(model)
+      VEC --> VMP: ready(downloaded)
+    end
+  end
+else 关闭向量模型预加载
+  CFG --> BOOT: false
+  BOOT -> BOOT: skip preload
+end
+
+== HTTP 接入 ==
+C -> API: POST /api/import/skill (multipart/form-data)\nfiles[] + kb_index + tag + parser_script? + vector_model?
+API -> API: 解析请求并提取 UploadFile[]
+
+== 读取缓存配置并校验上传 ==
+API -> CFG: get_upload_constraints(scope="import.skill.upload")
+CFG --> API: {supported_types,max_file_size,max_total_size,max_file_count}
+API -> API: validate_files(files, limits)\n- 扩展名 in supported_types\n- 单文件 <= max_file_size\n- 总大小 <= max_total_size\n- 文件总数 <= max_file_count
+
+alt 校验失败
+  API --> C: 400 INVALID_ARGUMENT
+  return
+end
+
+API -> API: assert tag == "skill"
+alt tag 非 skill
+  API --> C: 400 TAG_INVALID
+  return
+end
+
+API -> API: validate required fields(kb_index)
+
+== 异步任务创建 ==
+API -> ATS: submit(task_type="import.skill", payload)
+ATS -> ATR: create(task_id, status=queued, payload)
+ATS -> BRK: send_task("async_task.dispatch", task_id, task_type, payload)
+ATS --> API: {task_id, status=queued}
+API --> C: 202 Accepted\n{task_id, domain=SKILL, kb_index, tag=skill, status=queued}
+
+... Celery Worker 异步消费 ...
+
+BRK -> WRK: deliver dispatch_task(task_id, task_type, payload)
+WRK -> ATR: update_status(task_id, running)
+note over WRK
+dispatch_task 统一捕获 DomainError/Exception
+失败时写 ATR failed，成功时写 ATR completed
+end note
+WRK -> IEX: execute(task_id, task_type, payload)
+IEX -> SVC: execute_task(task_id, payload, files)
+note over SVC
+execute_task 使用 try/except/finally
+所有失败 return 分支在返回前都会进入 finally 清理
+end note
+
+== 解析脚本选择 ==
+alt 请求携带 parser_script
+  SVC -> SVC: save_uploaded_parser(parser_script,\nparsers_dir, target_name="parse_skill.py")
+  SVC -> PSD: write("parse_skill.py")
+  PSD --> SVC: saved_path
+  SVC -> SVC: parser_script_source = upload
+else 请求未携带 parser_script
+  SVC -> PSD: exists("parse_skill.py")?
+  alt 命中 parse_skill.py
+    PSD --> SVC: true
+    SVC -> SVC: parser_script_path = "parsers/parse_skill.py"\nparser_script_source = dir_discovery
+  else 未命中 parse_skill.py
+    PSD --> SVC: false
+    SVC -> PSD: exists("parse_default.py")?
+    alt 命中 parse_default.py
+      PSD --> SVC: true
+      SVC -> SVC: parser_script_path = "parsers/parse_default.py"\nparser_script_source = default
+    else 默认脚本缺失
+      PSD --> SVC: false
+      SVC -> WRK: raise DomainError(PARSER_SCRIPT_NOT_FOUND)
+      return
+    end
+  end
+end
+
+== 安全门禁 ==
+SVC -> AST: validate(parser_script_path)
+AST --> SVC: pass/fail
+alt AST 失败
+  SVC -> WRK: raise DomainError(PARSER_SCRIPT_RISK)
+  return
+end
+
+== 临时落地与 manifest 构建 ==
+SVC -> STOR: stage_upload_files(files, task_id)
+STOR -> STOR: 生成 file_ref 并写入 staged 目录
+STOR --> SVC: staged_files[]\n{file_ref, filename, abs_path, size_bytes, content_type}
+
+SVC -> STOR: build_parse_manifest(staged_files,\ntask_id, kb_index, tag=skill)
+STOR --> SVC: manifest_path
+
+== 解析执行（唯一总入口） ==
+SVC -> RUN: run_parse(parser_script_path,\nmanifest_path, parser_context)
+group parse_skill.py 内部（SKILL 专项）
+  RUN -> RUN: load manifest (all uploaded files)
+  RUN -> RUN: validate exactly one ".skill"
+  RUN -> RUN: classify non-skill files
+  RUN -> RUN: unzip ".skill" safely\n(path traversal / size limit / entry count)
+  RUN -> RUN: locate "SKILL.md"
+  RUN -> RUN: parse SKILL.md -> name/description/body
+  RUN -> RUN: build chunks + search_profile + local_file_storage_plan
+end
+RUN --> SVC: parse_result\n{chunks, search_profile, local_file_storage_plan}
+SVC -> SVC: validate_parse_result_schema(parse_result)
+alt parse_result 非法
+  SVC -> WRK: raise DomainError(PARSE_RESULT_SCHEMA_INVALID)
+  return
+end
+
+SVC -> SVC: merge_chunks_and_check_profile_consistency()
+
+== 存储总入口（先本地后数据库） ==
+SVC -> STOR: store(kb_index, parse_result,\nvector_model, parser_script_source, parser_script_sha256)
+
+group 本地存储阶段（必须先执行）
+  STOR -> FSF: get_gateway()
+  FSF --> STOR: IFileSystemGateway
+  loop for each plan_item in local_file_storage_plan.files[]
+    STOR -> IFS: store(file_stream_from_source_path,\ndomain=SKILL, kb_index, filename)
+    IFS -> LFS: store(...)
+    LFS --> IFS: {storage_path, file_hash, size_bytes}
+    IFS --> STOR: file_store_result
+  end
+  STOR -> STOR: build ref_to_storage_path map
+  STOR -> STOR: hydrate_chunks_with_storage_paths()
+end
+
+group 绑定检查阶段
+  STOR -> DBF: get_writer(domain=SKILL)
+  DBF --> STOR: IDatabaseWriter
+  STOR -> IDB: get_binding_by_domain_index(SKILL, kb_index)
+  IDB -> OSW: get_binding_by_domain_index(...)
+  OSW --> IDB: existing_binding?
+  IDB --> STOR: existing_binding?
+
+  alt 首次绑定
+    STOR -> IDB: create_index_binding(binding_doc)
+    IDB -> OSW: create_index_binding(binding_doc)
+    OSW --> IDB: created
+    IDB --> STOR: created
+  else 已存在绑定
+    STOR -> STOR: assert_binding_consistency(...)
+    alt 绑定冲突
+      STOR --> SVC: INDEX_BINDING_CONFLICT
+      SVC -> WRK: raise DomainError(INDEX_BINDING_CONFLICT)
+      return
+    end
+  end
+end
+
+group 向量化与内容入库
+alt 请求携带 vector_model
+  STOR -> VEC: ensure_model_ready(vector_model)
+  alt 本地缓存命中
+    VEC --> STOR: ready(local_cache)
+  else 本地缓存未命中
+    VEC -> VEC: download_from_huggingface(vector_model)
+    VEC --> STOR: ready(downloaded)
+  end
+  STOR -> VEC: embed_chunks(chunks,\nvector_model,\nsource_template=search_profile.vector.source_template)
+  VEC --> STOR: chunks_with_vector(content_vector[])
+else 未携带 vector_model
+  STOR -> STOR: keep original chunks (no vector field)
+end
+
+STOR -> IDB: bulk_upsert_content_docs(index=kb_index, docs)
+IDB -> OSW: bulk_upsert_content_docs(index=kb_index, docs)
+OSW --> IDB: content_store_result
+IDB --> STOR: content_store_result
+
+STOR -> IDB: bulk_upsert_file_registry(index=kb_index, file_records)
+IDB -> OSW: bulk_upsert_file_registry(index=kb_index, file_records)
+OSW --> IDB: file_registry_result
+IDB --> STOR: file_registry_result
+STOR --> SVC: {database_write_status, file_write_status}
+end
+
+alt 入库失败
+  SVC -> WRK: raise DomainError(INTERNAL_ERROR)
+  return
+end
+
+== 任务完成 ==
+SVC --> IEX: task_result\n{imported_docs, stored_files,\nparser_script_source,\nsearch_profile_sha256,\ndatabase_write_status,\nfile_write_status}
+IEX --> WRK: task_result
+WRK -> ATR: update_status(task_id, completed, task_result)
+
+== 任务临时目录清理（finally） ==
+SVC -> STOR: cleanup_task_workspace(task_id)
+alt 失败且 keep_failed_workspace=true
+  STOR -> STOR: 保留 <import_work_root>/<task_id>/ 供排障
+else 默认（成功或失败）
+  STOR -> STOR: 删除 <import_work_root>/<task_id>/\n(含 staged/ 与中间清单文件，若存在)
+end
+STOR -> STOR: sweep_expired_task_workspaces(ttl_hours)
+
+@enduml

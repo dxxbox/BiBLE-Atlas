@@ -1,0 +1,26 @@
+{
+  "memory_id": "mem_20260424_0001",
+  "title": "CNI allocator 并发问题排查结论",
+  "abstract": "定位到 allocator 在高并发下的锁竞争导致延迟抖动，并确定了分层锁与批量提交的优化方向。",
+  "overview": "本次 memory 讨论了 allocator 请求路径的热点锁、队列堆积条件与日志采样策略。最终结论是将全局写锁拆分为分段锁，并在写入阶段引入批量提交窗口，减少临界区耗时。",
+  "created_at": "2026-04-24T08:30:00Z",
+  "updated_at": "2026-04-24T09:12:34Z",
+  "task_ids": [
+    "CNI-12345",
+    "TASK-9021"
+  ],
+  "feature_tags": [
+    "CNI",
+    "memory-import"
+  ],
+  "domain_tags": [
+    "allocator",
+    "concurrency"
+  ],
+  "component_tags": [
+    "cpnb",
+    "search_service"
+  ],
+  "source_client": "cursor",
+  "language": "zh"
+}
