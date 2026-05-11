@@ -108,11 +108,20 @@ ERROR_CODE_EXCEPTION_MAP: dict[str, type[BibleAPIError]] = {
     "PERMISSION_DENIED": PermissionDeniedError,
     "NOT_FOUND": NotFoundError,
     "TENANT_NOT_FOUND": NotFoundError,
+    "TASK_NOT_FOUND": NotFoundError,
     "CONFLICT": ConflictError,
     "ALREADY_EXISTS": ConflictError,
+    "KB_INDEX_BINDING_CONFLICT": ConflictError,
     "RESOURCE_EXHAUSTED": ResourceExhaustedError,
     "UNAVAILABLE": UnavailableError,
+    "VECTOR_MODEL_NOT_READY": UnavailableError,
     "DEADLINE_EXCEEDED": DeadlineExceededError,
+    # v4 MEMORY-specific parse/import errors
+    "META_JSON_REQUIRED": InvalidArgumentError,
+    "META_JSON_SCHEMA_INVALID": InvalidArgumentError,
+    "PARSE_RESULT_SCHEMA_INVALID": InvalidArgumentError,
+    "IMPORT_TASK_REJECTED": InvalidArgumentError,
+    "MEMORY_ID_REQUIRED": InvalidArgumentError,
 }
 
 
