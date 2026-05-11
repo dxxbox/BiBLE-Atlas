@@ -27,6 +27,9 @@ func Run(args []string, stdout io.Writer, stderr io.Writer) int {
 		EnableHit: false,
 		HitTypes:  []string{"skill", "memory"},
 	}
+	var memoryOpts commands.MemoryCommandOptions
+	var skillsOpts commands.SkillsCommandOptions
+	var sessionOpts commands.SessionCommandOptions
 
 	switch command {
 	case "health":
@@ -62,7 +65,31 @@ func Run(args []string, stdout io.Writer, stderr io.Writer) int {
 			EnableHit: *enableHitPtr,
 			HitTypes:  hitTypes,
 		}
-	case "system", "knowledge", "memory", "skills":
+	case "memory":
+		if len(args) < 2 {
+			return fail(stdout, stderr, protocol.CLIError{Code: "INVALID_ARGS", Message: "Missing action for 'memory'.", ExitCode: 1})
+		}
+		action = normalizeActionAlias(command, args[1])
+		if err := parseMemoryFlags(action, args[2:], &memoryOpts); err != nil {
+			return fail(stdout, stderr, protocol.WrapAsCLIError(err))
+		}
+	case "skills":
+		if len(args) < 2 {
+			return fail(stdout, stderr, protocol.CLIError{Code: "INVALID_ARGS", Message: "Missing action for 'skills'.", ExitCode: 1})
+		}
+		action = normalizeActionAlias(command, args[1])
+		if err := parseSkillsFlags(action, args[2:], &skillsOpts); err != nil {
+			return fail(stdout, stderr, protocol.WrapAsCLIError(err))
+		}
+	case "session":
+		if len(args) < 2 {
+			return fail(stdout, stderr, protocol.CLIError{Code: "INVALID_ARGS", Message: "Missing action for 'session'.", ExitCode: 1})
+		}
+		action = normalizeActionAlias(command, args[1])
+		if err := parseSessionFlags(action, args[2:], &sessionOpts); err != nil {
+			return fail(stdout, stderr, protocol.WrapAsCLIError(err))
+		}
+	case "system", "knowledge":
 		if len(args) < 2 {
 			return fail(stdout, stderr, protocol.CLIError{Code: "INVALID_ARGS", Message: fmt.Sprintf("Missing action for '%s'.", command), ExitCode: 1})
 		}
@@ -96,9 +123,16 @@ func Run(args []string, stdout io.Writer, stderr io.Writer) int {
 		response map[string]any
 		err      error
 	)
-	if command == "search" {
+	switch command {
+	case "search":
 		response, err = dispatcher.Search(searchOptions)
-	} else {
+	case "memory":
+		response, err = dispatcher.MemoryExecute(action, memoryOpts)
+	case "skills":
+		response, err = dispatcher.SkillsExecute(action, skillsOpts)
+	case "session":
+		response, err = dispatcher.SessionExecute(action, sessionOpts)
+	default:
 		response, err = dispatcher.Handle(command, action, query)
 	}
 	if err != nil {
@@ -131,10 +165,22 @@ func printHelp(w io.Writer) {
 	fmt.Fprintln(w, "  bible health")
 	fmt.Fprintln(w, "  bible search --query <string> [--top-k <int>] [--enable-hit] [--hit-types skill,memory]")
 	fmt.Fprintln(w, "  bible system status|info")
-	fmt.Fprintln(w, "  bible knowledge list")
-	fmt.Fprintln(w, "  bible knowledge search [query]")
-	fmt.Fprintln(w, "  bible memory show")
-	fmt.Fprintln(w, "  bible skills list")
+	fmt.Fprintln(w, "  bible knowledge list|search [query]")
+	fmt.Fprintln(w, "  bible memory upload <session_dir> [--kb-index <index>] [--skip-if-exists] [--wait]")
+	fmt.Fprintln(w, "  bible memory upload-all <base_dir> [--kb-index <index>] [--workers N]")
+	fmt.Fprintln(w, "  bible memory build-meta <session_dir>")
+	fmt.Fprintln(w, "  bible memory status [task_id] [--memory-id ID] [--cache-dir DIR]")
+	fmt.Fprintln(w, "  bible memory list [--limit N] [--tag TAG] [--since DATE]")
+	fmt.Fprintln(w, "  bible memory search <query> [--top-k N]")
+	fmt.Fprintln(w, "  bible memory cache-status [base_dir]")
+	fmt.Fprintln(w, "  bible skills list [--limit N] [--tag TAG]")
+	fmt.Fprintln(w, "  bible skills search <query> [--top-k N]")
+	fmt.Fprintln(w, "  bible skills get <name_or_id> [--content]")
+	fmt.Fprintln(w, "  bible skills upload --file <path.skill> [--kb-index <index>] [--wait]")
+	fmt.Fprintln(w, "  bible skills download <name_or_id> [--storage-path PATH] [--output DIR]")
+	fmt.Fprintln(w, "  bible session list [--limit N]")
+	fmt.Fprintln(w, "  bible session get --id <session-id>")
+	fmt.Fprintln(w, `  bible session save --input '{"title":"...","messages":[...]}' [--kb-index <index>] [--wait]`)
 }
 
 func parseHitTypes(raw string) ([]string, error) {
@@ -186,14 +232,30 @@ func normalizeActionAlias(command string, action string) string {
 			"search": "search",
 		},
 		"memory": {
-			"show":   "show",
-			"list":   "list",
-			"ls":     "list",
-			"search": "search",
+			"upload":       "upload",
+			"upload-all":   "upload-all",
+			"build-meta":   "build-meta",
+			"status":       "status",
+			"show":         "status",
+			"list":         "list",
+			"ls":           "list",
+			"search":       "search",
+			"cache-status": "cache-status",
 		},
 		"skills": {
+			"list":     "list",
+			"ls":       "list",
+			"search":   "search",
+			"get":      "get",
+			"show":     "get",
+			"upload":   "upload",
+			"download": "download",
+		},
+		"session": {
 			"list": "list",
 			"ls":   "list",
+			"get":  "get",
+			"save": "save",
 		},
 	}
 

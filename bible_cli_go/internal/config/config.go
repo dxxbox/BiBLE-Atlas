@@ -8,8 +8,11 @@ import (
 
 type ClientConfig struct {
 	BaseURL        string
+	Token          string
 	TimeoutSeconds int
 	TrustEnv       bool
+	Memory         MemoryConfig
+	Skill          SkillConfig
 }
 
 func FromEnv() ClientConfig {

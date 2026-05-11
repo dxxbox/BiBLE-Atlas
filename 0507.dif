@@ -1,0 +1,154 @@
+diff --git a/bible_cli_go/internal/cli/run.go b/bible_cli_go/internal/cli/run.go
+index a155c4b..77684b3 100644
+--- a/bible_cli_go/internal/cli/run.go
++++ b/bible_cli_go/internal/cli/run.go
+@@ -27,6 +27,7 @@ func Run(args []string, stdout io.Writer, stderr io.Writer) int {
+ 		EnableHit: false,
+ 		HitTypes:  []string{"skill", "memory"},
+ 	}
++	var memoryOpts commands.MemoryCommandOptions
+ 
+ 	switch command {
+ 	case "health":
+@@ -62,7 +63,15 @@ func Run(args []string, stdout io.Writer, stderr io.Writer) int {
+ 			EnableHit: *enableHitPtr,
+ 			HitTypes:  hitTypes,
+ 		}
+-	case "system", "knowledge", "memory", "skills":
++	case "memory":
++		if len(args) < 2 {
++			return fail(stdout, stderr, protocol.CLIError{Code: "INVALID_ARGS", Message: "Missing action for 'memory'.", ExitCode: 1})
++		}
++		action = normalizeActionAlias(command, args[1])
++		if err := parseMemoryFlags(action, args[2:], &memoryOpts); err != nil {
++			return fail(stdout, stderr, protocol.WrapAsCLIError(err))
++		}
++	case "system", "knowledge", "skills":
+ 		if len(args) < 2 {
+ 			return fail(stdout, stderr, protocol.CLIError{Code: "INVALID_ARGS", Message: fmt.Sprintf("Missing action for '%s'.", command), ExitCode: 1})
+ 		}
+@@ -98,6 +107,8 @@ func Run(args []string, stdout io.Writer, stderr io.Writer) int {
+ 	)
+ 	if command == "search" {
+ 		response, err = dispatcher.Search(searchOptions)
++	} else if command == "memory" {
++		response, err = dispatcher.MemoryExecute(action, memoryOpts)
+ 	} else {
+ 		response, err = dispatcher.Handle(command, action, query)
+ 	}
+@@ -133,7 +144,12 @@ func printHelp(w io.Writer) {
+ 	fmt.Fprintln(w, "  bible system status|info")
+ 	fmt.Fprintln(w, "  bible knowledge list")
+ 	fmt.Fprintln(w, "  bible knowledge search [query]")
+-	fmt.Fprintln(w, "  bible memory show")
++	fmt.Fprintln(w, "  bible memory upload <session_dir> [--mode strict|lite] [--skip-if-exists] [--no-summary] [--wait]")
++	fmt.Fprintln(w, "  bible memory upload-all <base_dir> [--mode strict|lite] [--skip-if-exists] [--workers N]")
++	fmt.Fprintln(w, "  bible memory status <job_id> [--session-id ID] [--cache-dir DIR]")
++	fmt.Fprintln(w, "  bible memory list [--limit N] [--tag TAG] [--since DATE]")
++	fmt.Fprintln(w, "  bible memory search <query> [--top-k N] [--threshold FLOAT]")
++	fmt.Fprintln(w, "  bible memory cache-status [base_dir]")
+ 	fmt.Fprintln(w, "  bible skills list")
+ }
+ 
+@@ -186,10 +202,14 @@ func normalizeActionAlias(command string, action string) string {
+ 			"search": "search",
+ 		},
+ 		"memory": {
+-			"show":   "show",
+-			"list":   "list",
+-			"ls":     "list",
+-			"search": "search",
++			"upload":       "upload",
++			"upload-all":   "upload-all",
++			"status":       "status",
++			"show":         "show",
++			"list":         "list",
++			"ls":           "list",
++			"search":       "search",
++			"cache-status": "cache-status",
+ 		},
+ 		"skills": {
+ 			"list": "list",
+diff --git a/bible_cli_go/internal/commands/handlers.go b/bible_cli_go/internal/commands/handlers.go
+index 4434892..5edff06 100644
+--- a/bible_cli_go/internal/commands/handlers.go
++++ b/bible_cli_go/internal/commands/handlers.go
+@@ -24,8 +24,6 @@ func (d *Dispatcher) Handle(command string, action string, query string) (map[st
+ 		return d.handleSystem(action)
+ 	case "knowledge":
+ 		return d.handleKnowledge(action, query)
+-	case "memory":
+-		return nil, protocol.NotImplemented(strings.TrimSpace(command + " " + action))
+ 	case "skills":
+ 		return nil, protocol.NotImplemented(strings.TrimSpace(command + " " + action))
+ 	default:
+diff --git a/bible_cli_go/internal/config/config.go b/bible_cli_go/internal/config/config.go
+index d769e03..ac15620 100644
+--- a/bible_cli_go/internal/config/config.go
++++ b/bible_cli_go/internal/config/config.go
+@@ -10,6 +10,7 @@ type ClientConfig struct {
+ 	BaseURL        string
+ 	TimeoutSeconds int
+ 	TrustEnv       bool
++	Memory         MemoryConfig
+ }
+ 
+ func FromEnv() ClientConfig {
+diff --git a/bible_cli_go/internal/config/loader.go b/bible_cli_go/internal/config/loader.go
+index 442f278..79fbf1d 100644
+--- a/bible_cli_go/internal/config/loader.go
++++ b/bible_cli_go/internal/config/loader.go
+@@ -15,10 +15,11 @@ const (
+ )
+ 
+ type configFilePayload struct {
+-	ServerURL      *string `json:"server_url"`
+-	BaseURL        *string `json:"base_url"`
+-	TimeoutSeconds *int    `json:"timeout_seconds"`
+-	TrustEnv       *bool   `json:"trust_env"`
++	ServerURL      *string       `json:"server_url"`
++	BaseURL        *string       `json:"base_url"`
++	TimeoutSeconds *int          `json:"timeout_seconds"`
++	TrustEnv       *bool         `json:"trust_env"`
++	Memory         *MemoryConfig `json:"memory"`
+ }
+ 
+ // LoadResolvedConfig merges config layers with precedence:
+@@ -90,6 +91,10 @@ func applyFileLayer(resolved *ResolvedConfig, path string, source ConfigSource)
+ 		resolved.TrustEnv = *payload.TrustEnv
+ 		resolved.TrustEnvSource = source
+ 	}
++
++	if payload.Memory != nil {
++		resolved.Memory = *payload.Memory
++	}
+ }
+ 
+ func applyEnvLayer(resolved *ResolvedConfig) {
+diff --git a/bible_cli_go/internal/config/model.go b/bible_cli_go/internal/config/model.go
+index 8edb15f..a82271a 100644
+--- a/bible_cli_go/internal/config/model.go
++++ b/bible_cli_go/internal/config/model.go
+@@ -10,6 +10,22 @@ const (
+ 	SourceEnvAtlas   ConfigSource = "env_bible_atlas"
+ )
+ 
++// MemoryUploadConfig holds tunable defaults for the memory upload commands.
++type MemoryUploadConfig struct {
++	DefaultMode      string `json:"default_mode"`
++	SkipIfExists     bool   `json:"skip_if_exists"`
++	MaxFileSizeMB    int    `json:"max_file_size_mb"`
++	Workers          int    `json:"workers"`
++	RetryMax         int    `json:"retry_max"`
++	EnableSummary    bool   `json:"enable_summary"`
++	AutoFallbackLite bool   `json:"auto_fallback_lite"`
++}
++
++// MemoryConfig groups memory-related configuration.
++type MemoryConfig struct {
++	Upload MemoryUploadConfig `json:"upload"`
++}
++
+ type ResolvedConfig struct {
+ 	ClientConfig
+ 	BaseURLSource        ConfigSource

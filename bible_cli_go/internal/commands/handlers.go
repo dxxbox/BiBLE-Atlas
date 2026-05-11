@@ -8,12 +8,17 @@ import (
 	"bible-cli-go/internal/protocol"
 )
 
+// Dispatcher holds an HTTP client and config for executing CLI commands.
 type Dispatcher struct {
 	client *clienthttp.Client
+	cfg    config.ClientConfig
 }
 
 func NewDispatcher(cfg config.ClientConfig) *Dispatcher {
-	return &Dispatcher{client: clienthttp.New(cfg)}
+	return &Dispatcher{
+		client: clienthttp.New(cfg),
+		cfg:    cfg,
+	}
 }
 
 func (d *Dispatcher) Handle(command string, action string, query string) (map[string]any, error) {
@@ -24,10 +29,6 @@ func (d *Dispatcher) Handle(command string, action string, query string) (map[st
 		return d.handleSystem(action)
 	case "knowledge":
 		return d.handleKnowledge(action, query)
-	case "memory":
-		return nil, protocol.NotImplemented(strings.TrimSpace(command + " " + action))
-	case "skills":
-		return nil, protocol.NotImplemented(strings.TrimSpace(command + " " + action))
 	default:
 		return nil, protocol.CLIError{Code: "INVALID_ARGUMENT", Message: "Unknown command.", ExitCode: 1}
 	}

@@ -19,15 +19,24 @@ import (
 
 type Client struct {
 	baseURL string
+	token   string
 	client  *nethttp.Client
 }
 
 func New(cfg config.ClientConfig) *Client {
 	return &Client{
 		baseURL: strings.TrimRight(cfg.BaseURL, "/"),
+		token:   cfg.Token,
 		client: &nethttp.Client{
 			Timeout: time.Duration(cfg.TimeoutSeconds) * time.Second,
 		},
+	}
+}
+
+// addAuthHeader sets the Authorization header when a token is configured.
+func (c *Client) addAuthHeader(req *nethttp.Request) {
+	if c.token != "" {
+		req.Header.Set("Authorization", "Bearer "+c.token)
 	}
 }
 
@@ -272,6 +281,7 @@ func (c *Client) getJSON(path string) (map[string]any, int, error) {
 	if err != nil {
 		return nil, 0, protocol.CLIError{Code: "INVALID_ARGS", Message: err.Error(), ExitCode: 1}
 	}
+	c.addAuthHeader(request)
 
 	response, err := c.client.Do(request)
 	if err != nil {
@@ -313,6 +323,7 @@ func (c *Client) postJSON(path string, requestBody map[string]any) (map[string]a
 		return nil, 0, protocol.CLIError{Code: "INVALID_ARGS", Message: err.Error(), ExitCode: 1}
 	}
 	request.Header.Set("Content-Type", "application/json")
+	c.addAuthHeader(request)
 
 	response, err := c.client.Do(request)
 	if err != nil {

@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from collections.abc import Mapping
+from pathlib import Path
 from typing import Any
 
 import httpx
@@ -97,6 +98,104 @@ class AsyncHTTPClient(BaseClient):
             "/api/v1/knowledge/search",
             params={"query": query} if query else None,
             expect_envelope=True,
+        )
+        if not isinstance(payload, dict):
+            return {"result": payload}
+        return payload
+
+    # ------------------------------------------------------------------
+    # Memory v4 API
+    # ------------------------------------------------------------------
+
+    async def memory_import(
+        self,
+        meta_path: Path,
+        kb_index: str,
+        *,
+        message_path: Path | None = None,
+        vector_model: str | None = None,
+    ) -> dict[str, Any]:
+        """Submit a MEMORY import job via POST /api/import/memory (multipart/form-data).
+
+        Returns the raw 202 JSON body: {"status": "accepted", "task_id": "..."}
+        """
+        files: list[tuple[str, Any]] = [
+            ("files", ("meta.json", meta_path.read_bytes(), "application/json")),
+        ]
+        if message_path is not None and message_path.exists():
+            files.append(
+                ("files", ("message.json", message_path.read_bytes(), "application/json"))
+            )
+
+        data: dict[str, str] = {"kb_index": kb_index, "tag": "memory"}
+        if vector_model:
+            data["vector_model"] = vector_model
+
+        try:
+            response = await self._client.post(
+                "/api/import/memory",
+                files=files,
+                data=data,
+            )
+        except httpx.TimeoutException as exc:
+            raise map_server_error(
+                code="DEADLINE_EXCEEDED",
+                message="Memory import request timed out.",
+                details={"kb_index": kb_index},
+                retryable=True,
+            ) from exc
+        except httpx.HTTPError as exc:
+            raise map_server_error(
+                code="UNAVAILABLE",
+                message="HTTP transport error during memory import.",
+                details={"cause": str(exc)},
+                retryable=True,
+            ) from exc
+
+        payload = self._safe_parse_json(response)
+        if response.status_code >= 400:
+            self._raise_http_error(response.status_code, payload, response.text)
+
+        if not isinstance(payload, dict):
+            raise map_server_error(
+                code="INTERNAL",
+                message="Expected JSON object from /api/import/memory.",
+                details={"status_code": response.status_code},
+            )
+        return payload
+
+    async def memory_task_status(self, task_id: str) -> dict[str, Any]:
+        """Query async task status via GET /api/control/admin/tasks/{task_id}."""
+        return await self._request_json(
+            "GET",
+            f"/api/control/admin/tasks/{task_id}",
+            expect_envelope=False,
+        )
+
+    async def memory_search(
+        self,
+        kb_index: str,
+        query: str,
+        *,
+        search_type: str = "hybrid",
+        top_k: int = 10,
+        tag: str | None = None,
+    ) -> dict[str, Any]:
+        """Search MEMORY index via POST /api/search/memory."""
+        body: dict[str, Any] = {
+            "kb_index": kb_index,
+            "query": query,
+            "search_type": search_type,
+            "top_k": top_k,
+        }
+        if tag:
+            body["tag"] = tag
+
+        payload = await self._request_json(
+            "POST",
+            "/api/search/memory",
+            json=body,
+            expect_envelope=False,
         )
         if not isinstance(payload, dict):
             return {"result": payload}

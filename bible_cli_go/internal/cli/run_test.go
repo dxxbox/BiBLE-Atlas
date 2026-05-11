@@ -152,11 +152,11 @@ func TestRunHealthSuccess(t *testing.T) {
 	}
 }
 
-func TestRunSkillsListNotImplemented(t *testing.T) {
+func TestRunSkillsUnknownActionNotImplemented(t *testing.T) {
 	var out bytes.Buffer
 	var err bytes.Buffer
 
-	exitCode := Run([]string{"skills", "list"}, &out, &err)
+	exitCode := Run([]string{"skills", "frobnicate"}, &out, &err)
 	if exitCode != 3 {
 		t.Fatalf("expected exit code 3, got %d", exitCode)
 	}
@@ -169,20 +169,30 @@ func TestRunSkillsListNotImplemented(t *testing.T) {
 	}
 }
 
-func TestRunSkillsLsAliasMatchesListNotImplemented(t *testing.T) {
+func TestRunSkillsLsAliasNormalizesToList(t *testing.T) {
+	server := httptest.NewServer(nethttp.HandlerFunc(func(w nethttp.ResponseWriter, r *nethttp.Request) {
+		if r.URL.Path == "/api/search/skill" && r.Method == nethttp.MethodPost {
+			_ = json.NewEncoder(w).Encode(map[string]any{
+				"status": "ok",
+				"result": map[string]any{"items": []any{}, "total": 0},
+			})
+			return
+		}
+		w.WriteHeader(nethttp.StatusNotFound)
+	}))
+	defer server.Close()
+	t.Setenv("BIBLE_CLI_BASE_URL", server.URL)
+
 	var out bytes.Buffer
 	var err bytes.Buffer
 
 	exitCode := Run([]string{"skills", "ls"}, &out, &err)
-	if exitCode != 3 {
-		t.Fatalf("expected exit code 3, got %d", exitCode)
+	if exitCode != 0 {
+		t.Fatalf("expected exit code 0 (ls alias → list → server call), got %d: %s", exitCode, out.String())
 	}
 	response := decodeRunResponse(t, out.String())
-	if response.Error == nil || response.Error.Code != "CLI_NOT_IMPLEMENTED" {
-		t.Fatalf("expected CLI_NOT_IMPLEMENTED response, got %q", out.String())
-	}
-	if !strings.Contains(response.Error.Message, "skills list") {
-		t.Fatalf("expected alias to normalize to skills list, got %q", response.Error.Message)
+	if !response.OK {
+		t.Fatalf("expected ok=true, got %q", out.String())
 	}
 }
 
@@ -459,7 +469,8 @@ func TestRunGoldenScenarios(t *testing.T) {
 
 		var out bytes.Buffer
 		var err bytes.Buffer
-		exitCode := Run([]string{"skills", "list"}, &out, &err)
+		// Use an unknown action on a known command to trigger CLI_NOT_IMPLEMENTED.
+		exitCode := Run([]string{"skills", "frobnicate"}, &out, &err)
 		response := decodeRunResponse(t, out.String())
 
 		if exitCode != expected.ExitCode {
