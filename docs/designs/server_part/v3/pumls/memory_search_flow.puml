@@ -1,0 +1,36 @@
+@startuml memory_search_flow
+title MEMORY 检索流程（独立链路）
+
+|Client|
+start
+:POST /api/v1/memory/search\n{query, search_type, top_k, filters, include_raw_preview};
+
+|app/api/v1/memory_api.py|
+:memory_api.search_memory(req)\n→ Pydantic 校验 MemorySearchRequest\n→ MemorySearchService.search(req);
+
+|features/memory/memory_search_service.py|
+:MemorySearchService.search(req)\n① 若 search_type ∈ {vector, hybrid}：VectorTool.embed(query) → query_vector\n② MemorySearchRepository.search(req, query_vector) → (memory_hits, message_hits)\n③ result_mapper.map_memory_hits(memory_hits, message_hits, include_raw_preview) → list[MemorySearchItem]\n④ 封装 MemorySearchResponse;
+
+|features/memory/repositories/memory_search_repository.py|
+:MemorySearchRepository.search(req, query_vector)\n→ filters.normalize_memory_filters(req.filters) → NormalizedMemoryFilters\n→ query_builder.detect_task_id_in_query(req.query) → auto_task_ids\n→ query_builder.build_memory_query_spec(query, search_type, filters, top_k) → MemoryQuerySpec\n→ _build_memory_dsl(spec, query_vector) → dsl\n→ SearchClient.search("bible_atlas_memory", dsl) → memory_hits\n→ [enable_message_level] _build_message_dsl + SearchClient.search("bible_atlas_memory_chunks") → message_hits;
+
+note right
+  字段优先级（memory_doc）：
+    task_ids(3.0) / title(3.0) / feature_tags(2.5)
+    abstract(2.0) / overview(1.5) / abstract_vector(knn)
+  message 级兜底：content + content_vector
+end note
+
+|features/memory/memory_search_service.py|
+:result_mapper.map_memory_hits(...)\n→ _group_hits_by_memory\n→ _build_memory_search_item (match_scope / matched_message_preview / overview_excerpt / match_reason)\n→ sorted by score [:top_k];
+
+|app/api/v1/memory_api.py|
+:200 + MemorySearchResponse\n(success, total, memories, warnings);
+
+|Client|
+:接收结果;
+:若需原始内容：GET /api/v1/download/memory/{memory_id}\n  server 依据 storage_path_ref 读取 message.json;
+
+stop
+
+@enduml

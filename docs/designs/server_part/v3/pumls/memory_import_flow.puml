@@ -1,0 +1,39 @@
+@startuml memory_import_flow
+title MEMORY 导入流程（独立链路）
+
+|Client|
+start
+:POST /api/v1/memory/import\nmultipart/form-data: files[message.json, meta.json], memory_id?;
+
+|app/api/v1/memory_api.py|
+:memory_api.import_memory(files, memory_id)\n→ 文件预检（个数/MIME/大小）\n→ MemoryImportService.import_memory(files, memory_id);
+
+note right
+  预检失败：
+  - 缺文件 / 非 JSON → 400
+  - message.json 超 max_raw_file_size_mb → 413
+end note
+
+|features/memory/memory_import_service.py|
+:MemoryImportService.import_memory(files, memory_id)\n① 读字节流 + json.loads → message_json, meta_json\n② validator.validate_memory_bundle(...) → errors / warnings\n③ storage_mapper.build_memory_storage_layout(memory_id) → MemoryStorageLayout\n④ MemoryUploadRepository.store(msg_bytes, meta_bytes, layout) → StoredMemoryBundle\n⑤ metadata_normalizer.normalize_memory_metadata(meta_json, bundle) → MemoryMetadataPayload\n⑥ index_document_builder.build_memory_import_documents(payload, message_json) → MemoryImportDocuments\n⑦ document_manager.bulk_import(bible_atlas_memory / _chunks)\n⑧ memory_ai_extraction_task.apply_async(memory_id, message_json_path);
+
+note right
+  任一错误码触发拒绝：
+  - MEMORY_INVALID_JSON (400)
+  - MEMORY_ID_MISMATCH / _EMPTY_MESSAGES / _MISSING_TITLE (400)
+  - MEMORY_MISSING_SUMMARY_TEXT (422，文件已落盘)
+  - MemoryStorageError (500)
+end note
+
+|app/api/v1/memory_api.py|
+:202 MemoryImportAcceptedResponse\n(task_id, memory_id, accepted_files, warnings);
+
+|tasks/memory_ai_extraction.py  [Celery]|
+:memory_ai_extraction_task(memory_id, message_json_path)\n→ 读前 50 条消息 → AI 提取 {domain_tags, feature_tags, component_tags, task_ids}\n→ merge_and_update_tags + OpenSearch update\n→ ai_tags_extracted=True;
+
+|Client|
+:GET /api/v1/tasks/{task_id}  → 轮询完成;
+
+stop
+
+@enduml

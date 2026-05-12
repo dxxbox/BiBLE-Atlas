@@ -1,0 +1,37 @@
+@startuml search_flow_with_hit_and_rerank
+title 通用检索流程（CODE / SCT / BUILD / SKILL / MEMORY /…）
+
+|Client|
+start
+repeat
+  :POST /api/v1/search\n{query, index_name, tag, enable_hit, top_k, search_type, ...};
+
+  |app/api/v1/search_api.py|
+  :search_documents(req: SearchRequest)\n→ SearchService.search(req);
+
+  |features/search/search_service.py|
+  :SearchService.search(req)\n① 解析 query/TAG → index_name 列表\n② enable_hit → 追加 hit_list 索引（CODE/BUILD/SKILL）\n③ top_k × rerank/ai multiplier 扩召回\n④ 并发遍历 list[IndexSearchTask];
+
+  note right
+    hit_list 不含 MEMORY
+    （MEMORY 独立端点）
+  end note
+
+  |features/search/repositories/  [每个 IndexSearchTask]|
+  :SearchRepositoryFactory.create(index_tag)  → XxxSearchRepository\n→ [可选] VectorTool.embed(query)  → query_vector\n→ repository.build_query(task, req, vector)  → dsl\n→ SearchClient.search(index_name, dsl)  → raw_hits\n→ repository.map_backend_response_to_items(raw_hits)  → list[SearchMatchRow]\n→ [可选] RerankTool.rerank(rows)  → reranked\n→ [可选] AiRankingRunner.run(rows)  → filtered\n→ format_bucket_items(rows[:top_k])  → bucket;
+
+  |features/search/search_service.py|
+  :_merge_results(task_results)  → SearchResponse\n(total, results: {tag: [items]});
+
+  |app/api/v1/search_api.py|
+  :200 + SearchResponse;
+
+  |Client|
+  :接收结果;
+  backward :继续检索?;
+repeat while (是) is (是)
+->否;
+
+stop
+
+@enduml
