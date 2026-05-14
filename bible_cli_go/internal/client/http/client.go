@@ -8,7 +8,6 @@ import (
 	"io"
 	"net"
 	nethttp "net/http"
-	"net/url"
 	"strings"
 	"sync"
 	"time"
@@ -65,30 +64,37 @@ func (c *Client) Info() (map[string]any, error) {
 }
 
 func (c *Client) KnowledgeList() (map[string]any, error) {
-	payload, err := c.getEnvelope("/api/v1/knowledge/list")
-	if err != nil {
+	payload, err := c.getEnvelope("/api/control/docs/list")
+	if err == nil {
+		return payload, nil
+	}
+	apiErr, ok := err.(protocol.CLIError)
+	if !ok || apiErr.Code != "NOT_FOUND" {
 		return nil, err
 	}
-	return payload, nil
+	return c.getEnvelope("/api/v1/knowledge/list")
 }
 
-func (c *Client) KnowledgeSearch(query string) (map[string]any, error) {
-	endpoint := "/api/v1/knowledge/search"
-	if strings.TrimSpace(query) != "" {
-		endpoint = endpoint + "?" + url.Values{"query": []string{query}}.Encode()
+func (c *Client) KnowledgeSearch(req KnowledgeSearchRequest) (map[string]any, error) {
+	body := map[string]any{
+		"query": req.Query,
+		"tag":   req.Tag,
 	}
-	payload, err := c.getEnvelope(endpoint)
-	if err != nil {
-		return nil, err
+	if req.TopK > 0 {
+		body["top_k"] = req.TopK
 	}
-	return payload, nil
+	if req.SearchType != "" {
+		body["search_type"] = req.SearchType
+	}
+	return c.postEnvelope("/api/search/knowledge-base", body)
 }
 
 type SearchOptions struct {
-	Query     string
-	TopK      int
-	EnableHit bool
-	HitTypes  []string
+	Query        string
+	TopK         int
+	EnableHit    bool
+	HitTypes     []string
+	KnowledgeTag string // v4: tag for /api/search/knowledge-base; empty = skip knowledge search
 }
 
 type searchHitTask struct {
@@ -104,15 +110,21 @@ type searchHitOutcome struct {
 }
 
 func (c *Client) Search(options SearchOptions) (map[string]any, error) {
-	knowledgePayload, err := c.KnowledgeSearch(options.Query)
-	if err != nil {
-		return nil, err
+	result := map[string]any{
+		"query": options.Query,
+		"top_k": options.TopK,
 	}
 
-	result := map[string]any{
-		"query":     options.Query,
-		"top_k":     options.TopK,
-		"knowledge": knowledgePayload,
+	if strings.TrimSpace(options.KnowledgeTag) != "" {
+		knowledgePayload, err := c.KnowledgeSearch(KnowledgeSearchRequest{
+			Query: options.Query,
+			Tag:   options.KnowledgeTag,
+			TopK:  options.TopK,
+		})
+		if err != nil {
+			return nil, err
+		}
+		result["knowledge"] = knowledgePayload
 	}
 
 	if !options.EnableHit {
@@ -145,9 +157,9 @@ func (c *Client) Search(options SearchOptions) (map[string]any, error) {
 				)
 				switch currentTask.hitType {
 				case "skill":
-					payload, hitErr = c.searchSkill(options.Query, options.TopK)
+					payload, hitErr = c.SkillSearch(SkillSearchRequest{Query: options.Query, TopK: options.TopK, SearchType: "text"})
 				case "memory":
-					payload, hitErr = c.searchMemory(options.Query, options.TopK)
+					payload, hitErr = c.MemorySearch(MemorySearchRequest{Query: options.Query, TopK: options.TopK, SearchType: "text"})
 				}
 
 				outcomeCh <- searchHitOutcome{
@@ -181,23 +193,6 @@ func (c *Client) Search(options SearchOptions) (map[string]any, error) {
 	}
 
 	return result, nil
-}
-
-func (c *Client) searchSkill(query string, topK int) (map[string]any, error) {
-	requestBody := map[string]any{
-		"query":     query,
-		"top_k":     topK,
-		"threshold": 0.0,
-	}
-	return c.postEnvelope("/api/v1/skills/search", requestBody)
-}
-
-func (c *Client) searchMemory(query string, topK int) (map[string]any, error) {
-	requestBody := map[string]any{
-		"query": query,
-		"top_k": topK,
-	}
-	return c.postEnvelope("/api/v1/memory/search", requestBody)
 }
 
 func (c *Client) getEnvelope(path string) (map[string]any, error) {

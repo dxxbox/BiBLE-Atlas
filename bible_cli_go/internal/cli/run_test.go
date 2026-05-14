@@ -248,14 +248,14 @@ func TestRunSearchRequiresQueryFlag(t *testing.T) {
 func TestRunSearchEnableHitReturnsKnowledgeAndMemoryWhenSkillFails(t *testing.T) {
 	server := httptest.NewServer(nethttp.HandlerFunc(func(w nethttp.ResponseWriter, r *nethttp.Request) {
 		switch r.URL.Path {
-		case "/api/v1/knowledge/search":
+		case "/api/search/knowledge-base":
 			_ = json.NewEncoder(w).Encode(map[string]any{
 				"status": "ok",
 				"result": map[string]any{
 					"items": []any{map[string]any{"title": "k1"}},
 				},
 			})
-		case "/api/v1/skills/search":
+		case "/api/search/skill":
 			w.WriteHeader(nethttp.StatusServiceUnavailable)
 			_ = json.NewEncoder(w).Encode(map[string]any{
 				"status": "error",
@@ -264,7 +264,7 @@ func TestRunSearchEnableHitReturnsKnowledgeAndMemoryWhenSkillFails(t *testing.T)
 					"message": "skill service down",
 				},
 			})
-		case "/api/v1/memory/search":
+		case "/api/search/memory":
 			_ = json.NewEncoder(w).Encode(map[string]any{
 				"status": "ok",
 				"result": map[string]any{
@@ -281,7 +281,7 @@ func TestRunSearchEnableHitReturnsKnowledgeAndMemoryWhenSkillFails(t *testing.T)
 
 	var out bytes.Buffer
 	var err bytes.Buffer
-	exitCode := Run([]string{"search", "--query", "faith", "--enable-hit"}, &out, &err)
+	exitCode := Run([]string{"search", "--query", "faith", "--enable-hit", "--knowledge-tag", "design"}, &out, &err)
 	if exitCode != 0 {
 		t.Fatalf("expected exit code 0, got %d, stderr=%q", exitCode, err.String())
 	}
