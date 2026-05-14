@@ -26,10 +26,10 @@ type MemoryFile struct {
 // MemoryImportRequest holds all parameters for ImportMemory.
 // Files must include exactly one meta.json; message.json is optional.
 type MemoryImportRequest struct {
-	Files       []MemoryFile
-	KbIndex     string
-	Tag         string // always "memory"
-	VectorModel string
+	Files         []MemoryFile
+	KbIndex       string
+	Tag           string // always "memory"
+	VectorModel   string
 	ParserContext string
 }
 
@@ -42,12 +42,20 @@ type SkillImportRequest struct {
 	ParserContext string
 }
 
+// KnowledgeSearchRequest holds parameters for KnowledgeSearch.
+type KnowledgeSearchRequest struct {
+	Query      string
+	Tag        string
+	TopK       int
+	SearchType string
+}
+
 // MemorySearchRequest holds parameters for MemorySearch.
 type MemorySearchRequest struct {
-	Query      string
-	TopK       int
-	Threshold  float64
-	SearchType string
+	Query       string
+	TopK        int
+	Threshold   float64
+	SearchType  string
 	VectorModel string
 }
 

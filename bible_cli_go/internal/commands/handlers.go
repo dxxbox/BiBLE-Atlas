@@ -28,7 +28,7 @@ func (d *Dispatcher) Handle(command string, action string, query string, tag str
 	case "system":
 		return d.handleSystem(action)
 	case "knowledge":
-		return d.handleKnowledge(action, query)
+		return d.handleKnowledge(action, query, tag)
 	default:
 		return nil, protocol.CLIError{Code: "INVALID_ARGUMENT", Message: "Unknown command.", ExitCode: 1}
 	}

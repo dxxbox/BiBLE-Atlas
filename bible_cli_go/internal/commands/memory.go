@@ -103,8 +103,8 @@ func memoryUpload(client *clienthttp.Client, opts MemoryCommandOptions, cfg conf
 
 	if _, err := os.Stat(sessionDir); os.IsNotExist(err) {
 		return nil, protocol.CLIError{
-			Code:    "INVALID_ARGS",
-			Message: fmt.Sprintf("Session directory does not exist: %s", sessionDir),
+			Code:     "INVALID_ARGS",
+			Message:  fmt.Sprintf("Session directory does not exist: %s", sessionDir),
 			ExitCode: 1,
 		}
 	}
@@ -115,8 +115,8 @@ func memoryUpload(client *clienthttp.Client, opts MemoryCommandOptions, cfg conf
 	// Validate message.json exists and is parseable.
 	if _, err := os.Stat(msgPath); os.IsNotExist(err) {
 		return nil, protocol.CLIError{
-			Code:    "INVALID_ARGS",
-			Message: fmt.Sprintf("message.json not found in %s", sessionDir),
+			Code:     "INVALID_ARGS",
+			Message:  fmt.Sprintf("message.json not found in %s", sessionDir),
 			ExitCode: 1,
 		}
 	}
@@ -170,8 +170,8 @@ func memoryUpload(client *clienthttp.Client, opts MemoryCommandOptions, cfg conf
 	kbIndex := resolveKbIndex(opts.KbIndex, cfg)
 	if kbIndex == "" {
 		return nil, protocol.CLIError{
-			Code:    "INVALID_ARGS",
-			Message: "kb_index is required. Provide --kb-index flag or set BIBLE_MEMORY_KB_INDEX environment variable.",
+			Code:     "INVALID_ARGS",
+			Message:  "kb_index is required. Provide --kb-index flag or set BIBLE_MEMORY_KB_INDEX environment variable.",
 			ExitCode: 1,
 		}
 	}
@@ -265,8 +265,8 @@ func memoryUploadAll(client *clienthttp.Client, opts MemoryCommandOptions, cfg c
 	}
 	if _, err := os.Stat(baseDir); os.IsNotExist(err) {
 		return nil, protocol.CLIError{
-			Code:    "INVALID_ARGS",
-			Message: fmt.Sprintf("Base directory does not exist: %s", baseDir),
+			Code:     "INVALID_ARGS",
+			Message:  fmt.Sprintf("Base directory does not exist: %s", baseDir),
 			ExitCode: 1,
 		}
 	}
@@ -297,9 +297,9 @@ func memoryUploadAll(client *clienthttp.Client, opts MemoryCommandOptions, cfg c
 	}
 
 	type result struct {
-		dir    string
-		data   map[string]any
-		err    error
+		dir  string
+		data map[string]any
+		err  error
 	}
 
 	jobs := make(chan string, len(sessionDirs))
@@ -366,8 +366,8 @@ func memoryBuildMeta(opts MemoryCommandOptions) (map[string]any, error) {
 	}
 	if _, err := os.Stat(sessionDir); os.IsNotExist(err) {
 		return nil, protocol.CLIError{
-			Code:    "INVALID_ARGS",
-			Message: fmt.Sprintf("Session directory does not exist: %s", sessionDir),
+			Code:     "INVALID_ARGS",
+			Message:  fmt.Sprintf("Session directory does not exist: %s", sessionDir),
 			ExitCode: 1,
 		}
 	}
@@ -375,8 +375,8 @@ func memoryBuildMeta(opts MemoryCommandOptions) (map[string]any, error) {
 	msgPath := filepath.Join(sessionDir, "message.json")
 	if _, err := os.Stat(msgPath); os.IsNotExist(err) {
 		return nil, protocol.CLIError{
-			Code:    "INVALID_ARGS",
-			Message: fmt.Sprintf("message.json not found in %s", sessionDir),
+			Code:     "INVALID_ARGS",
+			Message:  fmt.Sprintf("message.json not found in %s", sessionDir),
 			ExitCode: 1,
 		}
 	}
@@ -398,10 +398,10 @@ func memoryBuildMeta(opts MemoryCommandOptions) (map[string]any, error) {
 	}
 
 	return map[string]any{
-		"memory_id":  m.MemoryID,
-		"title":      m.Title,
-		"abstract":   m.Abstract,
-		"meta_path":  filepath.Join(sessionDir, "meta.json"),
+		"memory_id": m.MemoryID,
+		"title":     m.Title,
+		"abstract":  m.Abstract,
+		"meta_path": filepath.Join(sessionDir, "meta.json"),
 	}, nil
 }
 
@@ -409,8 +409,8 @@ func memoryStatus(client *clienthttp.Client, opts MemoryCommandOptions) (map[str
 	taskID := opts.TaskID
 	if taskID == "" && opts.MemoryID == "" && opts.CacheDir == "" && opts.SessionID == "" {
 		return nil, protocol.CLIError{
-			Code:    "INVALID_ARGS",
-			Message: "Provide a task_id, --memory-id, or --cache-dir to look up task status.",
+			Code:     "INVALID_ARGS",
+			Message:  "Provide a task_id, --memory-id, or --cache-dir to look up task status.",
 			ExitCode: 1,
 		}
 	}
@@ -430,8 +430,8 @@ func memoryStatus(client *clienthttp.Client, opts MemoryCommandOptions) (map[str
 		}
 		if opts.MemoryID != "" && cached.MemoryID != opts.MemoryID {
 			return nil, protocol.CLIError{
-				Code:    "NOT_FOUND",
-				Message: fmt.Sprintf("Cache entry memory_id=%s does not match requested %s", cached.MemoryID, opts.MemoryID),
+				Code:     "NOT_FOUND",
+				Message:  fmt.Sprintf("Cache entry memory_id=%s does not match requested %s", cached.MemoryID, opts.MemoryID),
 				ExitCode: 1,
 			}
 		}
@@ -455,8 +455,8 @@ func memoryList(client *clienthttp.Client, opts MemoryCommandOptions) (map[strin
 		limit = 20
 	}
 	req := clienthttp.MemorySearchRequest{
-		Query:  "",
-		TopK:   limit,
+		Query:      "",
+		TopK:       limit,
 		SearchType: "title",
 	}
 	return client.MemorySearch(req)
@@ -471,10 +471,10 @@ func memorySearch(client *clienthttp.Client, opts MemoryCommandOptions) (map[str
 		topK = 5
 	}
 	req := clienthttp.MemorySearchRequest{
-		Query:       opts.Query,
-		TopK:        topK,
-		Threshold:   opts.Threshold,
-		SearchType:  opts.SearchType,
+		Query:      opts.Query,
+		TopK:       topK,
+		Threshold:  opts.Threshold,
+		SearchType: opts.SearchType,
 	}
 	return client.MemorySearch(req)
 }
@@ -486,8 +486,8 @@ func memoryCacheStatus(opts MemoryCommandOptions) (map[string]any, error) {
 	}
 	if _, err := os.Stat(baseDir); os.IsNotExist(err) {
 		return nil, protocol.CLIError{
-			Code:    "INVALID_ARGS",
-			Message: fmt.Sprintf("Directory does not exist: %s", baseDir),
+			Code:     "INVALID_ARGS",
+			Message:  fmt.Sprintf("Directory does not exist: %s", baseDir),
 			ExitCode: 1,
 		}
 	}

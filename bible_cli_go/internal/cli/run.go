@@ -73,8 +73,15 @@ func Run(args []string, stdout io.Writer, stderr io.Writer) int {
 			return fail(stdout, stderr, protocol.CLIError{Code: "INVALID_ARGS", Message: "Missing action for 'memory'.", ExitCode: 1})
 		}
 		action = normalizeActionAlias(command, args[1])
-		if err := parseMemoryFlags(action, args[2:], &memoryOpts); err != nil {
-			return fail(stdout, stderr, protocol.WrapAsCLIError(err))
+		switch action {
+		case "get", "save":
+			if err := parseSessionFlags(action, args[2:], &sessionOpts); err != nil {
+				return fail(stdout, stderr, protocol.WrapAsCLIError(err))
+			}
+		default:
+			if err := parseMemoryFlags(action, args[2:], &memoryOpts); err != nil {
+				return fail(stdout, stderr, protocol.WrapAsCLIError(err))
+			}
 		}
 	case "skills":
 		if len(args) < 2 {
@@ -135,13 +142,17 @@ func Run(args []string, stdout io.Writer, stderr io.Writer) int {
 	case "search":
 		response, err = dispatcher.Search(searchOptions)
 	case "memory":
-		response, err = dispatcher.MemoryExecute(action, memoryOpts)
+		if action == "get" || action == "save" {
+			response, err = dispatcher.SessionExecute(action, sessionOpts)
+		} else {
+			response, err = dispatcher.MemoryExecute(action, memoryOpts)
+		}
 	case "skills":
 		response, err = dispatcher.SkillsExecute(action, skillsOpts)
 	case "session":
 		response, err = dispatcher.SessionExecute(action, sessionOpts)
 	default:
-		response, err = dispatcher.Handle(command, action, query)
+		response, err = dispatcher.Handle(command, action, query, tag)
 	}
 	if err != nil {
 		return fail(stdout, stderr, protocol.WrapAsCLIError(err))
@@ -173,7 +184,7 @@ func printHelp(w io.Writer) {
 	fmt.Fprintln(w, "  bible health")
 	fmt.Fprintln(w, "  bible search --query <string> [--top-k <int>] [--enable-hit] [--hit-types skill,memory] [--knowledge-tag <tag>]")
 	fmt.Fprintln(w, "  bible system status|info")
-	fmt.Fprintln(w, "  bible knowledge list|search [query]")
+	fmt.Fprintln(w, "  bible knowledge list|search --tag <tag> [query]")
 	fmt.Fprintln(w, "  bible memory upload <session_dir> [--kb-index <index>] [--skip-if-exists] [--wait]")
 	fmt.Fprintln(w, "  bible memory upload-all <base_dir> [--kb-index <index>] [--workers N]")
 	fmt.Fprintln(w, "  bible memory build-meta <session_dir>")
@@ -186,9 +197,11 @@ func printHelp(w io.Writer) {
 	fmt.Fprintln(w, "  bible skills get <name_or_id> [--content]")
 	fmt.Fprintln(w, "  bible skills upload --file <path.skill> [--kb-index <index>] [--wait]")
 	fmt.Fprintln(w, "  bible skills download <name_or_id> [--storage-path PATH] [--output DIR]")
-	fmt.Fprintln(w, "  bible session list [--limit N]")
-	fmt.Fprintln(w, "  bible session get --id <session-id>")
-	fmt.Fprintln(w, `  bible session save --input '{"title":"...","messages":[...]}' [--kb-index <index>] [--wait]`)
+	fmt.Fprintln(w, "  bible memory get --id <memory-id>")
+	fmt.Fprintln(w, `  bible memory save --input '{"title":"...","messages":[...]}' [--kb-index <index>] [--wait]`)
+	fmt.Fprintln(w, "  bible session list [--limit N]       (deprecated: use 'memory list')")
+	fmt.Fprintln(w, "  bible session get --id <session-id>  (deprecated: use 'memory get')")
+	fmt.Fprintln(w, `  bible session save --input '{"title":"...","messages":[...]}' [--kb-index <index>] [--wait]  (deprecated: use 'memory save')`)
 }
 
 func parseHitTypes(raw string) ([]string, error) {
@@ -249,6 +262,8 @@ func normalizeActionAlias(command string, action string) string {
 			"ls":           "list",
 			"search":       "search",
 			"cache-status": "cache-status",
+			"get":          "get",
+			"save":         "save",
 		},
 		"skills": {
 			"list":     "list",
