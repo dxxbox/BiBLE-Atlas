@@ -5,17 +5,19 @@
 
 ## 文档关系与使用方式
 
-为避免设计、规格、迁移计划三份文档口径漂移，本文件与以下文档形成固定关系：
+为避免设计、规格、框架、迁移计划多份文档口径漂移，本文件与以下文档形成固定关系：
 
 1. `docs/designs/client_part/01-bible-vscode-extension-design.md`（本文）：回答 "Why"，即架构目标、边界和设计取舍。
-2. `docs/designs/client_part/02-bible-vscode-extension-spec.md`：回答 "How"，即可执行接口、命令、输入输出、代码骨架。
-3. `backlog/bible-cli-go-full-rewrite-plan-zh.md`：回答 "When/Status"，即分阶段推进、当前进度、验收与风险。
+2. `docs/designs/client_part/02-bible-vscode-extension-spec.md`：回答 "How"（早期版本，基于 v3 `/api/v1/sessions`）。**部分已过时**：`bible_session_*` 系列工具与旧 API 路径需按 v4 重做；JSON 协议、`execFile` 封装、Tool/Command 双轨等思路保留。
+3. `docs/designs/client_part/03-vscode-extension-framework-v4.md`：回答 "What"，即对齐 server v4 的插件框架（分层、抽象、目录、扩展点）。本文是它的上层架构动机说明；它是本文在 v4 后的"框架级补丁"。
+4. 后续 `docs/designs/client_part/04-vscode-extension-memory-spec-v4.md`（待写）：Memory 域的精确 Tool/Command/CLI 命令契约，替代 `02` 中过时的 session 部分。
+5. `backlog/bible-cli-go-full-rewrite-plan-zh.md`：回答 "When/Status"，即分阶段推进、当前进度、验收与风险。
 
 使用建议：
 
-1. 先读本文理解设计边界，再读 `02` 落地实现细节。
+1. 新读者按 `01 → 03 → 04（待补） → 02（仅参考非 session 部分）` 顺序阅读。
 2. 任何 "是否已经完成" 的问题，以 rewrite plan 的 "当前状态" 为准。
-3. 当设计描述与实现约束冲突时，以 `cli-contract-v1.md` 与 `02` 的可执行约束优先。
+3. 当设计描述与实现约束冲突时，优先级：`cli-contract-v1.md` > `server_part/v4/02_API接口文档.md` > `03` 框架文档 > 本文 > `02`。
 
 ---
 
