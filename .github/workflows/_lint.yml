@@ -6,10 +6,19 @@ on:
   pull_request:
     branches:
       - main
+      - "release/**"
+
   push:
     branches:
       - main
       - "feature/**"
+      - "bugfix/**"
+      - "release/**"
+      - "security/**"
+      - "performance/**"
+      - "refactor/**"
+      - "poc/**"
+      - "memory*/**"
 
 jobs:
   lint:
