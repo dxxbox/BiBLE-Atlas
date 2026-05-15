@@ -18,14 +18,7 @@ version_tuple: tuple[int | str, ...]
 commit_id: str | None
 __commit_id__: str | None
 
-<<<<<<< HEAD
-__version__ = version = '0.1.dev77'
-__version_tuple__ = version_tuple = (0, 1, 'dev77')
-
-__commit_id__ = commit_id = 'g4fae0a276'
-=======
 __version__ = version = '0.1.dev78'
 __version_tuple__ = version_tuple = (0, 1, 'dev78')
 
 __commit_id__ = commit_id = 'g737f94162'
->>>>>>> 96fbe92 (remove python CLI related workflow and packaging function from repo)
