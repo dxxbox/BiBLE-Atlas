@@ -86,12 +86,20 @@ func TestInfoFallbackToHealthEndpoint(t *testing.T) {
 
 func TestKnowledgeSearchReturnsEnvelopeResult(t *testing.T) {
 	server := httptest.NewServer(nethttp.HandlerFunc(func(w nethttp.ResponseWriter, r *nethttp.Request) {
-		if r.URL.Path != "/api/v1/knowledge/search" {
+		if r.URL.Path != "/api/search/knowledge-base" {
 			w.WriteHeader(nethttp.StatusNotFound)
 			return
 		}
-		if got := r.URL.Query().Get("query"); got != "faith" {
-			t.Fatalf("expected query faith, got %q", got)
+		if r.Method != nethttp.MethodPost {
+			t.Fatalf("expected POST, got %s", r.Method)
+		}
+		var body map[string]any
+		_ = json.NewDecoder(r.Body).Decode(&body)
+		if body["query"] != "faith" {
+			t.Fatalf("expected query faith, got %q", body["query"])
+		}
+		if body["tag"] != "design" {
+			t.Fatalf("expected tag design, got %q", body["tag"])
 		}
 		_ = json.NewEncoder(w).Encode(map[string]any{
 			"status": "ok",
@@ -101,7 +109,7 @@ func TestKnowledgeSearchReturnsEnvelopeResult(t *testing.T) {
 	defer server.Close()
 
 	client := New(config.ClientConfig{BaseURL: server.URL, TimeoutSeconds: 2})
-	payload, err := client.KnowledgeSearch("faith")
+	payload, err := client.KnowledgeSearch(KnowledgeSearchRequest{Query: "faith", Tag: "design"})
 	if err != nil {
 		t.Fatalf("expected no error, got %v", err)
 	}
@@ -231,14 +239,14 @@ func TestHTTPTransportTimeoutMapsToTimeout(t *testing.T) {
 func TestSearchIncludesSkillAndMemoryHitsWhenEnabled(t *testing.T) {
 	server := httptest.NewServer(nethttp.HandlerFunc(func(w nethttp.ResponseWriter, r *nethttp.Request) {
 		switch r.URL.Path {
-		case "/api/v1/knowledge/search":
+		case "/api/search/knowledge-base":
 			_ = json.NewEncoder(w).Encode(map[string]any{
 				"status": "ok",
 				"result": map[string]any{
 					"items": []any{map[string]any{"title": "k1"}},
 				},
 			})
-		case "/api/v1/skills/search":
+		case "/api/search/skill":
 			if r.Method != nethttp.MethodPost {
 				t.Fatalf("expected POST for skills search, got %s", r.Method)
 			}
@@ -248,7 +256,7 @@ func TestSearchIncludesSkillAndMemoryHitsWhenEnabled(t *testing.T) {
 					"skills": []any{map[string]any{"name": "skill-a"}},
 				},
 			})
-		case "/api/v1/memory/search":
+		case "/api/search/memory":
 			if r.Method != nethttp.MethodPost {
 				t.Fatalf("expected POST for memory search, got %s", r.Method)
 			}
@@ -266,10 +274,11 @@ func TestSearchIncludesSkillAndMemoryHitsWhenEnabled(t *testing.T) {
 
 	client := New(config.ClientConfig{BaseURL: server.URL, TimeoutSeconds: 2})
 	payload, err := client.Search(SearchOptions{
-		Query:     "faith",
-		TopK:      5,
-		EnableHit: true,
-		HitTypes:  []string{"skill", "memory"},
+		Query:        "faith",
+		TopK:         5,
+		EnableHit:    true,
+		HitTypes:     []string{"skill", "memory"},
+		KnowledgeTag: "design",
 	})
 	if err != nil {
 		t.Fatalf("expected no error, got %v", err)
@@ -288,19 +297,19 @@ func TestSearchIncludesSkillAndMemoryHitsWhenEnabled(t *testing.T) {
 
 func TestSearchHitRequestsRunConcurrently(t *testing.T) {
 	var (
-		mu               sync.Mutex
-		skillRequestTime time.Time
+		mu                sync.Mutex
+		skillRequestTime  time.Time
 		memoryRequestTime time.Time
 	)
 
 	server := httptest.NewServer(nethttp.HandlerFunc(func(w nethttp.ResponseWriter, r *nethttp.Request) {
 		switch r.URL.Path {
-		case "/api/v1/knowledge/search":
+		case "/api/search/knowledge-base":
 			_ = json.NewEncoder(w).Encode(map[string]any{
 				"status": "ok",
 				"result": map[string]any{"items": []any{}},
 			})
-		case "/api/v1/skills/search":
+		case "/api/search/skill":
 			mu.Lock()
 			skillRequestTime = time.Now()
 			mu.Unlock()
@@ -309,7 +318,7 @@ func TestSearchHitRequestsRunConcurrently(t *testing.T) {
 				"status": "ok",
 				"result": map[string]any{"skills": []any{}},
 			})
-		case "/api/v1/memory/search":
+		case "/api/search/memory":
 			mu.Lock()
 			memoryRequestTime = time.Now()
 			mu.Unlock()
@@ -326,10 +335,11 @@ func TestSearchHitRequestsRunConcurrently(t *testing.T) {
 
 	client := New(config.ClientConfig{BaseURL: server.URL, TimeoutSeconds: 2})
 	_, err := client.Search(SearchOptions{
-		Query:     "faith",
-		TopK:      5,
-		EnableHit: true,
-		HitTypes:  []string{"skill", "memory"},
+		Query:        "faith",
+		TopK:         5,
+		EnableHit:    true,
+		HitTypes:     []string{"skill", "memory"},
+		KnowledgeTag: "design",
 	})
 	if err != nil {
 		t.Fatalf("expected no error, got %v", err)
@@ -356,14 +366,14 @@ func TestSearchHitRequestsRunConcurrently(t *testing.T) {
 func TestSearchHitFailureDoesNotBreakMainKnowledgeResult(t *testing.T) {
 	server := httptest.NewServer(nethttp.HandlerFunc(func(w nethttp.ResponseWriter, r *nethttp.Request) {
 		switch r.URL.Path {
-		case "/api/v1/knowledge/search":
+		case "/api/search/knowledge-base":
 			_ = json.NewEncoder(w).Encode(map[string]any{
 				"status": "ok",
 				"result": map[string]any{
 					"items": []any{map[string]any{"title": "k1"}},
 				},
 			})
-		case "/api/v1/skills/search":
+		case "/api/search/skill":
 			w.WriteHeader(nethttp.StatusInternalServerError)
 			_ = json.NewEncoder(w).Encode(map[string]any{
 				"status": "error",
@@ -372,7 +382,7 @@ func TestSearchHitFailureDoesNotBreakMainKnowledgeResult(t *testing.T) {
 					"message": "skill backend down",
 				},
 			})
-		case "/api/v1/memory/search":
+		case "/api/search/memory":
 			_ = json.NewEncoder(w).Encode(map[string]any{
 				"status": "ok",
 				"result": map[string]any{
@@ -387,10 +397,11 @@ func TestSearchHitFailureDoesNotBreakMainKnowledgeResult(t *testing.T) {
 
 	client := New(config.ClientConfig{BaseURL: server.URL, TimeoutSeconds: 2})
 	payload, err := client.Search(SearchOptions{
-		Query:     "faith",
-		TopK:      5,
-		EnableHit: true,
-		HitTypes:  []string{"skill", "memory"},
+		Query:        "faith",
+		TopK:         5,
+		EnableHit:    true,
+		HitTypes:     []string{"skill", "memory"},
+		KnowledgeTag: "design",
 	})
 	if err != nil {
 		t.Fatalf("expected no error, got %v", err)

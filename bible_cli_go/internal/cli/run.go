@@ -22,11 +22,15 @@ func Run(args []string, stdout io.Writer, stderr io.Writer) int {
 	command := args[0]
 	action := ""
 	query := ""
+	tag := ""
 	searchOptions := clienthttp.SearchOptions{
 		TopK:      5,
 		EnableHit: false,
 		HitTypes:  []string{"skill", "memory"},
 	}
+	var memoryOpts commands.MemoryCommandOptions
+	var skillsOpts commands.SkillsCommandOptions
+	var sessionOpts commands.SessionCommandOptions
 
 	switch command {
 	case "health":
@@ -40,6 +44,7 @@ func Run(args []string, stdout io.Writer, stderr io.Writer) int {
 		topKPtr := fs.Int("top-k", 5, "Top k results")
 		enableHitPtr := fs.Bool("enable-hit", false, "Enable hit search")
 		hitTypesPtr := fs.String("hit-types", "skill,memory", "Comma-separated hit types: skill,memory")
+		knowledgeTagPtr := fs.String("knowledge-tag", "", "Tag for knowledge-base search (v4); omit to skip knowledge results")
 		if err := fs.Parse(args[1:]); err != nil {
 			return fail(stdout, stderr, protocol.CLIError{Code: "INVALID_ARGS", Message: err.Error(), ExitCode: 1})
 		}
@@ -57,12 +62,44 @@ func Run(args []string, stdout io.Writer, stderr io.Writer) int {
 			return fail(stdout, stderr, protocol.WrapAsCLIError(hitTypeErr))
 		}
 		searchOptions = clienthttp.SearchOptions{
-			Query:     *queryPtr,
-			TopK:      *topKPtr,
-			EnableHit: *enableHitPtr,
-			HitTypes:  hitTypes,
+			Query:        *queryPtr,
+			TopK:         *topKPtr,
+			EnableHit:    *enableHitPtr,
+			HitTypes:     hitTypes,
+			KnowledgeTag: *knowledgeTagPtr,
 		}
-	case "system", "knowledge", "memory", "skills":
+	case "memory":
+		if len(args) < 2 {
+			return fail(stdout, stderr, protocol.CLIError{Code: "INVALID_ARGS", Message: "Missing action for 'memory'.", ExitCode: 1})
+		}
+		action = normalizeActionAlias(command, args[1])
+		switch action {
+		case "get", "save":
+			if err := parseSessionFlags(action, args[2:], &sessionOpts); err != nil {
+				return fail(stdout, stderr, protocol.WrapAsCLIError(err))
+			}
+		default:
+			if err := parseMemoryFlags(action, args[2:], &memoryOpts); err != nil {
+				return fail(stdout, stderr, protocol.WrapAsCLIError(err))
+			}
+		}
+	case "skills":
+		if len(args) < 2 {
+			return fail(stdout, stderr, protocol.CLIError{Code: "INVALID_ARGS", Message: "Missing action for 'skills'.", ExitCode: 1})
+		}
+		action = normalizeActionAlias(command, args[1])
+		if err := parseSkillsFlags(action, args[2:], &skillsOpts); err != nil {
+			return fail(stdout, stderr, protocol.WrapAsCLIError(err))
+		}
+	case "session":
+		if len(args) < 2 {
+			return fail(stdout, stderr, protocol.CLIError{Code: "INVALID_ARGS", Message: "Missing action for 'session'.", ExitCode: 1})
+		}
+		action = normalizeActionAlias(command, args[1])
+		if err := parseSessionFlags(action, args[2:], &sessionOpts); err != nil {
+			return fail(stdout, stderr, protocol.WrapAsCLIError(err))
+		}
+	case "system", "knowledge":
 		if len(args) < 2 {
 			return fail(stdout, stderr, protocol.CLIError{Code: "INVALID_ARGS", Message: fmt.Sprintf("Missing action for '%s'.", command), ExitCode: 1})
 		}
@@ -71,6 +108,7 @@ func Run(args []string, stdout io.Writer, stderr io.Writer) int {
 		if command == "knowledge" && action == "search" {
 			fs := flag.NewFlagSet("knowledge search", flag.ContinueOnError)
 			fs.SetOutput(io.Discard)
+			tagPtr := fs.String("tag", "", "Knowledge base tag (required for v4 search)")
 			if err := fs.Parse(args[2:]); err != nil {
 				return fail(stdout, stderr, protocol.CLIError{Code: "INVALID_ARGS", Message: err.Error(), ExitCode: 1})
 			}
@@ -79,6 +117,10 @@ func Run(args []string, stdout io.Writer, stderr io.Writer) int {
 			}
 			if fs.NArg() > 1 {
 				return fail(stdout, stderr, protocol.CLIError{Code: "INVALID_ARGS", Message: "knowledge search accepts at most one optional query argument.", ExitCode: 1})
+			}
+			tag = strings.TrimSpace(*tagPtr)
+			if tag == "" {
+				return fail(stdout, stderr, protocol.CLIError{Code: "INVALID_ARGS", Message: "--tag is required for knowledge search.", ExitCode: 1})
 			}
 		} else if len(args) > 2 {
 			return fail(stdout, stderr, protocol.CLIError{Code: "INVALID_ARGS", Message: "Unexpected extra arguments.", ExitCode: 1})
@@ -96,10 +138,21 @@ func Run(args []string, stdout io.Writer, stderr io.Writer) int {
 		response map[string]any
 		err      error
 	)
-	if command == "search" {
+	switch command {
+	case "search":
 		response, err = dispatcher.Search(searchOptions)
-	} else {
-		response, err = dispatcher.Handle(command, action, query)
+	case "memory":
+		if action == "get" || action == "save" {
+			response, err = dispatcher.SessionExecute(action, sessionOpts)
+		} else {
+			response, err = dispatcher.MemoryExecute(action, memoryOpts)
+		}
+	case "skills":
+		response, err = dispatcher.SkillsExecute(action, skillsOpts)
+	case "session":
+		response, err = dispatcher.SessionExecute(action, sessionOpts)
+	default:
+		response, err = dispatcher.Handle(command, action, query, tag)
 	}
 	if err != nil {
 		return fail(stdout, stderr, protocol.WrapAsCLIError(err))
@@ -129,12 +182,26 @@ func printHelp(w io.Writer) {
 	fmt.Fprintln(w)
 	fmt.Fprintln(w, "Usage:")
 	fmt.Fprintln(w, "  bible health")
-	fmt.Fprintln(w, "  bible search --query <string> [--top-k <int>] [--enable-hit] [--hit-types skill,memory]")
+	fmt.Fprintln(w, "  bible search --query <string> [--top-k <int>] [--enable-hit] [--hit-types skill,memory] [--knowledge-tag <tag>]")
 	fmt.Fprintln(w, "  bible system status|info")
-	fmt.Fprintln(w, "  bible knowledge list")
-	fmt.Fprintln(w, "  bible knowledge search [query]")
-	fmt.Fprintln(w, "  bible memory show")
-	fmt.Fprintln(w, "  bible skills list")
+	fmt.Fprintln(w, "  bible knowledge list|search --tag <tag> [query]")
+	fmt.Fprintln(w, "  bible memory upload <session_dir> [--kb-index <index>] [--skip-if-exists] [--wait]")
+	fmt.Fprintln(w, "  bible memory upload-all <base_dir> [--kb-index <index>] [--workers N]")
+	fmt.Fprintln(w, "  bible memory build-meta <session_dir>")
+	fmt.Fprintln(w, "  bible memory status [task_id] [--memory-id ID] [--cache-dir DIR]")
+	fmt.Fprintln(w, "  bible memory list [--limit N] [--tag TAG] [--since DATE]")
+	fmt.Fprintln(w, "  bible memory search <query> [--top-k N]")
+	fmt.Fprintln(w, "  bible memory cache-status [base_dir]")
+	fmt.Fprintln(w, "  bible skills list [--limit N] [--tag TAG]")
+	fmt.Fprintln(w, "  bible skills search <query> [--top-k N]")
+	fmt.Fprintln(w, "  bible skills get <name_or_id> [--content]")
+	fmt.Fprintln(w, "  bible skills upload --file <path.skill> [--kb-index <index>] [--wait]")
+	fmt.Fprintln(w, "  bible skills download <name_or_id> [--storage-path PATH] [--output DIR]")
+	fmt.Fprintln(w, "  bible memory get --id <memory-id>")
+	fmt.Fprintln(w, `  bible memory save --input '{"title":"...","messages":[...]}' [--kb-index <index>] [--wait]`)
+	fmt.Fprintln(w, "  bible session list [--limit N]       (deprecated: use 'memory list')")
+	fmt.Fprintln(w, "  bible session get --id <session-id>  (deprecated: use 'memory get')")
+	fmt.Fprintln(w, `  bible session save --input '{"title":"...","messages":[...]}' [--kb-index <index>] [--wait]  (deprecated: use 'memory save')`)
 }
 
 func parseHitTypes(raw string) ([]string, error) {
@@ -186,14 +253,32 @@ func normalizeActionAlias(command string, action string) string {
 			"search": "search",
 		},
 		"memory": {
-			"show":   "show",
-			"list":   "list",
-			"ls":     "list",
-			"search": "search",
+			"upload":       "upload",
+			"upload-all":   "upload-all",
+			"build-meta":   "build-meta",
+			"status":       "status",
+			"show":         "status",
+			"list":         "list",
+			"ls":           "list",
+			"search":       "search",
+			"cache-status": "cache-status",
+			"get":          "get",
+			"save":         "save",
 		},
 		"skills": {
+			"list":     "list",
+			"ls":       "list",
+			"search":   "search",
+			"get":      "get",
+			"show":     "get",
+			"upload":   "upload",
+			"download": "download",
+		},
+		"session": {
 			"list": "list",
 			"ls":   "list",
+			"get":  "get",
+			"save": "save",
 		},
 	}
 

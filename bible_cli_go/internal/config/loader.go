@@ -15,10 +15,13 @@ const (
 )
 
 type configFilePayload struct {
-	ServerURL      *string `json:"server_url"`
-	BaseURL        *string `json:"base_url"`
-	TimeoutSeconds *int    `json:"timeout_seconds"`
-	TrustEnv       *bool   `json:"trust_env"`
+	ServerURL      *string       `json:"server_url"`
+	BaseURL        *string       `json:"base_url"`
+	Token          *string       `json:"token"`
+	TimeoutSeconds *int          `json:"timeout_seconds"`
+	TrustEnv       *bool         `json:"trust_env"`
+	Memory         *MemoryConfig `json:"memory"`
+	Skill          *SkillConfig  `json:"skill"`
 }
 
 // LoadResolvedConfig merges config layers with precedence:
@@ -90,10 +93,26 @@ func applyFileLayer(resolved *ResolvedConfig, path string, source ConfigSource) 
 		resolved.TrustEnv = *payload.TrustEnv
 		resolved.TrustEnvSource = source
 	}
+
+	if payload.Token != nil && strings.TrimSpace(*payload.Token) != "" {
+		resolved.Token = strings.TrimSpace(*payload.Token)
+	}
+
+	if payload.Memory != nil {
+		resolved.Memory = *payload.Memory
+	}
+
+	if payload.Skill != nil {
+		resolved.Skill = *payload.Skill
+	}
 }
 
 func applyEnvLayer(resolved *ResolvedConfig) {
-	if baseURL := strings.TrimSpace(os.Getenv("BIBLE_CLI_BASE_URL")); baseURL != "" {
+	// BIBLE_SERVER_URL is the canonical env var; BIBLE_CLI_BASE_URL and BIBLE_ATLAS_BASE_URL are aliases.
+	if baseURL := strings.TrimSpace(os.Getenv("BIBLE_SERVER_URL")); baseURL != "" {
+		resolved.BaseURL = baseURL
+		resolved.BaseURLSource = SourceEnvCLI
+	} else if baseURL := strings.TrimSpace(os.Getenv("BIBLE_CLI_BASE_URL")); baseURL != "" {
 		resolved.BaseURL = baseURL
 		resolved.BaseURLSource = SourceEnvCLI
 	} else if baseURL := strings.TrimSpace(os.Getenv("BIBLE_ATLAS_BASE_URL")); baseURL != "" {
@@ -113,6 +132,18 @@ func applyEnvLayer(resolved *ResolvedConfig) {
 			resolved.TrustEnv = trust
 			resolved.TrustEnvSource = SourceEnvCLI
 		}
+	}
+
+	if token := strings.TrimSpace(os.Getenv("BIBLE_TOKEN")); token != "" {
+		resolved.Token = token
+	}
+
+	if kbIndex := strings.TrimSpace(os.Getenv("BIBLE_MEMORY_KB_INDEX")); kbIndex != "" {
+		resolved.Memory.Upload.KbIndex = kbIndex
+	}
+
+	if vectorModel := strings.TrimSpace(os.Getenv("BIBLE_MEMORY_VECTOR_MODEL")); vectorModel != "" {
+		resolved.Memory.Upload.VectorModel = vectorModel
 	}
 }
 
