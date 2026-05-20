@@ -1,0 +1,276 @@
+#!/usr/bin/env node
+/* eslint-disable */
+/**
+ * Mock bible CLI —— 用于开发期解耦真 CLI 进度。
+ *
+ * 协议：与 docs/manual/cli-contract-v1.md 一致：
+ *   - 成功：exit=0，stdout 单行 JSON `{ok:true, data:...}`
+ *   - 失败：exit=1（CLI_NOT_IMPLEMENTED 用 exit=3），stdout 单行 JSON `{ok:false, error:{code, message}}`
+ *
+ * 行为见 backlog/memory-closure-collab-plan-zh.md §5.2 / §5.3。
+ *
+ * 错误注入：环境变量 BIBLE_MOCK_INJECT=<scenario>
+ *   not_implemented / slow / task_failed / index_conflict / artifact_expired
+ *
+ * 任务状态用 /tmp/bible-mock-tasks.json 持久化（多次 task get 之间保持）。
+ */
+'use strict';
+
+const fs = require('node:fs');
+const os = require('node:os');
+const path = require('node:path');
+const crypto = require('node:crypto');
+
+const argv = process.argv.slice(2);
+const inject = process.env.BIBLE_MOCK_INJECT || '';
+const STATE_PATH = path.join(os.tmpdir(), 'bible-mock-tasks.json');
+
+main();
+
+function main() {
+  try {
+    if (inject === 'not_implemented') {
+      return failExit(3, 'CLI_NOT_IMPLEMENTED', `mock CLI: injection 'not_implemented' active`);
+    }
+    if (argv.length === 0) return ok({ usage: 'bible <command> ...' });
+
+    const [cmd, ...rest] = argv;
+    switch (cmd) {
+      case 'health':                return cmdHealth();
+      case 'memory':                return dispatchMemory(rest);
+      case 'task':                  return dispatchTask(rest);
+      default:                      return failExit(3, 'CLI_NOT_IMPLEMENTED', `unknown command: ${cmd}`);
+    }
+  } catch (err) {
+    return fail('INTERNAL', `mock CLI threw: ${err && err.message || String(err)}`);
+  }
+}
+
+// ---------- health ----------
+
+function cmdHealth() {
+  return ok({
+    cli: 'mock',
+    version: '0.0.0-mock',
+    server: { reachable: true, url: 'mock://localhost' },
+  });
+}
+
+// ---------- memory ----------
+
+function dispatchMemory(args) {
+  const [sub, ...rest] = args;
+  switch (sub) {
+    case 'search':                  return cmdMemorySearch(rest);
+    case 'import':                  return cmdMemoryImport(rest);
+    case 'download':                return cmdMemoryDownload(rest);
+    case 'artifact':                return cmdMemoryArtifact(rest);
+    case '--help':                  return ok({ commands: ['search', 'import', 'download', 'artifact'] });
+    default:                        return failExit(3, 'CLI_NOT_IMPLEMENTED', `memory ${sub}`);
+  }
+}
+
+function cmdMemorySearch(args) {
+  if (args.includes('--help')) return ok({});
+  const flags = parseFlags(args);
+  const query = flags['--query'] || '';
+  if (/error/i.test(query)) return fail('INTERNAL', `mock-injected error for query: ${query}`);
+
+  const results = [
+    mkHit('mock-session-aaa', 0.92, `Discussion about ${query}`),
+    mkHit('mock-session-bbb', 0.81, `Earlier exploration of ${query}`),
+    mkHit('mock-session-ccc', 0.65, `Tangential note related to ${query}`),
+  ];
+  return ok({
+    results,
+    total: results.length,
+    kb_index: flags['--kb-index'] || 'memory_main',
+    tag: flags['--tag'] || 'memory',
+  });
+}
+
+function cmdMemoryImport(args) {
+  if (args.includes('--help')) return ok({});
+  if (inject === 'index_conflict') return fail('INDEX_BINDING_CONFLICT', 'mock injected');
+  const flags = parseFlags(args);
+
+  let sessionId = `mock-${crypto.randomUUID()}`;
+  const metaFile = flags['--meta-file'];
+  if (metaFile && fs.existsSync(metaFile)) {
+    try {
+      const meta = JSON.parse(fs.readFileSync(metaFile, 'utf-8'));
+      if (meta && typeof meta.session_id === 'string') sessionId = meta.session_id;
+    } catch { /* ignore */ }
+  }
+
+  const taskId = `mock-imp-${crypto.randomUUID().slice(0, 8)}`;
+  upsertTask(taskId, {
+    task_id: taskId,
+    task_type: 'import.memory',
+    status: 'queued',
+    polls: 0,
+    result: { session_id: sessionId, kb_index: flags['--kb-index'] || 'memory_main', chunks_count: 5 },
+  });
+  return ok({
+    task_id: taskId,
+    status: 'queued',
+    kb_index: flags['--kb-index'] || 'memory_main',
+    tag: flags['--tag'] || 'memory',
+    session_id: sessionId,
+  });
+}
+
+function cmdMemoryDownload(args) {
+  const [sub, ...rest] = args;
+  if (sub === '--help') return ok({ commands: ['file', 'batch'] });
+  if (sub !== 'file' && sub !== 'batch') return failExit(3, 'CLI_NOT_IMPLEMENTED', `download ${sub}`);
+
+  const flags = parseFlags(rest);
+  const taskId = `mock-dl-${crypto.randomUUID().slice(0, 8)}`;
+  upsertTask(taskId, {
+    task_id: taskId,
+    task_type: sub === 'file' ? 'download.memory' : 'download.memory.batch',
+    status: 'queued',
+    polls: 0,
+    result: {
+      artifact_id: `mock-art-${crypto.randomUUID().slice(0, 8)}`,
+      artifact_name: flags['--download-name'] || (sub === 'file' ? 'source.json' : 'memory-batch.zip'),
+      content_type: sub === 'file' ? 'application/json' : 'application/zip',
+      size_bytes: 1234,
+      expires_at: new Date(Date.now() + 3600_000).toISOString(),
+    },
+  });
+  return ok({ task_id: taskId, status: 'queued' });
+}
+
+function cmdMemoryArtifact(args) {
+  const [sub, ...rest] = args;
+  if (sub === '--help') return ok({ commands: ['fetch'] });
+  if (sub !== 'fetch') return failExit(3, 'CLI_NOT_IMPLEMENTED', `artifact ${sub}`);
+
+  if (inject === 'artifact_expired') return fail('DOWNLOAD_ARTIFACT_EXPIRED', 'mock injected');
+
+  const flags = parseFlags(rest);
+  const outPath = flags['--out'];
+  if (!outPath) return fail('INVALID_ARGS', '--out required');
+  fs.mkdirSync(path.dirname(outPath), { recursive: true });
+  const content = JSON.stringify({ mock: true, artifact_id: flags['--id'] }, null, 2);
+  fs.writeFileSync(outPath, content);
+  return ok({ path: outPath, size_bytes: content.length, content_type: 'application/json' });
+}
+
+// ---------- task ----------
+
+function dispatchTask(args) {
+  const [sub, ...rest] = args;
+  switch (sub) {
+    case 'get':                     return cmdTaskGet(rest);
+    case 'cancel':                  return cmdTaskCancel(rest);
+    case '--help':                  return ok({ commands: ['get', 'cancel'] });
+    default:                        return failExit(3, 'CLI_NOT_IMPLEMENTED', `task ${sub}`);
+  }
+}
+
+function cmdTaskGet(args) {
+  if (args.includes('--help')) return ok({});
+  const flags = parseFlags(args);
+  const id = flags['--id'];
+  if (!id) return fail('INVALID_ARGS', '--id required');
+
+  const t = readTask(id);
+  if (!t) return fail('NOT_FOUND', `task not found: ${id}`);
+
+  t.polls = (t.polls || 0) + 1;
+  const slow = inject === 'slow';
+  const failAt = inject === 'task_failed' ? 3 : Infinity;
+  const completeAt = slow ? 10 : 3;
+
+  if (t.polls >= failAt && t.status !== 'failed') {
+    t.status = 'failed';
+    t.error = { code: 'INTERNAL', message: 'mock-injected task failure' };
+  } else if (t.polls >= completeAt && t.status !== 'completed' && t.status !== 'failed' && t.status !== 'cancelled') {
+    t.status = 'completed';
+  } else if (t.status === 'queued') {
+    t.status = 'running';
+  }
+  writeTask(t);
+
+  return ok({
+    task_id: t.task_id,
+    task_type: t.task_type,
+    status: t.status,
+    result: t.status === 'completed' ? t.result : undefined,
+    error: t.error,
+    created_at: t.created_at || new Date().toISOString(),
+    updated_at: new Date().toISOString(),
+  });
+}
+
+function cmdTaskCancel(args) {
+  if (args.includes('--help')) return ok({});
+  const flags = parseFlags(args);
+  const id = flags['--id'];
+  const t = readTask(id);
+  if (!t) return ok({ task_id: id, status: 'cancelled' });
+  t.status = 'cancelled';
+  writeTask(t);
+  return ok({ task_id: id, status: 'cancelled' });
+}
+
+// ---------- state ----------
+
+function loadState() {
+  try { return JSON.parse(fs.readFileSync(STATE_PATH, 'utf-8')); } catch { return { tasks: {} }; }
+}
+function saveState(s) { fs.writeFileSync(STATE_PATH, JSON.stringify(s)); }
+function upsertTask(id, rec) {
+  const s = loadState();
+  s.tasks[id] = { ...rec, created_at: (s.tasks[id] && s.tasks[id].created_at) || new Date().toISOString() };
+  saveState(s);
+}
+function readTask(id) { return loadState().tasks[id]; }
+function writeTask(t) {
+  const s = loadState();
+  s.tasks[t.task_id] = t;
+  saveState(s);
+}
+
+// ---------- utils ----------
+
+function parseFlags(args) {
+  const out = {};
+  for (let i = 0; i < args.length; i++) {
+    const a = args[i];
+    if (a.startsWith('--')) {
+      const next = args[i + 1];
+      if (!next || next.startsWith('--')) { out[a] = true; }
+      else { out[a] = next; i++; }
+    }
+  }
+  return out;
+}
+
+function mkHit(sessionId, score, abstract) {
+  return {
+    session_id: sessionId,
+    storage_path: `mock/memory/${sessionId}.json`,
+    abstract,
+    score,
+    hit_field: 'abstract',
+    snippet: abstract,
+    meta: { session_kind: 'mixed' },
+  };
+}
+
+function ok(data) {
+  process.stdout.write(JSON.stringify({ ok: true, data }) + '\n');
+  process.exit(0);
+}
+function fail(code, message) {
+  process.stdout.write(JSON.stringify({ ok: false, error: { code, message } }) + '\n');
+  process.exit(1);
+}
+function failExit(exitCode, code, message) {
+  process.stdout.write(JSON.stringify({ ok: false, error: { code, message } }) + '\n');
+  process.exit(exitCode);
+}

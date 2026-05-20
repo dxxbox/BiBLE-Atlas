@@ -1,0 +1,267 @@
+{
+  "name": "bible-vscode",
+  "displayName": "Bible Atlas",
+  "description": "Search, save, and recall personal memory / knowledge through the Bible Atlas CLI.",
+  "version": "0.0.1",
+  "publisher": "bible-atlas",
+  "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/bible-atlas/bible-atlas.git"
+  },
+  "engines": {
+    "vscode": "^1.95.0"
+  },
+  "categories": [
+    "AI",
+    "Chat",
+    "Other"
+  ],
+  "main": "./dist/extension.js",
+  "activationEvents": [
+    "onStartupFinished"
+  ],
+  "contributes": {
+    "configuration": {
+      "title": "Bible Atlas",
+      "properties": {
+        "bible.cliPath": {
+          "type": "string",
+          "default": "bible",
+          "description": "Path or alias to the bible CLI executable. Set to the mock CLI during development."
+        },
+        "bible.cli.timeoutMs": {
+          "type": "number",
+          "default": 30000,
+          "description": "Per-call CLI timeout in milliseconds."
+        },
+        "bible.task.pollIntervalMs": {
+          "type": "number",
+          "default": 2000,
+          "description": "TaskTracker polling interval in milliseconds."
+        },
+        "bible.task.maxWaitMs": {
+          "type": "number",
+          "default": 600000,
+          "description": "Maximum time to wait for a single task before pausing polling."
+        },
+        "bible.task.persistOnReload": {
+          "type": "boolean",
+          "default": true,
+          "description": "Persist in-flight tasks across window reloads."
+        },
+        "bible.memory.defaultKbIndex": {
+          "type": "string",
+          "default": "memory_main",
+          "description": "Default kb_index used when saving memory."
+        },
+        "bible.memory.defaultVectorModel": {
+          "type": "string",
+          "default": "",
+          "description": "Optional vector model. Empty = follow the index binding."
+        },
+        "bible.memory.downloadDir": {
+          "type": "string",
+          "default": "${workspaceFolder}/.bible/memory",
+          "description": "Local directory for downloaded memory artifacts."
+        },
+        "bible.memory.lmModelPriority": {
+          "type": "array",
+          "default": [
+            "copilot/gpt-4.1",
+            "copilot/gpt-4o",
+            "copilot/claude-sonnet-4-5",
+            "copilot/claude-sonnet-4",
+            "copilot/gemini-2.5-pro"
+          ],
+          "items": {
+            "type": "string"
+          },
+          "description": "Preferred LM vendor/family list, tried in order; fallback to any copilot model."
+        },
+        "bible.memory.lmConvMaxChars": {
+          "type": "number",
+          "default": 80000,
+          "description": "Character budget for a single LM extraction call."
+        },
+        "bible.memory.lmTurnMaxChars": {
+          "type": "number",
+          "default": 3000,
+          "description": "Per-turn truncation length for LM input."
+        },
+        "bible.memory.copySessionIdOnSave": {
+          "type": "boolean",
+          "default": true,
+          "description": "Show a 'Copy session_id' button when a memory import completes."
+        },
+        "bible.memory.sourceFormat": {
+          "type": "string",
+          "enum": [
+            "chat-export-json"
+          ],
+          "default": "chat-export-json",
+          "description": "Format identifier for the source file submitted alongside meta.json."
+        },
+        "bible.tools.disabled": {
+          "type": "array",
+          "default": [],
+          "items": {
+            "type": "string"
+          },
+          "description": "Names of LM tools to disable."
+        },
+        "bible.debug.dryRun": {
+          "type": "boolean",
+          "default": false,
+          "description": "Dry-run mode: intercept all CLI calls, do NOT execute the real bible binary; print full command/args/temp-file contents to the Bible OutputChannel and return fake successful responses. Use during early development before the real CLI is implemented."
+        },
+        "bible.debug.printPayloads": {
+          "type": "boolean",
+          "default": true,
+          "description": "When dry-run is on: also dump the full content of source.json / meta.json / paths-file to the OutputChannel (truncated at bible.debug.payloadMaxChars). Set to false for very large conversations."
+        },
+        "bible.debug.payloadMaxChars": {
+          "type": "number",
+          "default": 8000,
+          "description": "Per-file character cap when printing payloads in dry-run mode."
+        },
+        "bible.debug.keepTempFiles": {
+          "type": "boolean",
+          "default": true,
+          "description": "Keep memory import temp files (source.json + meta.json) on disk after submission so you can open and inspect them. Always true in dry-run mode."
+        }
+      }
+    },
+    "commands": [
+      { "command": "bible.runSelfCheck",            "title": "Bible: Run Self-Check",                 "category": "Bible" },
+      { "command": "bible.memory.search",           "title": "Bible: Search Memory",                  "category": "Bible" },
+      { "command": "bible.memory.saveCurrentChat",  "title": "Bible: Save Current Chat as Memory",    "category": "Bible" },
+      { "command": "bible.memory.downloadFile",     "title": "Bible: Download Memory File",           "category": "Bible" },
+      { "command": "bible.memory.showLastImportFiles", "title": "Bible: Show Last Import Files (debug)", "category": "Bible" },
+      { "command": "bible.task.showStatus",         "title": "Bible: Show Task Status",               "category": "Bible" },
+      { "command": "bible.debug.toggleDryRun",      "title": "Bible: Toggle Debug Dry-Run",           "category": "Bible" }
+    ],
+    "languageModelTools": [
+      {
+        "name": "bible_health",
+        "displayName": "Bible Health Check",
+        "modelDescription": "Check whether the bible CLI and its backend are reachable. Use as a smoke test when the user reports that other bible_* tools are misbehaving.",
+        "toolReferenceName": "bibleHealth",
+        "canBeReferencedInPrompt": true,
+        "tags": ["bible", "control"],
+        "icon": "$(pulse)",
+        "inputSchema": {
+          "type": "object",
+          "properties": {}
+        }
+      },
+      {
+        "name": "bible_memory_search",
+        "displayName": "Search Memory",
+        "modelDescription": "Semantically search the user's personal memory store (past conversations, fix records, design decisions). Use when the user references prior discussions ('what did we conclude', 'last time we...'), or when relevant context might exist in saved sessions. Returns ranked memory entries with title, abstract, and score.",
+        "toolReferenceName": "bibleMemorySearch",
+        "canBeReferencedInPrompt": true,
+        "tags": ["bible", "memory"],
+        "icon": "$(history)",
+        "inputSchema": {
+          "type": "object",
+          "properties": {
+            "query":      { "type": "string", "description": "Natural language query" },
+            "topK":       { "type": "number", "description": "Max results (default 5)" },
+            "searchType": {
+              "type": "string",
+              "enum": ["keyword", "title", "text", "vector", "hybrid"],
+              "description": "Search strategy (default determined by server search_profile)"
+            }
+          },
+          "required": ["query"]
+        }
+      },
+      {
+        "name": "bible_memory_import",
+        "displayName": "Save to Memory",
+        "modelDescription": "Save a conversation, decision, or note to the user's memory store for future retrieval. Pass the relevant messages from the current conversation. Call ONLY when the user explicitly asks to save / archive / remember. This is asynchronous: the tool returns a task_id immediately; progress is shown in VSCode.",
+        "tags": ["bible", "memory"],
+        "icon": "$(save)",
+        "inputSchema": {
+          "type": "object",
+          "properties": {
+            "title": { "type": "string", "description": "Optional title; auto-generated if omitted." },
+            "messages": {
+              "type": "array",
+              "description": "Conversation messages to save.",
+              "items": {
+                "type": "object",
+                "properties": {
+                  "role":    { "type": "string", "enum": ["user", "assistant", "system"] },
+                  "content": { "type": "string" }
+                },
+                "required": ["role", "content"]
+              }
+            }
+          },
+          "required": ["messages"]
+        }
+      },
+      {
+        "name": "bible_memory_download",
+        "displayName": "Download Memory",
+        "modelDescription": "Download the original source file of a saved memory entry to the local workspace. Use when the user asks to export / open / read the full text of a saved memory. Asynchronous: returns task_id immediately; the file will be written to disk once the server prepares the artifact.",
+        "tags": ["bible", "memory"],
+        "icon": "$(cloud-download)",
+        "inputSchema": {
+          "type": "object",
+          "properties": {
+            "storagePath":  { "type": "string", "description": "Logical storage path from a previous search result." },
+            "downloadName": { "type": "string", "description": "Optional override for downloaded filename." },
+            "outputDir":    { "type": "string", "description": "Optional output directory (default from settings)." }
+          },
+          "required": ["storagePath"]
+        }
+      },
+      {
+        "name": "bible_task_status",
+        "displayName": "Check Task Status",
+        "modelDescription": "Look up the status of an asynchronous bible task by its task_id. Use to follow up on a previous import/download tool call.",
+        "tags": ["bible", "control"],
+        "icon": "$(sync)",
+        "inputSchema": {
+          "type": "object",
+          "properties": {
+            "taskId": { "type": "string", "description": "Task id returned by a previous async bible_* tool." }
+          },
+          "required": ["taskId"]
+        }
+      }
+    ],
+    "chatParticipants": [
+      {
+        "id": "bible.memoryParticipant",
+        "name": "bible-memory",
+        "fullName": "Bible Memory",
+        "description": "Save / search / load memory entries directly from chat.",
+        "isSticky": false,
+        "commands": [
+          { "name": "save",   "description": "Save the current chat as a memory entry." },
+          { "name": "search", "description": "Search saved memory entries." },
+          { "name": "load",   "description": "Load a previously selected memory entry as context." },
+          { "name": "help",   "description": "Show participant help." }
+        ]
+      }
+    ]
+  },
+  "scripts": {
+    "vscode:prepublish": "npm run package",
+    "compile": "tsc --noEmit && node esbuild.js",
+    "package": "tsc --noEmit && node esbuild.js --production",
+    "vsix": "npm run package && npx --yes @vscode/vsce@latest package --no-dependencies --skip-license -o bible-vscode.vsix",
+    "watch": "node esbuild.js --watch",
+    "lint": "tsc --noEmit"
+  },
+  "devDependencies": {
+    "@types/node": "^20.11.0",
+    "@types/vscode": "^1.95.0",
+    "esbuild": "^0.24.0",
+    "typescript": "^5.5.0"
+  }
+}
