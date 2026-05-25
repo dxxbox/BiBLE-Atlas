@@ -1,4 +1,4 @@
-import { MemoryHit, MemorySearchResult } from './memory-types';
+import { ChatSource, MemoryHit, MemorySearchResult } from './memory-types';
 
 /**
  * 把 search 结果格式化为 LM 注入文本（也用于命令面板展示）。
@@ -27,4 +27,47 @@ export function formatHit(hit: MemoryHit, index: number): string {
 function truncate(s: string, max: number): string {
   if (s.length <= max) return s;
   return s.slice(0, max - 1) + '…';
+}
+
+/**
+ * 把 source.json（bible-chat-v1）渲染为可读的 Markdown 对话。
+ *
+ * 渲染规则：
+ *   - 每轮之间用分隔线隔开
+ *   - user 用 `**You**`，assistant 用 `**Assistant**`
+ *   - 正文原样输出（不转义），保留代码块等 Markdown 格式
+ *   - 文件头部附上 session_id + 导出时间，方便回溯
+ */
+export function renderChatMarkdown(source: ChatSource): string {
+  const lines: string[] = [
+    `<!-- Bible Atlas · session: ${source.session_id} · exported: ${source.exported_at} -->`,
+    '',
+  ];
+
+  for (let i = 0; i < source.turns.length; i++) {
+    const turn = source.turns[i];
+    const speaker = turn.role === 'user' ? '**You**' : '**Assistant**';
+    lines.push(`${speaker}`, '', turn.content.trimEnd());
+    if (i < source.turns.length - 1) {
+      lines.push('', '---', '');
+    }
+  }
+
+  return lines.join('\n') + '\n';
+}
+
+/**
+ * 尝试把下载到本地的 source.json 文件内容解析为 ChatSource。
+ * 若格式不符（老版本 / 非 bible-chat-v1）返回 undefined。
+ */
+export function parseChatSource(json: string): ChatSource | undefined {
+  try {
+    const obj = JSON.parse(json) as Partial<ChatSource>;
+    if (obj.source_format === 'bible-chat-v1' && Array.isArray(obj.turns)) {
+      return obj as ChatSource;
+    }
+  } catch {
+    /* ignore */
+  }
+  return undefined;
 }

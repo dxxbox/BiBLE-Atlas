@@ -214,8 +214,8 @@ import 链路涉及两份文件，是本组与 CLI / server 协作面：
 | **W1** F0 + F1（mock） | `core/cli` + `core/task` + `core/registry` 落地；`control` 域 `bible_health` Tool；mock CLI 完成 §5.2 全部命令 | `memory-service` 接口签名定稿；`memory-search` Tool/Command 用 mock 跑通；`memory-format` 注入文本初版 | **F0 验收**：插件用 `bible_health` 与真 CLI 跑通；**F1 mock 验收** | 无 |
 | **W2** F1 真集成 + F2 起步 | `core/lm` + `core/chat` 完成；`BibleTool` / `AsyncBibleTool` 基类 finalize；mock 加 §5.3 错误注入 | `memory-search` 切真 CLI（如 C1 未就绪用过渡路径）；`chat-export` + `memory-builder` 落地；`memory-import` Tool 走 mock 跑通端到端 | **F1 真集成验收**；保存对话用 mock 端到端通 | C1 期望就绪；C2/C6 在路上 |
 | **W3** F2 真集成 | `TaskTracker` 持久化 + 取消链路 finalize；OutputChannel 三类专项事件落地 | LM 失败 fallback 单测；session_id 复制按钮；进度通知 | **F2 验收**：保存当前 chat → server 同时存到 artifact + chunks；规则 fallback case 通过 | C2/C6/C7 期望就绪 |
-| **W4** F2.5 + F3 | mock 加 download / artifact fetch 行为；`Bible: Run Self-Check` 命令 | Chat Participant 全部 slash 命令；`memory-download` Tool/Command + artifact 自动 fetch | **F2.5 验收**：`@bible-memory /save` 不消耗 LM token；**F3 验收**：下载拉回 source 原文 | C3/C5 期望就绪 |
-| **W5+** 收尾 | `domains/skill/` 骨架（F4 扩展性验证）；状态栏；错误向导 | 批量下载 Command；E2E case 补全；LM prompt 二轮调优 | **F4 + F5 验收** | C4 期望就绪 |
+| **W4** F2.5 + F3 | mock 加 download / artifact fetch 行为；`Bible: Run Self-Check` 命令；mock-cli profile 支持 task.completeAt / artifact.fixtureFile 灵活配置 | Chat Participant 全部 slash 命令；`MemoryService.ensureLocalSource` 缓存层；Search Load 自动下载；`bible_memory_download` LM Tool 走同一 ensureLocalSource 路径（**已决定不暴露独立用户 Download 命令**） | **F2.5 验收**：`@bible-memory /save` 不消耗 LM token；**F3 验收**：Search Load 拉回 source 原文 + 同一 hit 二次操作走缓存（OutputChannel 有 `memory.source.cacheHit` 事件）| C3/C5 期望就绪 |
+| **W5+** 收尾 | `domains/skill/` 骨架（F4 扩展性验证）；状态栏；错误向导 | E2E case 补全；LM prompt 二轮调优 | **F4 + F5 验收** | C4 期望就绪 |
 
 并行原则：
 
@@ -350,7 +350,11 @@ import 链路涉及两份文件，是本组与 CLI / server 协作面：
 
 - [ ] `bible memory download file`（C3）→ artifact fetch（C5）链路通
 - [ ] 下载到本地的是 source 原文（可读到完整对话）
+- [ ] `MemoryService.ensureLocalSource`：缓存命中跳过下载（OutputChannel `memory.source.cacheHit` 事件可见）
+- [ ] `Bible: Search Memory → Load to @bible-memory` 与 LM Tool `bible_memory_download` 共享缓存目录与命名规则（key = `sanitize(session_id ?? storage_path)`）
+- [ ] 同一 hit 二次操作 0 网络（不触发 task 状态机）
 - [ ] `DOWNLOAD_ARTIFACT_EXPIRED` 自动重试一次的逻辑覆盖
+- [ ] **用户路径不再暴露独立 Download 命令**（`package.json` 的 `commands` 数组不包含 `bible.memory.downloadFile`）
 
 ### F4 / F5（W5+，可选）
 

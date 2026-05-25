@@ -5,18 +5,40 @@ import * as os from 'node:os';
 import * as crypto from 'node:crypto';
 import { OutputChannel } from '../ui/output-channel';
 import { ChatTurn } from '../lm/budget';
+import { ChatSource } from '../../domains/memory/memory-types';
 
 /**
- * Copilot Chat 导出结果。`raw` 字段是 VSCode 给的原始 JSON（无损保留），
- * `messages` 是解析后的纯文本 turn 序列，`session_id` 优先取 raw.id / raw.sessionId / raw.requests[0].requestId。
+ * Copilot Chat 导出结果（内部中间态）。
+ *
+ * `raw` 是 VSCode 给的原始 JSON，**只在 chat-export.ts 内部**用于解析 session_id / turns，
+ * 不会直接序列化到 source.json——调用方用 `toCleanSource()` 拿精简版，
+ * 或用 `rawJson()` 拿原始字符串写 source.raw.json（本地留存测试用）。
  */
 export interface ChatExportResult {
   session_id: string;
   exported_at: string;
   messages: ChatTurn[];
+  /** 原始 VSCode JSON，仅供内部使用和本地调试留存，不传给 server。 */
   raw: Record<string, unknown>;
-  /** 走的哪条策略 */
   strategy: 'exportSession' | 'workbench';
+}
+
+/**
+ * 把导出结果转成精简的 `ChatSource`：只含 session_id / exported_at / turns，
+ * 不含任何 VSCode 原始 metadata。这是提交给 server 的 source.json 内容。
+ */
+export function toCleanSource(result: ChatExportResult): ChatSource {
+  return {
+    source_format: 'bible-chat-v1',
+    session_id: result.session_id,
+    exported_at: result.exported_at,
+    turns: result.messages,
+  };
+}
+
+/** 把原始 raw 序列化为可写入文件的 JSON 字符串，供 source.raw.json 本地留存。 */
+export function rawJson(result: ChatExportResult): string {
+  return JSON.stringify(result.raw, null, 2);
 }
 
 /**

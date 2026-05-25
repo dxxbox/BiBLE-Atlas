@@ -8,7 +8,6 @@ import { MemoryImportTool } from './tools/memory-import.tool';
 import { MemoryDownloadTool } from './tools/memory-download.tool';
 import { registerSearchMemoryCommand } from './commands/search-memory.command';
 import { registerSaveChatCommand } from './commands/save-chat.command';
-import { registerDownloadMemoryCommand } from './commands/download-memory.command';
 import { registerShowLastImportFilesCommand } from './commands/show-last-import-files.command';
 import { registerMemoryParticipant } from './participant/memory-participant';
 
@@ -35,6 +34,7 @@ export class MemoryModule implements DomainModule {
       config: deps.config,
       output: deps.output,
       builder,
+      tasks: deps.tasks,
     });
 
     const disposables: vscode.Disposable[] = [];
@@ -74,10 +74,10 @@ export class MemoryModule implements DomainModule {
       ),
     );
 
-    // Commands
-    disposables.push(registerSearchMemoryCommand(deps, service));
+    // Commands (面板可见的用户命令)
+    disposables.push(registerSearchMemoryCommand(ctx, deps, service));
     disposables.push(registerSaveChatCommand(deps, service));
-    disposables.push(registerDownloadMemoryCommand(deps, service));
+    // Hidden debug command (代码注册但 package.json 不暴露到命令面板；通过 keybinding/programmatic 调用)
     disposables.push(registerShowLastImportFilesCommand(deps));
 
     // Chat Participant

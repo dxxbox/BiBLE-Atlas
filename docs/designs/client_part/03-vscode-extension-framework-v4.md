@@ -424,12 +424,16 @@ Memory 域专用配置见 6.6。
 |---|---|---|---|---|---|
 | 检索 memory | `bible_memory_search` | `Bible: Search Memory` | `bible memory search --query Q --tag memory [--top-k N] [--search-type ...]` | 同步 | 否 |
 | 保存对话 / 笔记 | `bible_memory_import` | `Bible: Save Current Chat as Memory` | `bible memory import --tag memory --kb-index <X> --source-file <S> --meta-file <M>` | 异步 | 是（需确认） |
-| 单文件下载（拉源文件） | `bible_memory_download` | `Bible: Download Memory File` | `bible memory download file --tag memory --storage-path <P>` | 异步 | 是 |
-| 批量下载（仅命令面板） | — | `Bible: Batch Download Memory` | `bible memory download batch --tag memory --paths-file <P>` | 异步 | 是 |
+| 单文件下载（拉源文件）—— *仅 LM Tool* | `bible_memory_download` | — | `bible memory download file --tag memory --storage-path <P>` | 异步 | 是 |
 | 拉取 artifact（内部） | — | — | `bible memory artifact fetch --id <id> --out <path>` | 同步流 | — |
 | 任务查询（通用） | `bible_task_status`（control 域） | `Bible: Show Task Status` | `bible task get --id <id>` | 同步 | 否 |
 
-> **核心约定**：`bible_memory_import` 必须同时携带 `source` 与 `meta`；server 两份都存，`source` 为 artifact、`meta` 为 chunks。`bible_memory_download` 默认拉回的是 `source` 原文，不是 meta。
+> **核心约定**：
+> 1. `bible_memory_import` 必须同时携带 `source` 与 `meta`；server 两份都存，`source` 为 artifact、`meta` 为 chunks。`bible_memory_download` 默认拉回的是 `source` 原文，不是 meta。
+> 2. **没有面向用户的"下载"命令**。`storage_path` 是 server 内部字段，用户既拿不到也不会想手输。下载逻辑被 `MemoryService.ensureLocalSource` 隐式化——`Bible: Search Memory` 的 `Load` 动作触发它，缓存命中 0 网络、未命中走完整 `download file → task wait → artifact fetch` 流程。LM Tool `bible_memory_download` 仍保留：agent 从 `bible_memory_search` 拿到合法 `storage_path` 后才会调，与"用户手动输入"无关。
+> 3. **Preview 与 Load 解耦**。Preview 只渲染 hit 已有字段（abstract / snippet / hit_field / storage_path + 本地缓存状态）的 markdown，**不触发下载**——避免源文件可能很大、避免 IDE 通知阻塞 QuickPick 主线程。只有 Load 才会 ensureLocalSource。
+> 4. **Search 命令是可往返的交互式选取**。单实例 `createQuickPick` 在两种 state 切换：`hits` 显示候选列表（带 `cached` / `viewed` 标记），选中一条后切到 `actions` 显示 2 项动作 + `Back to list`。预览 markdown 用 `preserveFocus: true` + `ignoreFocusOut: true`，QuickPick 在编辑器旁保持可见，用户预览完后自动回到该 hit 的动作菜单 → 直接选 `Load` 或选 `Back` 比较其他候选；命令生命周期内可反复浏览。
+> 5. **Debug 命令隐藏**。`bible.debug.toggleDryRun` / `bible.debug.openMockProfile` / `bible.memory.showLastImportFiles` 只在代码层 `commandRegistry.register`，**不**在 `package.json` 的 `commands` 数组里暴露，因此命令面板看不到。开发者按需绑 keybinding 或用 `vscode.commands.executeCommand(...)` 调。
 
 ### 6.2 Memory 三个核心用户故事
 
@@ -502,31 +506,52 @@ sequenceDiagram
 - `bible_knowledge_search --enable-hit --hit-types memory`：知识库主检索，附带命中 memory（CLI 已实现）
 - `bible_memory_search`：纯 memory 检索（待 CLI 实现）
 
-#### 故事 C：主动下载某条 memory（拉源文件）
+#### 故事 C：取一条 memory 的 source（查询自动下载 + 缓存复用）
+
+下载在新设计里 **不是一个独立动作**，而是 search/Load/Download 三个入口共享的 `MemoryService.ensureLocalSource(hit)` 管线：
 
 ```mermaid
 sequenceDiagram
     actor User
-    participant Cmd as Bible: Download Memory File
+    participant Entry as 入口（任一）<br/>① Bible: Search Memory + Load to @bible-memory<br/>② @bible-memory /load &lt;query&gt;<br/>③ LM Tool bible_memory_download (LM-only)
     participant Svc as MemoryService
-    participant CLI
+    participant FS as 本地文件系统
     participant Tk as TaskTracker
+    participant CLI
     participant Srv as Server
 
-    User->>Cmd: 触发命令
-    Cmd->>User: 输入 storage_path（或从最近搜索结果选）
-    Cmd->>User: 确认目标目录 / 是否覆盖
-    Cmd->>Svc: submitDownloadFile({storagePath})
-    Svc->>CLI: memory download file --storage-path
-    CLI->>Srv: POST /api/download/memory/file
-    Srv-->>CLI: 202 {task_id}
-    Svc->>Tk: submit(taskType=download.memory, onCompleted=fetchArtifact)
-    Tk-->>Tk: 轮询直到 completed
-    Tk->>Svc: onCompleted(record.artifact_id)
-    Svc->>CLI: memory artifact fetch --id --out
-    CLI-->>Svc: {path, size_bytes, content_type}
-    Svc-->>User: 通知 "Memory file downloaded to <path>"<br/>+ "Reveal in Explorer" 按钮
+    User->>Entry: 触发（已选定一条 hit 或手动输 storage_path）
+    Entry->>Svc: ensureLocalSource({ hit })
+    Svc->>FS: stat ${downloadDir}/<key>.json<br/>key = sanitize(session_id ?? storage_path)
+    alt cache hit (文件存在且 size>0)
+        FS-->>Svc: { exists }
+        Svc-->>Entry: { path, fromCache: true, sizeBytes }
+    else cache miss
+        Svc->>Tk: submit(taskType=download.memory, showProgress=true)
+        Tk->>CLI: memory download file --storage-path
+        CLI->>Srv: POST /api/download/memory/file
+        Srv-->>CLI: 202 {task_id}
+        Tk-->>Tk: 轮询直到 completed
+        Tk-->>Svc: record.result.artifact_id
+        Svc->>CLI: memory artifact fetch --id --out <localPath>
+        CLI-->>Svc: { path, size_bytes, content_type }
+        Svc-->>Entry: { path, fromCache: false, sizeBytes }
+    end
+    Entry->>User: 通知（Load 路径继续走 loadToContext + chat.open + participant /load）
 ```
+
+**核心契约**：
+
+| 维度 | 设计 |
+| --- | --- |
+| 缓存目录 | `bible.memory.downloadDir` 默认 `${workspaceFolder}/.bible/memory/` |
+| 缓存 key | `sanitize(hit.session_id ?? hit.storage_path)` |
+| 缓存粒度 | 单文件（只缓存 source 原文；server-side 的 expires_at 在 v1 不参与失效判断）|
+| 失效方式 | 当前版本：手动 `rm`；未来：加 manifest 元数据 + TTL |
+| 取消 | 若 ensureLocalSource 调用方传 `cancellationToken`，自动 `tasks.cancel(task_id)` |
+| 失败降级 | 调用方根据场景决定——Load 路径允许"无 source 仅 summary"；LM Tool 路径直接报错 |
+
+> 用户路径上**没有独立的"下载"命令**——下载只在 `Bible: Search Memory + Load` 时隐式发生。LM Tool `bible_memory_download` 保留：agent 自己负责先调 `bible_memory_search` 拿合法 `storage_path`，所以"用户手输 storage_path"这种不存在的场景不会出现。
 
 下载到本地的是**原始 source 文件**，用户可以重读完整对话；如果需要的是结构化摘要，那是 search → 注入 `meta.overview` 的事，不走 download。
 
@@ -807,7 +832,7 @@ CLI 必须把 server v4 业务错误码（如 `INDEX_BINDING_CONFLICT`、`PARSER
 | **F1 Memory 检索闭环** | `bible_memory_search` Tool + `Bible: Search Memory` Command + `memory-format.ts` 注入文本 | agent / 命令面板都能拿到 memory 结果 | `bible memory search`（待实现）；过渡可用 `bible search --enable-hit --hit-types memory` |
 | **F2 Memory 导入闭环（核心）** | `bible_memory_import` Tool + `Bible: Save Current Chat as Memory` Command + `memory-builder.ts` LM 提取 + 双文件提交 + TaskTracker | "保存对话"端到端通；source 与 meta 双文件均落到 server；session_id 可一键复制；LM 失败可降级到规则提取 | `bible memory import`（双文件）、`bible task get`、`bible task cancel` |
 | **F2.5 Chat Participant** | `@bible-memory /save /search /load /help` 全可用 | 在 Copilot Chat 输入 `@bible-memory /save` 能保存当前对话；`/load <q>` 自动选 top-1 注入 | — |
-| **F3 Memory 下载闭环** | `bible_memory_download` Tool + Command + artifact fetch 自动化 | 单文件下载到工作区可用；下载到的是 source 原文 | `bible memory download file`、`bible memory artifact fetch` |
+| **F3 Memory 下载/缓存闭环** | `MemoryService.ensureLocalSource` + Search Load 自动下载 + `bible_memory_download` LM Tool + `artifact fetch` 自动化 | Search 选完 Load → 自动下载（首次）/ 缓存命中（再次）；LM Tool 与 Search Load 共享缓存；下载到的是 source 原文；**用户路径不再有独立 Download 命令** | `bible memory download file`、`bible memory artifact fetch` |
 | **F4 扩展性验证：Skill 域** | 新增 SkillModule（不改 core），暴露 `bible_skill_search` / `bible_skill_get` | 证明开放-封闭原则 | `bible skill search`、`bible skill get` |
 | **F5 治理 & 体验** | `bible_task_status` Tool + 状态栏 + 自检命令 + 错误向导 | 任意 task_id 可查；用户能看到所有进行中任务 | `bible task get` |
 | **F6（可选）** | KB 域只读、批量 download、统计命令 | — | KB 与 control 类命令 |

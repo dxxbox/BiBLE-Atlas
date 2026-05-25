@@ -137,7 +137,7 @@ export BIBLE_MOCK_INJECT=index_conflict   # 或 slow / task_failed / artifact_ex
 }
 ```
 
-或一键切换：命令面板 → **Bible: Toggle Debug Dry-Run** → 重启窗口。
+或通过隐藏的 debug 命令一键切换（默认不在命令面板，绑 keybinding 后调用 `bible.debug.toggleDryRun`）。
 
 启用后：
 
@@ -148,24 +148,38 @@ export BIBLE_MOCK_INJECT=index_conflict   # 或 slow / task_failed / artifact_ex
   - `[DRY-RUN] cli.fakeResponse` —— 返回给上层的假 envelope
 - import / download 类异步任务直接走 `queued → completed`，让 TaskTracker、notification、`onCompleted` 钩子等 UX 流程能完整走通，无需轮询等待。
 
-### 配套命令
+### 命令面板可见的用户命令
 
-| Command                                         | 用途                                                  |
-| ----------------------------------------------- | ----------------------------------------------------- |
-| `Bible: Toggle Debug Dry-Run`                   | 一键切换 dry-run（写 workspace 设置），提示 reload   |
-| `Bible: Show Last Import Files (debug)`         | 列出最近一次 `Save Current Chat` 写到 `/tmp` 的 `source.json` / `meta.json`，提供"Open / Reveal / Clear"动作 |
-| `Bible: Show Task Status`                       | 查看本插件已提交的任务（dry-run 下也会有记录）        |
+| Command                              | 用途                                                                                                |
+| ------------------------------------ | --------------------------------------------------------------------------------------------------- |
+| `Bible: Run Self-Check`              | 探测 CLI 是否可用 + 能力集                                                                          |
+| `Bible: Search Memory`               | 交互式 QuickPick：候选列表 ↔ 动作菜单（Preview summary / Load to @bible-memory）                  |
+| `Bible: Save Current Chat as Memory` | 导出当前 Copilot Chat，LM 提炼 meta，CLI 提交                                                       |
+| `Bible: Show Task Status`            | 查看本插件已提交的异步任务（含 dry-run 下的虚拟任务）                                                |
+
+> Memory 体系里**没有面向用户的"下载"命令**。下载已被 `MemoryService.ensureLocalSource` 隐式化——`Bible: Search Memory` 里选 Load 时自动按需下载并复用缓存。LM Tool `bible_memory_download` 仍保留（LM 从 search 结果拿到合法 `storage_path` 后才会调）。
+
+### 隐藏的 debug 命令（不在命令面板）
+
+为了减少普通用户面板上的干扰，下列 debug 命令**只在代码层 register、不在 `package.json` 的 `commands` 数组里暴露**。需要的话用 keybinding 或 `vscode.commands.executeCommand(...)` 调用：
+
+| Command id                          | 作用                                                                                         |
+| ----------------------------------- | -------------------------------------------------------------------------------------------- |
+| `bible.debug.toggleDryRun`          | 切换 `bible.debug.dryRun`，提示重启窗口                                                      |
+| `bible.debug.openMockProfile`       | 打开 / 初始化 `~/.bible-mock.json`，调整 mock-cli 的 search/task/artifact 行为              |
+| `bible.memory.showLastImportFiles`  | 列出最近一次 `Save Current Chat as Memory` 写出的 `source.json` / `meta.json` 并提供动作   |
+
+需要打开任一项最简单的方式：`Ctrl/Cmd+Shift+P` → "Preferences: Open Keyboard Shortcuts (JSON)" → 加一条 `{ "key": "...", "command": "bible.debug.toggleDryRun" }`。
 
 ### 验证流程示例（你最关心的"上传"路径）
 
-1. 启 dry-run，重启窗口
+1. 在 settings.json 中设 `"bible.debug.dryRun": true`，重启窗口
 2. 在 Copilot Chat 中和模型聊几句
 3. 命令面板 → **Bible: Save Current Chat as Memory**
 4. 打开 OutputChannel `Bible`：
-   - 找到 `memory.import.files` 行 → 拿到 `source_link` / `meta_link`
+   - 找到 `memory.import.files` 行 → 拿到 `source_link` / `meta_link`（点击直接打开临时文件）
    - 再往下看 `[DRY-RUN] cli.invoke` 确认 `args` 是不是你预期的（`memory import --tag memory --kb-index memory_main --source-file /tmp/... --meta-file /tmp/... --vector-model ...`）
    - 紧跟的 `----- BEGIN source.json -----` 段就是真要发给 server 的源数据；`----- BEGIN meta.json -----` 段就是 LM 提取的结构化元数据
-5. 若想再编辑/对比：**Bible: Show Last Import Files (debug)** → "Open meta.json"
 
 ### dry-run vs mock CLI 该选哪个？
 

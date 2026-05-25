@@ -6,6 +6,7 @@ import { TaskStatusTool } from './tools/task-status.tool';
 import { registerSelfCheckCommand } from './commands/self-check.command';
 import { registerShowTaskStatusCommand } from './commands/task-status.command';
 import { registerToggleDryRunCommand } from './commands/toggle-dry-run.command';
+import { registerOpenMockProfileCommand } from './commands/open-mock-profile.command';
 
 export class ControlModule implements DomainModule {
   readonly id = 'control' as const;
@@ -34,10 +35,13 @@ export class ControlModule implements DomainModule {
       })),
     );
 
-    // Commands
+    // Commands (面板可见的用户命令)
     disposables.push(registerSelfCheckCommand(deps));
     disposables.push(registerShowTaskStatusCommand(deps));
+    // Hidden debug commands (代码注册但 package.json 不暴露到命令面板；
+    // 需要时通过 keybinding 或 vscode.commands.executeCommand('bible.debug.*') 调用)
     disposables.push(registerToggleDryRunCommand(deps));
+    disposables.push(registerOpenMockProfileCommand(deps));
 
     return disposables;
   }

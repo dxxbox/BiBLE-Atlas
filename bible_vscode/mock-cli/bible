@@ -9,10 +9,14 @@
  *
  * 行为见 backlog/memory-closure-collab-plan-zh.md §5.2 / §5.3。
  *
- * 错误注入：环境变量 BIBLE_MOCK_INJECT=<scenario>
- *   not_implemented / slow / task_failed / index_conflict / artifact_expired
+ * 行为控制（按优先级从高到低）：
+ *   1. 环境变量 BIBLE_MOCK_INJECT=<scenario>（向后兼容）
+ *   2. Profile 文件：BIBLE_MOCK_PROFILE 指定的路径，默认 ~/.bible-mock.json
+ *      mock-cli 每次启动都重新读，所以 profile 改完保存即生效，无需重启 IDE。
+ *      schema 见下方 DEFAULT_PROFILE / openMockProfile 命令的模板。
  *
  * 任务状态用 /tmp/bible-mock-tasks.json 持久化（多次 task get 之间保持）。
+ * 想重置：删 /tmp/bible-mock-tasks.json，或让 profile.task.completeAt 改变后用新 task。
  */
 'use strict';
 
@@ -22,8 +26,35 @@ const path = require('node:path');
 const crypto = require('node:crypto');
 
 const argv = process.argv.slice(2);
-const inject = process.env.BIBLE_MOCK_INJECT || '';
 const STATE_PATH = path.join(os.tmpdir(), 'bible-mock-tasks.json');
+const PROFILE_PATH = process.env.BIBLE_MOCK_PROFILE || path.join(os.homedir(), '.bible-mock.json');
+
+const DEFAULT_PROFILE = {
+  inject: null,
+  search: {
+    count: 3,
+    abstractTemplate: 'Discussion about {query} (#{i})',
+    longAbstract: false,
+    longAbstractRepeat: 12,
+    errorIfQueryContains: 'error',
+    scoreStart: 0.92,
+    scoreStep: 0.08,
+    sessionIdPrefix: 'mock-session',
+    hitField: 'abstract',
+    sessionKind: 'mixed',
+  },
+  task: {
+    completeAt: 3,
+    failAt: null,
+  },
+  artifact: {
+    fixtureFile: null,
+    contentType: 'application/json',
+  },
+};
+
+const profile = loadProfile();
+const inject = process.env.BIBLE_MOCK_INJECT || profile.inject || '';
 
 main();
 
@@ -74,13 +105,36 @@ function cmdMemorySearch(args) {
   if (args.includes('--help')) return ok({});
   const flags = parseFlags(args);
   const query = flags['--query'] || '';
-  if (/error/i.test(query)) return fail('INTERNAL', `mock-injected error for query: ${query}`);
 
-  const results = [
-    mkHit('mock-session-aaa', 0.92, `Discussion about ${query}`),
-    mkHit('mock-session-bbb', 0.81, `Earlier exploration of ${query}`),
-    mkHit('mock-session-ccc', 0.65, `Tangential note related to ${query}`),
-  ];
+  const cfg = profile.search;
+  const trigger = (cfg.errorIfQueryContains || '').trim();
+  if (trigger && query.toLowerCase().includes(trigger.toLowerCase())) {
+    return fail('INTERNAL', `mock-injected error for query: ${query}`);
+  }
+
+  const count = Math.max(0, Number(cfg.count));
+  const results = [];
+  for (let i = 0; i < count; i++) {
+    const sessionId = `${cfg.sessionIdPrefix || 'mock-session'}-${String(i + 1).padStart(3, '0')}`;
+    const score = Math.max(0, Number(cfg.scoreStart) - i * Number(cfg.scoreStep));
+    const tpl = cfg.abstractTemplate || 'Match {i} for {query}';
+    let abstract = tpl
+      .replace(/\{query\}/g, query || '(empty)')
+      .replace(/\{i\}/g, String(i + 1))
+      .replace(/\{sessionId\}/g, sessionId);
+    if (cfg.longAbstract) {
+      abstract = Array(Math.max(1, Number(cfg.longAbstractRepeat) || 12)).fill(abstract).join(' ');
+    }
+    results.push({
+      session_id: sessionId,
+      storage_path: `mock/memory/${sessionId}.json`,
+      abstract,
+      score: round2(score),
+      hit_field: cfg.hitField || 'abstract',
+      snippet: abstract.length > 200 ? abstract.slice(0, 200) + '…' : abstract,
+      meta: { session_kind: cfg.sessionKind || 'mixed' },
+    });
+  }
   return ok({
     results,
     total: results.length,
@@ -88,6 +142,8 @@ function cmdMemorySearch(args) {
     tag: flags['--tag'] || 'memory',
   });
 }
+
+function round2(n) { return Math.round(n * 100) / 100; }
 
 function cmdMemoryImport(args) {
   if (args.includes('--help')) return ok({});
@@ -153,10 +209,21 @@ function cmdMemoryArtifact(args) {
   const flags = parseFlags(rest);
   const outPath = flags['--out'];
   if (!outPath) return fail('INVALID_ARGS', '--out required');
+
   fs.mkdirSync(path.dirname(outPath), { recursive: true });
-  const content = JSON.stringify({ mock: true, artifact_id: flags['--id'] }, null, 2);
-  fs.writeFileSync(outPath, content);
-  return ok({ path: outPath, size_bytes: content.length, content_type: 'application/json' });
+
+  const fixturePath = profile.artifact && profile.artifact.fixtureFile;
+  let sizeBytes;
+  let contentType = (profile.artifact && profile.artifact.contentType) || 'application/json';
+  if (fixturePath && fs.existsSync(fixturePath)) {
+    fs.copyFileSync(fixturePath, outPath);
+    sizeBytes = fs.statSync(outPath).size;
+  } else {
+    const content = JSON.stringify({ mock: true, artifact_id: flags['--id'], fixture: 'default' }, null, 2);
+    fs.writeFileSync(outPath, content);
+    sizeBytes = content.length;
+  }
+  return ok({ path: outPath, size_bytes: sizeBytes, content_type: contentType });
 }
 
 // ---------- task ----------
@@ -181,9 +248,12 @@ function cmdTaskGet(args) {
   if (!t) return fail('NOT_FOUND', `task not found: ${id}`);
 
   t.polls = (t.polls || 0) + 1;
+
+  // 优先级：BIBLE_MOCK_INJECT (slow/task_failed) > profile.task.{completeAt,failAt}
   const slow = inject === 'slow';
-  const failAt = inject === 'task_failed' ? 3 : Infinity;
-  const completeAt = slow ? 10 : 3;
+  const injectFail = inject === 'task_failed';
+  const completeAt = slow ? 10 : Number((profile.task && profile.task.completeAt) || 3);
+  const failAt = injectFail ? 3 : (profile.task && profile.task.failAt != null ? Number(profile.task.failAt) : Infinity);
 
   if (t.polls >= failAt && t.status !== 'failed') {
     t.status = 'failed';
@@ -233,6 +303,26 @@ function writeTask(t) {
   const s = loadState();
   s.tasks[t.task_id] = t;
   saveState(s);
+}
+
+// ---------- profile ----------
+
+function loadProfile() {
+  let raw = {};
+  try {
+    if (fs.existsSync(PROFILE_PATH)) {
+      raw = JSON.parse(fs.readFileSync(PROFILE_PATH, 'utf-8')) || {};
+    }
+  } catch (e) {
+    process.stderr.write(`[mock-cli] failed to parse profile ${PROFILE_PATH}: ${e.message}\n`);
+    raw = {};
+  }
+  return {
+    inject: raw.inject ?? DEFAULT_PROFILE.inject,
+    search: { ...DEFAULT_PROFILE.search, ...(raw.search || {}) },
+    task: { ...DEFAULT_PROFILE.task, ...(raw.task || {}) },
+    artifact: { ...DEFAULT_PROFILE.artifact, ...(raw.artifact || {}) },
+  };
 }
 
 // ---------- utils ----------

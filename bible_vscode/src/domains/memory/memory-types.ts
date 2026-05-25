@@ -49,14 +49,20 @@ export interface MemoryMeta {
 }
 
 /**
- * ChatSource：序列化为 `source` 文件的内容（chat-export-json 格式）。
- * 与 `meta.json` 配对提交，server 端落 artifact。
+ * ChatSource：序列化为 `source.json` 提交给 server 的内容。
+ *
+ * 设计原则：**只保留可读的对话文本**，不存 raw metadata / tool call JSON / token 计数等。
+ * 这使得：① source.json 体积小一个数量级；② 存下来的文件人类可直接阅读；
+ *          ③ 下载回来渲染为 Markdown 时无需额外解析。
+ *
+ * 原始 VSCode export 写成 `source.raw.json` 保存在本地（不发给 server），仅供测试验证。
  */
 export interface ChatSource {
+  source_format: 'bible-chat-v1';
   session_id: string;
   exported_at: string;
-  messages: ChatTurn[];
-  raw: Record<string, unknown>;
+  /** 纯文本对话轮次，已过滤 tool call / thinking 等运行时噪声。 */
+  turns: ChatTurn[];
 }
 
 /** 提交 import 后的同步响应。 */
@@ -79,4 +85,17 @@ export interface ArtifactFetchResponse {
   path: string;
   size_bytes: number;
   content_type: string;
+}
+
+/**
+ * 持久化在 workspaceState 里的"最近加载到上下文"的描述。
+ * 命令路径写入，participant `/load` 读取并把内容流入 chat（让 LM 看到）。
+ */
+export interface LoadedContext {
+  hit: MemoryHit;
+  /** 若已下载，指向本地的 source.json；participant 会读这个文件全文塞给 LM。 */
+  sourceFilePath?: string;
+  /** loaded-context.md 在工作区里的绝对路径，便于 UI 引用 */
+  loadedContextMdPath?: string;
+  loadedAt: string;
 }
