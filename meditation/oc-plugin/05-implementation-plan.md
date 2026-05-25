@@ -233,6 +233,8 @@ bible-oc-plugin/
 - `docs/3rd/openclaw/plugins/hooks.md`：hook 事件、优先级、timeout 语义参考。
 - `docs/3rd/openclaw/plugins/sdk-overview.md`：`registerTool`、`registerContextEngine`、`registerCli` 参考。
 - `docs/3rd/openclaw/plugins/manifest.md`：`contracts`、`setup`、`configSchema` 规范参考。
+- openclaw plugin-sdk 源代码可以在`3rd/openclaw/plugin-sdk` 目录下找到
+- openclaw plugin 设计文档可以在`docs/3rd/openclaw` 目录下检索
 
 ## 本地手动安装与启用
 

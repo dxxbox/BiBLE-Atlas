@@ -1,0 +1,41 @@
+{
+  "name": "bible-oc-plugin",
+  "version": "0.1.0",
+  "type": "module",
+  "main": "./dist/index.js",
+  "types": "./dist/index.d.ts",
+  "scripts": {
+    "build": "tsc -p tsconfig.json",
+    "typecheck": "tsc -p tsconfig.json --noEmit",
+    "test": "vitest run",
+    "verify:contracts": "vitest run tests/unit/contracts.test.ts"
+  },
+  "engines": {
+    "node": ">=20",
+    "openclaw": ">=2026.5.18"
+  },
+  "openclaw": {
+    "extensions": ["./src/index.ts"],
+    "runtimeExtensions": ["./dist/index.js"],
+    "setupEntry": "./src/setup-entry.ts",
+    "runtimeSetupEntry": "./dist/setup-entry.js",
+    "compat": {
+      "pluginApi": ">=2026.5.18",
+      "minGatewayVersion": "2026.5.18"
+    },
+    "build": {
+      "openclawVersion": "2026.5.18",
+      "pluginSdkVersion": "2026.5.18"
+    },
+    "install": {
+      "localPath": ".",
+      "defaultChoice": "local",
+      "minHostVersion": ">=2026.5.18"
+    }
+  },
+  "devDependencies": {
+    "@types/node": "latest",
+    "typescript": "latest",
+    "vitest": "latest"
+  }
+}
