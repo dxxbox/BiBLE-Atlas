@@ -55,7 +55,7 @@ assemble(input, ctx)
   |-- render <relevant-memories>
   |
   v
-AssembleResult appendContext / user-message suffix
+AssembleResult systemPromptAddition
 ```
 
 ## 引擎构造
@@ -75,15 +75,16 @@ factory 不应访问 OpenClaw 内部 session store。输入全部来自宿主传
 伪代码：
 
 ```typescript
-async function assemble(input: AssembleInput, ctx: ContextEngineRuntimeContext): Promise<AssembleResult> {
-  const sessionKey = getSessionKey(input, ctx);
+async function assemble(input: AssembleInput): Promise<AssembleResult> {
+  const sessionKey = getSessionKey(input);
+  const base = { messages: input.messages, estimatedTokens: estimateMessageTokens(input.messages) };
   if (bypassMatcher.matches(sessionKey)) {
-    return {};
+    return base;
   }
 
   const query = buildRecallQuery(input, config);
   if (!query.text) {
-    return {};
+    return base;
   }
 
   const hits = await recallPipeline.search(query, {
@@ -94,14 +95,18 @@ async function assemble(input: AssembleInput, ctx: ContextEngineRuntimeContext):
 
   const rendered = renderRelevantMemories(hits, config);
   if (!rendered) {
-    return {};
+    return base;
   }
 
-  return appendToCurrentUserMessage(rendered);
+  return {
+    ...base,
+    systemPromptAddition: rendered,
+    estimatedTokens: base.estimatedTokens + estimateTokens(rendered),
+  };
 }
 ```
 
-推荐返回形态是 `appendContext`；如果宿主明确支持修改当前用户消息，则使用“追加到当前用户信息末尾”的形式。两者语义必须保持一致：内容只对本 turn 生效，不写入永久会话消息。
+当前 OpenClaw 2026.5.22 contract 使用 `systemPromptAddition` 作为召回注入通道。语义固定为“仅本 turn 生效的参考材料”，不写入永久会话消息，也不直接改写用户消息。
 
 ## 召回查询预处理
 

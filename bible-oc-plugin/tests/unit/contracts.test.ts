@@ -14,7 +14,7 @@ describe("plugin contracts", () => {
   it("declares context engine metadata and config schema", () => {
     expect(manifest.kind).toBe("context-engine");
     expect(manifest.activation).toHaveProperty("onStartup");
-    expect(manifest.configSchema.required).toContain("baseUrl");
+    expect(manifest.configSchema.required).not.toContain("baseUrl");
     expect(manifest.configSchema.properties).toHaveProperty("bypassSessionPatterns");
     expect(manifest.configSchema.properties).toHaveProperty("enableMemoryRecall");
   });

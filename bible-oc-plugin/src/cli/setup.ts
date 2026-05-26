@@ -2,7 +2,11 @@ import { readFile, writeFile } from "node:fs/promises";
 import { dirname } from "node:path";
 import { mkdir } from "node:fs/promises";
 import { resolveBibleConfig } from "../config/schema.js";
+import { actionLogger } from "../logging.js";
 import type { BibleRuntime } from "../runtime/bible-runtime.js";
+import type { PluginLogger } from "../types/openclaw.js";
+
+const DEFAULT_OPENCLAW_CONFIG_PATH = `${process.env.HOME ?? "."}/.openclaw/openclaw.json`;
 
 export interface SetupOptions {
   baseUrl: string;
@@ -17,32 +21,44 @@ export interface SetupOptions {
   configPath?: string;
 }
 
-export async function executeBibleSetup(opts: SetupOptions, deps: { runtimeFactory: (config: ReturnType<typeof resolveBibleConfig>) => BibleRuntime }): Promise<Record<string, unknown>> {
-  const config = resolveBibleConfig({
-    baseUrl: opts.baseUrl,
-    token: opts.token,
-    timeoutMs: opts.timeoutMs,
-    enableMemoryRecall: opts.enableMemoryRecall,
-    enableSkillRecall: opts.enableSkillRecall,
-    enableKnowledgeRecall: opts.enableKnowledgeRecall,
-    knowledgeTags: opts.knowledgeTags,
-    bypassSessionPatterns: opts.bypassSessionPatterns,
-  });
-  const runtime = deps.runtimeFactory(config);
-  const health = await runtime.probeHealth();
-  const nextConfig = {
-    plugins: {
-      entries: {
-        "bible-oc-plugin": { enabled: true, config: publicConfig(config) },
+export async function executeBibleSetup(opts: SetupOptions, deps: { runtimeFactory: (config: ReturnType<typeof resolveBibleConfig>) => BibleRuntime; logger?: PluginLogger }): Promise<Record<string, unknown>> {
+  const action = actionLogger(deps.logger, "cli.setup", { write: opts.write === true, hasConfigPath: Boolean(opts.configPath) });
+  action.start();
+  try {
+    const config = resolveBibleConfig({
+      baseUrl: opts.baseUrl,
+      token: opts.token,
+      timeoutMs: opts.timeoutMs,
+      enableMemoryRecall: opts.enableMemoryRecall,
+      enableSkillRecall: opts.enableSkillRecall,
+      enableKnowledgeRecall: opts.enableKnowledgeRecall,
+      knowledgeTags: opts.knowledgeTags,
+      bypassSessionPatterns: opts.bypassSessionPatterns,
+    });
+    const runtime = deps.runtimeFactory(config);
+    const health = await runtime.probeHealth();
+    const nextConfig = {
+      plugins: {
+        entries: {
+          "bible-oc-plugin": { enabled: true, config: publicConfig(config) },
+        },
+        slots: { contextEngine: config.contextEngineId },
       },
-      slots: { contextEngine: "bible-oc-plugin" },
-    },
-  };
-  if (opts.write) {
-    if (!opts.configPath) throw new Error("configPath is required when write is true.");
-    await writeOpenClawConfig(opts.configPath, nextConfig);
+    };
+    if (opts.write) {
+      await writeOpenClawConfig(resolveConfigPath(opts.configPath), nextConfig);
+    }
+    const result = { ok: true, write: opts.write === true, health, config: nextConfig };
+    action.done({ contextEngineId: config.contextEngineId, wrote: opts.write === true });
+    return result;
+  } catch (err) {
+    action.fail(err);
+    throw err;
   }
-  return { ok: true, write: opts.write === true, health, config: nextConfig };
+}
+
+export function resolveConfigPath(configPath?: string): string {
+  return configPath || process.env.OPENCLAW_CONFIG_PATH || process.env.OPENCLAW_CONFIG || DEFAULT_OPENCLAW_CONFIG_PATH;
 }
 
 async function writeOpenClawConfig(path: string, patch: Record<string, unknown>): Promise<void> {

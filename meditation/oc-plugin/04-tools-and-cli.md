@@ -273,6 +273,34 @@ api.registerCli?.(
 
 `setup/status` 是 OpenClaw 插件运行时 CLI，不替代 `bible_cli_go`。用户仍可直接使用 `bible` CLI 管理 BiBLE Atlas 数据；OpenClaw CLI 只管理 OpenClaw 插件集成状态。
 
+## 开发期日志
+
+状态：resolved。
+
+插件运行时统一使用 `[bible-oc-plugin]` 前缀输出结构化日志。开发阶段建议同时打开：
+
+```bash
+openclaw logs --follow
+```
+
+已覆盖的动作边界：
+
+- plugin 注册：`plugin.register start/done`
+- CLI：`cli.register`、`cli.setup`、`cli.status`
+- runtime HTTP：`runtime.probeHealth`、`runtime.searchMemory`、`runtime.searchSkill`、`runtime.searchKnowledge`、`runtime.commitSessionMemory` 等
+- Context Engine：`context.assemble`、`context.afterTurn`、`context.compact`
+- recall：`recall.pipeline`、`recall.searchDomain`
+- capture：`capture.startSession`、`capture.captureTurn`、`capture.flush`、`capture.endSession`
+- hooks：`hook.session_start`、`hook.before_reset`、`hook.session_end`
+- tools：`tool.execute`
+
+日志策略：
+
+- `info`：动作 start/done、耗时、工具名、domain、sessionKey、命中数量、是否注入。
+- `warn`：可恢复问题，例如单域 recall 失败、tool 返回 error result、bounded flush warning。
+- `error`：动作失败，包含 `name/message/stack/code/statusCode/serverErrorCode` 等错误元数据。
+- 不记录完整 prompt、query、token、Authorization、API key；只记录长度、数量和状态。
+
 ## 错误映射
 
 建议错误码：

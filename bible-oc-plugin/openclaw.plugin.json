@@ -33,7 +33,7 @@
     "requiresRuntime": false,
     "providers": [
       {
-        "id": "bible-atlas",
+        "id": "bible-oc-plugin",
         "label": "BiBLE Atlas HTTP Service",
         "envVars": ["BIBLE_ATLAS_BASE_URL", "BIBLE_CLI_BASE_URL"],
         "authMethods": ["none", "bearer-token"]
@@ -43,12 +43,12 @@
   "configSchema": {
     "type": "object",
     "additionalProperties": false,
-    "required": ["baseUrl"],
+    "required": [],
     "properties": {
       "baseUrl": { "type": "string", "description": "BiBLE Atlas HTTP base URL" },
       "token": { "type": "string", "description": "Optional bearer token" },
       "timeoutMs": { "type": "integer", "minimum": 1000, "default": 30000 },
-      "contextEngineId": { "type": "string", "default": "bible-atlas" },
+      "contextEngineId": { "type": "string", "default": "bible-oc-plugin" },
       "enableMemoryRecall": { "type": "boolean", "default": true },
       "enableSkillRecall": { "type": "boolean", "default": false },
       "enableKnowledgeRecall": { "type": "boolean", "default": false },

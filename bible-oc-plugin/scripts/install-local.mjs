@@ -9,7 +9,7 @@ const manifestPath = resolve(pluginRoot, "openclaw.plugin.json");
 const runtimePath = resolve(pluginRoot, "dist/index.js");
 if (!existsSync(manifestPath)) fail("openclaw.plugin.json is missing.");
 if (!existsSync(runtimePath)) fail("dist/index.js is missing. Run npm run build first.");
-const configPath = args["openclaw-config"] || process.env.OPENCLAW_CONFIG || `${process.env.HOME}/.openclaw/config.json`;
+const configPath = args["openclaw-config"] || process.env.OPENCLAW_CONFIG_PATH || process.env.OPENCLAW_CONFIG || `${process.env.HOME}/.openclaw/openclaw.json`;
 let config = {};
 try { config = JSON.parse(await readFile(configPath, "utf8")); } catch (err) { if (err.code !== "ENOENT") throw err; }
 const next = merge(config, { plugins: { entries: { "bible-oc-plugin": { path: pluginRoot, manifest: manifestPath, enabled: false } } } });
