@@ -33,9 +33,11 @@ describe("HTTP client", () => {
       else if (req.url === "/api/search/skill") { res.statusCode = 503; res.end(JSON.stringify({ detail: "down" })); }
       else if (req.url === "/health") setTimeout(() => res.end(JSON.stringify({ status: "ok" })), 50);
     });
-    const client = new BibleAtlasClient({ baseUrl, timeoutMs: 10 });
+    const client = new BibleAtlasClient({ baseUrl, timeoutMs: 1000 });
     await expect(client.searchMemory({ query: "x" })).rejects.toMatchObject({ code: "BIBLE_CONTRACT_MISMATCH" });
     await expect(client.searchSkill({ query: "x" })).rejects.toMatchObject({ code: "BIBLE_SERVICE_UNAVAILABLE" });
-    await expect(client.health()).rejects.toMatchObject({ code: "BIBLE_TIMEOUT" });
+
+    const timeoutClient = new BibleAtlasClient({ baseUrl, timeoutMs: 10 });
+    await expect(timeoutClient.health()).rejects.toMatchObject({ code: "BIBLE_TIMEOUT" });
   });
 });
