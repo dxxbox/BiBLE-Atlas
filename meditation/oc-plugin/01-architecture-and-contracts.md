@@ -33,7 +33,7 @@ OpenClaw host
   | loads native plugin
   v
 bible-oc-plugin
-  |-- registerContextEngine("bible-atlas", factory)
+  |-- registerContextEngine("bible-oc-plugin", factory)
   |-- on("session_start" | "session_end" | "before_reset", handler)
   |-- registerTool(memory / knowledge / skill tools)
   |-- registerCli(openclaw bible setup/status)
@@ -103,12 +103,14 @@ export default {
   register(api: OpenClawPluginApi) {
     const config = resolveBibleConfig(api.config);
     const runtime = createBibleRuntime({ config, logger: api.logger });
-    const engineFactory = createBibleContextEngine({ config, runtime, logger: api.logger });
+    const captureStore = new SessionCaptureStore({ config, runtime, logger: api.logger });
 
-    api.registerContextEngine("bible-atlas", engineFactory);
-    registerBibleSessionHooks(api, { config, runtime });
+    api.registerContextEngine(config.contextEngineId, () =>
+      createBibleContextEngine({ config, runtime, logger: api.logger, captureStore }),
+    );
+    registerBibleSessionHooks(api, { config, runtime, logger: api.logger, captureStore });
     registerBibleTools(api, { config, runtime });
-    registerBibleCli(api, { config, runtime });
+    registerBibleCli(api, { config, runtime, openclawConfig: api.config });
   },
 };
 ```
@@ -156,19 +158,29 @@ export type OpenClawHookName =
 
 ## Context Engine 最小类型
 
-OpenClaw 公开文档只要求 Context Engine 由 `registerContextEngine(id, factory)` 注册，且 `assemble()` 能根据当前 turn 追加上下文。插件本地可定义保守的最小类型：
+OpenClaw 2026.5.22 会校验 Context Engine factory 的返回对象。插件本地类型必须覆盖当前宿主必需 contract，同时保持编译时不依赖 OpenClaw 内部源码。
 
 ```typescript
 export interface ContextEngine {
-  assemble(input: AssembleInput, ctx: ContextEngineRuntimeContext): Promise<AssembleResult>;
-  afterTurn?(input: AfterTurnInput, ctx: ContextEngineRuntimeContext): Promise<void | ContextEngineMaintenanceResult>;
-  compact?(input: CompactInput, ctx: ContextEngineRuntimeContext): Promise<CompactResult>;
+  readonly info: {
+    id: string;
+    name: string;
+    version?: string;
+  };
+  ingest(input: { sessionId: string; sessionKey?: string; message: OpenClawMessage }): Promise<{ ingested: boolean }>;
+  assemble(input: AssembleInput): Promise<{
+    messages: OpenClawMessage[];
+    estimatedTokens: number;
+    systemPromptAddition?: string;
+  }>;
+  afterTurn?(input: AfterTurnInput): Promise<void>;
+  compact(input: CompactInput): Promise<CompactResult>;
 }
 
 export type ContextEngineFactory = (ctx: ContextEngineFactoryContext) => ContextEngine | Promise<ContextEngine>;
 ```
 
-输入字段只使用稳定语义：`sessionKey`、`sessionId`、`messages`、`currentUserMessage`、`availableTools`、`citationsMode`、`contextTokenBudget`。如果宿主字段缺失，插件应降级到不注入或只使用当前用户消息，而不是猜测内部结构。
+输入字段只使用稳定语义：`sessionKey`、`sessionId`、`messages`、`prompt`、`availableTools`、`citationsMode`、`tokenBudget`。召回注入通过 `systemPromptAddition` 返回，避免把 `<relevant-memories>` 写入永久会话消息。如果宿主字段缺失，插件应降级到不注入或只使用当前用户消息，而不是猜测内部结构。
 
 ## `package.json` 契约
 
@@ -294,7 +306,7 @@ export type ContextEngineFactory = (ctx: ContextEngineFactoryContext) => Context
     "requiresRuntime": false,
     "providers": [
       {
-        "id": "bible-atlas",
+        "id": "bible-oc-plugin",
         "label": "BiBLE Atlas HTTP Service",
         "envVars": ["BIBLE_ATLAS_BASE_URL", "BIBLE_CLI_BASE_URL"],
         "authMethods": ["none", "bearer-token"]
@@ -304,12 +316,12 @@ export type ContextEngineFactory = (ctx: ContextEngineFactoryContext) => Context
   "configSchema": {
     "type": "object",
     "additionalProperties": false,
-    "required": ["baseUrl"],
+    "required": [],
     "properties": {
       "baseUrl": { "type": "string", "description": "BiBLE Atlas HTTP base URL" },
       "token": { "type": "string", "description": "Optional bearer token" },
       "timeoutMs": { "type": "integer", "minimum": 1000, "default": 30000 },
-      "contextEngineId": { "type": "string", "default": "bible-atlas" },
+      "contextEngineId": { "type": "string", "default": "bible-oc-plugin" },
       "enableMemoryRecall": { "type": "boolean", "default": true },
       "enableSkillRecall": { "type": "boolean", "default": false },
       "enableKnowledgeRecall": { "type": "boolean", "default": false },

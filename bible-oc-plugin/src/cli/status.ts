@@ -1,7 +1,9 @@
 import { readFile } from "node:fs/promises";
 import type { ResolvedBibleConfig } from "../config/types.js";
 import type { BibleRuntime } from "../runtime/bible-runtime.js";
+import { actionLogger, log } from "../logging.js";
 import { CORE_TOOL_NAMES } from "../tools/register.js";
+import type { PluginLogger } from "../types/openclaw.js";
 
 export interface StatusOptions {
   json?: boolean;
@@ -9,29 +11,38 @@ export interface StatusOptions {
   registeredTools?: string[];
 }
 
-export async function executeBibleStatus(opts: StatusOptions, deps: { config: ResolvedBibleConfig; runtime: BibleRuntime }): Promise<Record<string, unknown>> {
-  const openclawConfig = opts.configPath ? await readConfig(opts.configPath) : {};
+export async function executeBibleStatus(opts: StatusOptions, deps: { config?: ResolvedBibleConfig; runtime?: BibleRuntime; openclawConfig?: unknown; logger?: PluginLogger }): Promise<Record<string, unknown>> {
+  const action = actionLogger(deps.logger, "cli.status", { json: opts.json === true, hasConfigPath: Boolean(opts.configPath) });
+  action.start();
+  const openclawConfig = opts.configPath ? await readConfig(opts.configPath) : readRecord(deps.openclawConfig) ?? {};
   const pluginEntry = (((openclawConfig.plugins as Record<string, unknown> | undefined)?.entries as Record<string, unknown> | undefined)?.["bible-oc-plugin"] ?? {}) as Record<string, unknown>;
   const slot = ((openclawConfig.plugins as Record<string, unknown> | undefined)?.slots as Record<string, unknown> | undefined)?.contextEngine;
   let health: Record<string, unknown> | undefined;
   let healthError: string | undefined;
-  try {
-    health = await deps.runtime.probeHealth();
-  } catch (err) {
-    healthError = err instanceof Error ? err.message : String(err);
+  if (deps.runtime) {
+    try {
+      health = await deps.runtime.probeHealth();
+    } catch (err) {
+      healthError = err instanceof Error ? err.message : String(err);
+      log(deps.logger, "warn", "cli.status health check failed", { error: healthError });
+    }
+  } else {
+    healthError = "not configured";
   }
   const registered = opts.registeredTools ?? [...CORE_TOOL_NAMES];
-  return {
+  const status = {
     installed: true,
     enabled: pluginEntry.enabled === true,
     contextEngineSlot: slot ?? null,
-    baseUrl: deps.config.baseUrl,
+    baseUrl: deps.config?.baseUrl ?? null,
     health: healthError ? { ok: false, error: healthError } : { ok: true, details: health },
-    recall: { memory: deps.config.enableMemoryRecall, skill: deps.config.enableSkillRecall, knowledge: deps.config.enableKnowledgeRecall, knowledgeTags: deps.config.knowledgeTags },
-    capture: { enabled: deps.config.captureEnabled, thresholdTurns: deps.config.captureCommitThresholdTurns, thresholdChars: deps.config.captureCommitThresholdChars },
-    bypassSessionPatterns: deps.config.bypassSessionPatterns,
+    recall: { memory: deps.config?.enableMemoryRecall ?? false, skill: deps.config?.enableSkillRecall ?? false, knowledge: deps.config?.enableKnowledgeRecall ?? false, knowledgeTags: deps.config?.knowledgeTags ?? [] },
+    capture: { enabled: deps.config?.captureEnabled ?? false, thresholdTurns: deps.config?.captureCommitThresholdTurns ?? null, thresholdChars: deps.config?.captureCommitThresholdChars ?? null },
+    bypassSessionPatterns: deps.config?.bypassSessionPatterns ?? [],
     tools: { registered: registered.length, declared: CORE_TOOL_NAMES.length, names: registered, contractAligned: sameSet(registered, [...CORE_TOOL_NAMES]) },
   };
+  action.done({ enabled: status.enabled, contextEngineSlot: status.contextEngineSlot, healthOk: (status.health as Record<string, unknown>).ok });
+  return status;
 }
 
 export function formatStatusText(status: Record<string, unknown>): string {
@@ -64,6 +75,9 @@ async function readConfig(path: string): Promise<Record<string, unknown>> {
 
 function sameSet(a: string[], b: string[]): boolean {
   return a.length === b.length && a.every((item) => b.includes(item));
+}
+function readRecord(value: unknown): Record<string, unknown> | undefined {
+  return typeof value === "object" && value !== null && !Array.isArray(value) ? value as Record<string, unknown> : undefined;
 }
 function yesNo(value: unknown): string { return value ? "yes" : "no"; }
 function enabled(value: unknown): string { return value ? "enabled" : "disabled"; }

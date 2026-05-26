@@ -72,6 +72,8 @@ export interface ContextEngineRuntimeContext {
   sessionKey?: string;
   sessionId?: string;
   contextTokenBudget?: number;
+  tokenBudget?: number;
+  currentTokenCount?: number;
   openclawVersion?: string;
   [key: string]: unknown;
 }
@@ -79,23 +81,33 @@ export interface ContextEngineRuntimeContext {
 export interface AssembleInput {
   sessionKey?: string;
   sessionId?: string;
-  messages?: OpenClawMessage[];
+  messages: OpenClawMessage[];
   currentUserMessage?: unknown;
-  availableTools?: string[];
+  availableTools?: Set<string>;
   citationsMode?: string;
   contextTokenBudget?: number;
+  tokenBudget?: number;
+  model?: string;
+  prompt?: string;
   [key: string]: unknown;
 }
 
 export interface AssembleResult {
-  appendContext?: string;
-  userMessageSuffix?: string;
-  metadata?: JsonObject;
+  messages: OpenClawMessage[];
+  estimatedTokens: number;
+  promptAuthority?: "assembled" | "preassembly_may_overflow";
+  systemPromptAddition?: string;
+  contextProjection?: {
+    mode: "per_turn" | "thread_bootstrap";
+    epoch?: string;
+    fingerprint?: string;
+  };
 }
 
 export interface AfterTurnInput {
   sessionKey?: string;
   sessionId?: string;
+  sessionFile?: string;
   turnId?: string;
   runId?: string;
   userMessage?: unknown;
@@ -103,28 +115,71 @@ export interface AfterTurnInput {
   toolCalls?: unknown[];
   usage?: { inputTokens?: number; outputTokens?: number };
   messages?: OpenClawMessage[];
+  prePromptMessageCount?: number;
+  autoCompactionSummary?: string;
+  isHeartbeat?: boolean;
+  tokenBudget?: number;
+  runtimeContext?: ContextEngineRuntimeContext;
   [key: string]: unknown;
 }
 
 export interface ContextEngineMaintenanceResult {
-  warnings?: string[];
+  changed: boolean;
+  bytesFreed: number;
+  rewrittenEntries: number;
+  reason?: string;
 }
 
 export interface CompactInput {
   sessionKey?: string;
   sessionId?: string;
-  messages?: OpenClawMessage[];
-  reason?: string;
+  sessionFile?: string;
+  tokenBudget?: number;
+  force?: boolean;
+  currentTokenCount?: number;
+  compactionTarget?: "budget" | "threshold";
+  customInstructions?: string;
+  runtimeContext?: ContextEngineRuntimeContext;
+  abortSignal?: AbortSignal;
   [key: string]: unknown;
 }
 
 export interface CompactResult {
-  summary: string;
-  metadata?: JsonObject;
+  ok: boolean;
+  compacted: boolean;
+  reason?: string;
+  result?: {
+    summary?: string;
+    firstKeptEntryId?: string;
+    tokensBefore: number;
+    tokensAfter?: number;
+    details?: unknown;
+    sessionId?: string;
+    sessionFile?: string;
+  };
+}
+
+export interface ContextEngineInfo {
+  id: string;
+  name: string;
+  version?: string;
+  ownsCompaction?: boolean;
+  turnMaintenanceMode?: "foreground" | "background";
+}
+
+export interface IngestResult {
+  ingested: boolean;
+}
+
+export interface IngestBatchResult {
+  ingestedCount: number;
 }
 
 export interface ContextEngine {
-  assemble(input: AssembleInput, ctx: ContextEngineRuntimeContext): Promise<AssembleResult>;
-  afterTurn?(input: AfterTurnInput, ctx: ContextEngineRuntimeContext): Promise<void | ContextEngineMaintenanceResult>;
-  compact?(input: CompactInput, ctx: ContextEngineRuntimeContext): Promise<CompactResult>;
+  readonly info: ContextEngineInfo;
+  ingest(input: { sessionId: string; sessionKey?: string; message: OpenClawMessage; isHeartbeat?: boolean }): Promise<IngestResult>;
+  ingestBatch?(input: { sessionId: string; sessionKey?: string; messages: OpenClawMessage[]; isHeartbeat?: boolean }): Promise<IngestBatchResult>;
+  assemble(input: AssembleInput): Promise<AssembleResult>;
+  afterTurn?(input: AfterTurnInput): Promise<void>;
+  compact(input: CompactInput): Promise<CompactResult>;
 }

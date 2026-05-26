@@ -32,4 +32,17 @@ describe("CLI setup/status", () => {
     expect(status.tools).toMatchObject({ registered: 7, declared: 7, contractAligned: true });
     expect(formatStatusText(status)).toContain("BiBLE Atlas plugin");
   });
+
+  it("status reads enabled state from host config snapshot", async () => {
+    const openclawConfig = { plugins: { entries: { "bible-oc-plugin": { enabled: true } }, slots: { contextEngine: "bible-oc-plugin" } } };
+    const status = await executeBibleStatus({}, { config: resolveBibleConfig({ baseUrl: "http://x" }), runtime: { probeHealth: vi.fn(async () => ({ status: "ok" })) } as unknown as BibleRuntime, openclawConfig });
+    expect(status.enabled).toBe(true);
+    expect(status.contextEngineSlot).toBe("bible-oc-plugin");
+  });
+
+  it("status is available before plugin setup", async () => {
+    const status = await executeBibleStatus({}, {});
+    expect(status.baseUrl).toBeNull();
+    expect(status.health).toMatchObject({ ok: false, error: "not configured" });
+  });
 });

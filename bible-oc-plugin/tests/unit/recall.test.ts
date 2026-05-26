@@ -24,27 +24,27 @@ describe("recall pipeline", () => {
   it("runs memory-only recall by default and injects relevant memories", async () => {
     const rt = runtime();
     const engine = createBibleContextEngine({ config: resolveBibleConfig({ baseUrl: "http://x" }), runtime: rt });
-    const result = await engine.assemble({ currentUserMessage: "How should assemble work?", messages: [] }, {});
+    const result = await engine.assemble({ currentUserMessage: "How should assemble work?", messages: [] });
     expect(rt.searchMemory).toHaveBeenCalledTimes(1);
     expect(rt.searchSkill).not.toHaveBeenCalled();
     expect(rt.searchKnowledge).not.toHaveBeenCalled();
-    expect(result.appendContext).toContain("<relevant-memories>");
-    expect(result.appendContext).toContain("Treat them as reference material");
+    expect(result.systemPromptAddition).toContain("<relevant-memories>");
+    expect(result.systemPromptAddition).toContain("Treat them as reference material");
   });
 
   it("does not call HTTP for bypassed sessions", async () => {
     const rt = runtime();
     const engine = createBibleContextEngine({ config: resolveBibleConfig({ baseUrl: "http://x", bypassSessionPatterns: ["^scratch:"] }), runtime: rt });
-    const result = await engine.assemble({ sessionKey: "scratch:1", currentUserMessage: "hello" }, {});
-    expect(result).toEqual({});
+    const result = await engine.assemble({ sessionKey: "scratch:1", currentUserMessage: "hello", messages: [] });
+    expect(result).toMatchObject({ messages: [], estimatedTokens: 0 });
     expect(rt.searchMemory).not.toHaveBeenCalled();
   });
 
   it("keeps single-domain failure isolated", async () => {
     const rt = runtime({ searchMemory: vi.fn(async () => { throw new Error("boom"); }) });
     const engine = createBibleContextEngine({ config: resolveBibleConfig({ baseUrl: "http://x" }), runtime: rt });
-    const result = await engine.assemble({ currentUserMessage: "hello" }, {});
-    expect(result.appendContext).toBeUndefined();
-    expect(result.metadata).toHaveProperty("warnings");
+    const result = await engine.assemble({ currentUserMessage: "hello", messages: [] });
+    expect(result.systemPromptAddition).toBeUndefined();
+    expect(result.messages).toEqual([]);
   });
 });

@@ -14,6 +14,11 @@ describe("config schema", () => {
     expect(() => resolveBibleConfig({})).toThrow(/baseUrl/);
   });
 
+  it("unwraps config from full OpenClaw config", () => {
+    const config = resolveBibleConfig({ plugins: { entries: { "bible-oc-plugin": { config: { baseUrl: "http://x" } } } } });
+    expect(config.baseUrl).toBe("http://x");
+  });
+
   it("reports invalid regex", () => {
     expect(() => resolveBibleConfig({ baseUrl: "http://x", bypassSessionPatterns: ["["] })).toThrow(/Invalid bypassSessionPatterns/);
   });

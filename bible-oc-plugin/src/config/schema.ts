@@ -3,7 +3,7 @@ import type { BiblePluginConfig, ResolvedBibleConfig } from "./types.js";
 export const DEFAULT_BIBLE_CONFIG: Omit<BiblePluginConfig, "baseUrl"> = {
   token: undefined,
   timeoutMs: 30000,
-  contextEngineId: "bible-atlas",
+  contextEngineId: "bible-oc-plugin",
   enableMemoryRecall: true,
   enableSkillRecall: false,
   enableKnowledgeRecall: false,
@@ -68,6 +68,11 @@ export function configForManifest(): Record<string, unknown> {
 
 function unwrapOpenClawConfig(raw: unknown): unknown {
   if (isObject(raw) && isObject(raw.config)) return raw.config;
+  if (isObject(raw)) {
+    const entries = isObject(raw.plugins) && isObject(raw.plugins.entries) ? raw.plugins.entries : undefined;
+    const pluginEntry = entries && isObject(entries["bible-oc-plugin"]) ? entries["bible-oc-plugin"] : undefined;
+    if (pluginEntry && isObject(pluginEntry.config)) return pluginEntry.config;
+  }
   return raw;
 }
 

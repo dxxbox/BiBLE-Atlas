@@ -1,6 +1,7 @@
 import type { ResolvedBibleConfig } from "../config/types.js";
 import type { BibleRuntime, CommitSessionMemoryResponse } from "../runtime/bible-runtime.js";
 import type { AfterTurnInput, CompactInput, OpenClawMessage, PluginLogger } from "../types/openclaw.js";
+import { actionLogger, log } from "../logging.js";
 import { textFromUnknown } from "./recall.js";
 
 export interface CapturedTurn {
@@ -30,9 +31,11 @@ export class SessionCaptureStore {
   constructor(private readonly opts: { config: ResolvedBibleConfig; runtime: BibleRuntime; logger?: PluginLogger }) {}
 
   startSession(sessionKey: string, sessionId: string | undefined, bypassed: boolean): void {
+    log(this.opts.logger, "info", "capture.startSession start", { action: "capture.startSession", sessionKey, sessionId, bypassed });
     if (!this.sessions.has(sessionKey)) {
       this.sessions.set(sessionKey, { sessionKey, sessionId, startedAt: new Date().toISOString(), turnCount: 0, bufferedChars: 0, pendingTurns: [], bypassed });
     }
+    log(this.opts.logger, "info", "capture.startSession done", { action: "capture.startSession", sessionKey, existing: this.sessions.has(sessionKey) });
   }
 
   getPendingTurnCount(sessionKey: string): number {
@@ -40,31 +43,59 @@ export class SessionCaptureStore {
   }
 
   captureTurn(sessionKey: string, sessionId: string | undefined, input: AfterTurnInput): void {
-    if (!this.opts.config.captureEnabled) return;
+    const action = actionLogger(this.opts.logger, "capture.captureTurn", { sessionKey, sessionId });
+    action.start();
+    if (!this.opts.config.captureEnabled) {
+      action.done({ skipped: "capture_disabled" });
+      return;
+    }
     const state = this.ensureState(sessionKey, sessionId, false);
-    if (state.bypassed) return;
+    if (state.bypassed) {
+      action.done({ skipped: "bypassed" });
+      return;
+    }
     const turn = normalizeTurn(input);
-    if (!turn.userMessage && !turn.assistantMessage && (!turn.toolCalls || turn.toolCalls.length === 0)) return;
+    if (!turn.userMessage && !turn.assistantMessage && (!turn.toolCalls || turn.toolCalls.length === 0)) {
+      action.done({ skipped: "empty_turn" });
+      return;
+    }
     state.pendingTurns.push(turn);
     state.turnCount += 1;
     state.bufferedChars += JSON.stringify(turn).length;
     this.enforceHardCap(state);
     if (state.pendingTurns.length >= this.opts.config.captureCommitThresholdTurns || state.bufferedChars >= this.opts.config.captureCommitThresholdChars) {
+      log(this.opts.logger, "info", "capture.threshold reached", { sessionKey, pendingTurns: state.pendingTurns.length, bufferedChars: state.bufferedChars });
       void this.flush(sessionKey, "threshold", { waitForInFlight: false }).catch((err) => this.opts.logger?.warn?.("BiBLE threshold commit failed", { sessionKey, message: (err as Error).message }));
     }
+    action.done({ pendingTurns: state.pendingTurns.length, bufferedChars: state.bufferedChars });
   }
 
   async flush(sessionKey: string, reason: "threshold" | "compact" | "before_reset" | "session_end" | "manual", opts: { waitForInFlight?: boolean; messages?: OpenClawMessage[] } = {}): Promise<CommitSessionMemoryResponse | undefined> {
+    const action = actionLogger(this.opts.logger, "capture.flush", { sessionKey, reason, waitForInFlight: opts.waitForInFlight });
+    action.start();
     const state = this.sessions.get(sessionKey);
-    if (!state || state.bypassed) return undefined;
+    if (!state || state.bypassed) {
+      action.done({ skipped: !state ? "missing_state" : "bypassed" });
+      return undefined;
+    }
     if (state.commitInFlight) {
-      if (opts.waitForInFlight ?? true) return state.commitInFlight;
+      if (opts.waitForInFlight ?? true) {
+        action.done({ joinedInFlight: true });
+        return state.commitInFlight;
+      }
+      action.done({ skipped: "commit_in_flight" });
       return undefined;
     }
     const turns = [...state.pendingTurns, ...messagesToTurns(opts.messages ?? [])];
-    if (turns.length === 0) return undefined;
+    if (turns.length === 0) {
+      action.done({ skipped: "empty_buffer" });
+      return undefined;
+    }
     const hash = commitHash(turns);
-    if (state.lastCommitHash === hash) return undefined;
+    if (state.lastCommitHash === hash) {
+      action.done({ skipped: "duplicate_hash" });
+      return undefined;
+    }
     const committedPendingCount = state.pendingTurns.length;
     const promise = this.opts.runtime.commitSessionMemory({
       sessionKey,
@@ -80,18 +111,26 @@ export class SessionCaptureStore {
       state.pendingTurns.splice(0, committedPendingCount);
       state.bufferedChars = state.pendingTurns.reduce((sum, turn) => sum + JSON.stringify(turn).length, 0);
       state.lastCommitHash = hash;
+      action.done({ memoryId: result.memoryId, taskId: result.taskId, committedTurns: committedPendingCount, remainingTurns: state.pendingTurns.length });
       return result;
+    } catch (err) {
+      action.fail(err, { turnCount: turns.length });
+      throw err;
     } finally {
       state.commitInFlight = undefined;
     }
   }
 
   async endSession(sessionKey: string, reason: "session_end" | "before_reset" = "session_end"): Promise<void> {
+    const action = actionLogger(this.opts.logger, "capture.endSession", { sessionKey, reason });
+    action.start();
     try {
       await this.flush(sessionKey, reason, { waitForInFlight: true });
       if (reason === "session_end") this.sessions.delete(sessionKey);
+      action.done();
     } catch (err) {
       this.opts.logger?.warn?.("BiBLE lifecycle flush failed", { sessionKey, reason, message: (err as Error).message });
+      action.fail(err);
     }
   }
 
