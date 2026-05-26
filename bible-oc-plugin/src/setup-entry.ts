@@ -1,5 +1,2 @@
-export default {
-  id: "bible-oc-plugin",
-  name: "BiBLE Atlas",
-  description: "Setup metadata for the BiBLE Atlas OpenClaw plugin.",
-};
+export { executeBibleSetup } from "./cli/setup.js";
+export { executeBibleStatus, formatStatusText } from "./cli/status.js";

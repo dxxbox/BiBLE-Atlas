@@ -111,6 +111,17 @@
 
 本节吸收早先 `docs/bible-oc-plugin-plan.md` 的 Steps，把高层阶段进一步拆成可落地任务。主设计仍以本目录文档为准；本清单用于编码排期、issue 拆分和验收跟踪。
 
+### 当前实现状态（2026-05-26）
+
+- resolved：工程骨架已落地于 `bible-oc-plugin/`，包含 manifest、package metadata、runtime/setup entries、TypeScript build、Vitest 测试和 `scripts/install-local.mjs`。
+- resolved：插件 id、npm package name、contextEngine slot 和默认 `contextEngineId` 已统一为 `bible-oc-plugin`，不再使用 `bible-atlas` 作为 engine id。
+- resolved：OpenClaw 2026.5.22 ContextEngine contract 已对齐；factory 返回 `info`、`ingest()`、新版 `assemble()`、`afterTurn()`、`compact()`，召回通过 `systemPromptAddition` 注入。
+- resolved：未配置状态下仍可注册 `openclaw bible` CLI；manifest 不再把 `baseUrl` 设为安装前硬性 required，避免 setup 命令被配置校验挡住。
+- resolved：`openclaw bible setup --write` 写入 `~/.openclaw/openclaw.json`（或 `OPENCLAW_CONFIG_PATH`）并设置 `plugins.slots.contextEngine = "bible-oc-plugin"`；`status` 可从宿主 config snapshot 读取 enabled/slot。
+- resolved：开发期日志已接入 `plugin.register`、CLI、runtime HTTP、ContextEngine、recall、capture、hooks 和 tool execute，使用 `[bible-oc-plugin]` 前缀，失败时输出结构化 error meta。
+- resolved：本地验证通过 `npm run typecheck`、`npm test`、`npm run build`，并可通过 `openclaw bible status` 看到 slot、health、工具契约和插件日志。
+- known gap：BiBLE Atlas Server 尚未部署 session memory import/commit 能力；`captureEnabled=true` 时 threshold/lifecycle commit 会对 `/api/import/memory` 报 404。开发期可临时关闭 `captureEnabled`，待 server 提供 multipart memory import 或专用 session commit API 后再恢复。
+
 ### Phase 1：工程骨架与契约对齐
 
 1. 初始化 `bible-oc-plugin/` 工程结构，建立 `src/index.ts`、`src/types/openclaw.ts`、`src/config/`、`src/http/`、`src/runtime/`、`src/context/`、`src/hooks/`、`src/tools/`、`src/cli/`、`scripts/install-local.mjs`。
@@ -130,7 +141,7 @@
 
 ### Phase 3：Context Engine 核心路径
 
-1. 在 `context/engine.ts` 实现引擎构造、`assemble`、`afterTurn`、`compact`，并在 `index.ts` 注册 `registerContextEngine("bible-atlas", factory)`。
+1. 在 `context/engine.ts` 实现引擎构造、`assemble`、`afterTurn`、`compact`，并在 `index.ts` 注册 `registerContextEngine("bible-oc-plugin", factory)`。
 2. 在 `context/recall.ts` 实现第一阶段 memory-only 召回查询预处理、memory 检索、超时保护和失败降级。
 3. 在 `context/ranking.ts` 实现统一 `RecallHit`、阈值过滤、线性重排和 prompt injection 降权标记；跨域去重随后续 preset 扩展补齐。
 4. 在 `context/injection.ts` 实现 `<relevant-memories>` 渲染、token 预算估算、条目裁剪和注入 hard cap。
@@ -233,6 +244,8 @@ bible-oc-plugin/
 - `docs/3rd/openclaw/plugins/hooks.md`：hook 事件、优先级、timeout 语义参考。
 - `docs/3rd/openclaw/plugins/sdk-overview.md`：`registerTool`、`registerContextEngine`、`registerCli` 参考。
 - `docs/3rd/openclaw/plugins/manifest.md`：`contracts`、`setup`、`configSchema` 规范参考。
+- openclaw plugin-sdk 源代码可以在`3rd/openclaw/plugin-sdk` 目录下找到
+- openclaw plugin 设计文档可以在`docs/3rd/openclaw` 目录下检索
 
 ## 本地手动安装与启用
 
@@ -341,34 +354,52 @@ dist/
 
 ### Context Engine 类型漂移
 
-风险：OpenClaw 公开 re-export 的 Context Engine 类型可能在后续版本扩展。
+状态：resolved for OpenClaw 2026.5.22。
+
+风险：OpenClaw 公开 re-export 的 Context Engine 类型可能在后续版本扩展。2026.5.22 已要求 `info`、`ingest()`、新版 `assemble()` 和必需 `compact()`；旧的 `appendContext`/双参数 `assemble(input, ctx)` 会被宿主判为 invalid ContextEngine。
 
 策略：
 
-- 插件只依赖最小字段。
+- 插件只依赖当前宿主校验的最小字段：`info.id/name`、`ingest()`、`assemble()`、`compact()`。
 - 未识别字段透传忽略。
 - `engines.openclaw` 固定下限，status 中展示宿主版本。
 - 如果宿主缺少 `registerContextEngine`，启动时报明确错误。
+- 每次升级 OpenClaw 后必须执行 `openclaw bible status` 和一次真实会话 smoke，确认没有 `invalid ContextEngine` 日志。
 
-### `appendContext` 与“追加到当前用户信息末尾”的差异
+### `systemPromptAddition` 与召回注入位置
 
-风险：OpenClaw 的 Context Engine 返回形态可能不是直接改写用户消息。
+状态：resolved for OpenClaw 2026.5.22。
+
+风险：OpenClaw 的 Context Engine 返回形态不是直接改写用户消息。当前宿主使用 `AssembleResult.messages` 加 `systemPromptAddition`。
 
 策略：
 
-- 首选宿主推荐的 `AssembleResult` 字段。
-- 语义固定为“本 turn 当前用户消息末尾的参考材料”。
-- 测试用 mock runtime 验证最终 prompt 中 `<relevant-memories>` 位于用户请求之后。
+- 首选宿主推荐的 `systemPromptAddition` 字段。
+- 语义固定为“仅本 turn 生效的参考材料”，不写入永久会话消息。
+- 测试用 mock runtime 验证 `systemPromptAddition` 中包含 `<relevant-memories>`。
 
 ### Commit API 未完全稳定
+
+状态：open / blocked by server capability。
 
 风险：BiBLE Atlas Server 对 JSON save、multipart import、任务轮询的契约继续演进。
 
 策略：
 
 - 插件内部只暴露 `commitSessionMemory`。
-- HTTP client 支持 v4 当前端点。
+- HTTP client 当前调用 `/api/import/memory`，但 server 尚未部署 session memory import/commit 能力时会返回 404；开发期应允许关闭 `captureEnabled`。
 - 若 server 提供更合适的 JSON commit API，只替换 client 映射，不改 Context Engine 和 hooks。
+
+### 开发期可观测性
+
+状态：resolved。
+
+策略：
+
+- 所有关键动作使用 `[bible-oc-plugin]` 前缀输出 start/done/failed。
+- `warn`/`error` 包含结构化错误字段：`name`、`message`、`stack`、`code`、`statusCode`、`serverErrorCode`。
+- 日志元数据避免记录完整 prompt/query/token；只记录长度、数量、sessionKey、tool/domain、耗时和状态。
+- 调试时使用 `openclaw logs --follow` 或 `openclaw bible status` 触发 CLI/runtime 路径验证日志。
 
 ### 召回延迟
 

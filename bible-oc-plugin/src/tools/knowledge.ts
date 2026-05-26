@@ -1,62 +1,35 @@
 import type { BibleRuntime } from "../runtime/bible-runtime.js";
 import type { OpenClawTool } from "../types/openclaw.js";
-import {
-  errorResult,
-  extractParams,
-  optionalNumber,
-  optionalString,
-  requireString,
-  summarizeHits,
-  textResult,
-} from "./common.js";
+import { asObject, fail, ok, optionalInteger, optionalSearchType, requireString, summarizeHits } from "./helpers.js";
 
 export function createKnowledgeTools(runtime: BibleRuntime): OpenClawTool[] {
   return [
     {
       name: "bible_knowledge_search",
       description: "Search a tagged BiBLE Atlas knowledge base.",
-      parameters: {
-        type: "object",
-        additionalProperties: false,
-        required: ["query", "tag"],
-        properties: {
-          query: { type: "string", minLength: 1 },
-          tag: { type: "string", minLength: 1 },
-          topK: { type: "integer", minimum: 1, maximum: 50 },
-          searchType: { type: "string", enum: ["text", "vector", "hybrid"], default: "hybrid" },
-        },
-      },
-      async execute(...args) {
+      inputSchema: schema({ query: { type: "string" }, tag: { type: "string" }, topK: { type: "integer", minimum: 1, maximum: 50 }, searchType: { enum: ["text", "vector", "hybrid"] } }, ["query", "tag"]),
+      async execute(input) {
         try {
-          const params = extractParams<Record<string, unknown>>(args);
-          const payload = await runtime.searchKnowledge({
-            query: requireString(params, "query"),
-            tag: requireString(params, "tag"),
-            topK: optionalNumber(params, "topK"),
-            searchType: optionalString(params, "searchType") as "text" | "vector" | "hybrid" | undefined,
-          });
-          return textResult(summarizeHits(payload, "knowledge"), payload);
-        } catch (error) {
-          return errorResult(error);
-        }
+          const args = asObject(input);
+          const payload = await runtime.searchKnowledge({ query: requireString(args, "query"), tag: requireString(args, "tag"), topK: optionalInteger(args, "topK", 8, 1, 50), searchType: optionalSearchType(args) });
+          return ok(summarizeHits("knowledge", payload), { hits: payload.hits ?? payload.results ?? [], raw: payload });
+        } catch (err) { return fail(err); }
       },
     },
     {
       name: "bible_knowledge_list",
-      description: "List knowledge base tags and documents known to BiBLE Atlas.",
-      parameters: {
-        type: "object",
-        additionalProperties: false,
-        properties: {},
-      },
+      description: "List BiBLE Atlas knowledge bases or tags.",
+      inputSchema: schema({}, []),
       async execute() {
         try {
           const payload = await runtime.listKnowledge();
-          return textResult("Fetched BiBLE knowledge list.", payload);
-        } catch (error) {
-          return errorResult(error);
-        }
+          return ok("Loaded BiBLE knowledge list.", { knowledge: payload });
+        } catch (err) { return fail(err); }
       },
     },
   ];
+}
+
+function schema(properties: Record<string, unknown>, required: string[]): Record<string, unknown> {
+  return { type: "object", additionalProperties: false, required, properties };
 }

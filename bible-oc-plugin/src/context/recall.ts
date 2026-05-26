@@ -1,123 +1,100 @@
-import type { BiblePluginConfig } from "../config/types.js";
-import { toBibleError } from "../http/errors.js";
+import type { ResolvedBibleConfig } from "../config/types.js";
 import type { BibleRuntime } from "../runtime/bible-runtime.js";
-import type { AssembleInput, ConversationMessage, PluginLogger } from "../types/openclaw.js";
-import { filterAndRankHits, normalizeRecallHits, type RecallHit } from "./ranking.js";
+import type { AssembleInput, ContextEngineRuntimeContext, OpenClawMessage, PluginLogger } from "../types/openclaw.js";
+import { actionLogger, log } from "../logging.js";
+import { renderRelevantMemories } from "./injection.js";
+import { filterRankAndTrim, normalizeHits, type RecallHit } from "./ranking.js";
 
-export interface RecallQuery {
-  text: string;
+export interface RecallPipelineResult {
+  hits: RecallHit[];
+  rendered: string;
+  warnings: string[];
 }
 
-export interface RecallPipelineOptions {
-  config: BiblePluginConfig;
+export async function runRecallPipeline(opts: {
+  input: AssembleInput;
+  ctx: ContextEngineRuntimeContext;
+  config: ResolvedBibleConfig;
   runtime: BibleRuntime;
   logger?: PluginLogger;
-}
-
-export class RecallPipeline {
-  private readonly config: BiblePluginConfig;
-  private readonly runtime: BibleRuntime;
-  private readonly logger?: PluginLogger;
-
-  constructor(options: RecallPipelineOptions) {
-    this.config = options.config;
-    this.runtime = options.runtime;
-    if (options.logger !== undefined) this.logger = options.logger;
+}): Promise<RecallPipelineResult> {
+  const query = buildRecallQuery(opts.input);
+  const action = actionLogger(opts.logger, "recall.pipeline", { queryLength: query.length, memory: opts.config.enableMemoryRecall, skill: opts.config.enableSkillRecall, knowledge: opts.config.enableKnowledgeRecall });
+  action.start();
+  if (!query) {
+    action.done({ skipped: "empty_query" });
+    return { hits: [], rendered: "", warnings: [] };
   }
-
-  async search(query: RecallQuery): Promise<RecallHit[]> {
-    const tasks: Array<Promise<RecallHit[]>> = [];
-    if (this.config.enableMemoryRecall) {
-      tasks.push(this.searchDomain("memory", () => this.runtime.searchMemory({ query: query.text })));
-    }
-    if (this.config.enableSkillRecall) {
-      tasks.push(this.searchDomain("skill", () => this.runtime.searchSkill({ query: query.text })));
-    }
-    if (this.config.enableKnowledgeRecall) {
-      for (const tag of this.config.knowledgeTags) {
-        tasks.push(
-          this.searchDomain("knowledge", () => this.runtime.searchKnowledge({ query: query.text, tag }), tag),
-        );
-      }
-    }
-    if (tasks.length === 0) return [];
-    const settled = await Promise.allSettled(tasks);
-    const hits = settled.flatMap((result) => (result.status === "fulfilled" ? result.value : []));
-    for (const result of settled) {
-      if (result.status === "rejected") {
-        this.logger?.warn?.("BiBLE recall domain failed.", serializeError(result.reason));
-      }
-    }
-    return filterAndRankHits(hits, query.text, this.config.recallMinScore, this.config.recallTopK);
+  const warnings: string[] = [];
+  const tasks: Array<Promise<RecallHit[]>> = [];
+  if (opts.config.enableMemoryRecall) {
+    tasks.push(searchDomain("memory", () => opts.runtime.searchMemory({ query, topK: opts.config.recallTopK, minScore: opts.config.recallMinScore, searchType: "hybrid" }), warnings, opts.logger));
   }
-
-  private async searchDomain(
-    domain: "memory" | "skill" | "knowledge",
-    run: () => Promise<Record<string, unknown>>,
-    tag?: string,
-  ): Promise<RecallHit[]> {
-    try {
-      const payload = await withTimeout(run(), Math.min(this.config.timeoutMs, 5_000));
-      return normalizeRecallHits(domain, payload, tag);
-    } catch (error) {
-      throw toBibleError(error);
+  if (opts.config.enableSkillRecall) {
+    tasks.push(searchDomain("skill", () => opts.runtime.searchSkill({ query, topK: opts.config.recallTopK, minScore: opts.config.recallMinScore, searchType: "hybrid" }), warnings, opts.logger));
+  }
+  if (opts.config.enableKnowledgeRecall) {
+    for (const tag of opts.config.knowledgeTags) {
+      tasks.push(searchDomain("knowledge", () => opts.runtime.searchKnowledge({ query, tag, topK: opts.config.recallTopK, minScore: opts.config.recallMinScore, searchType: "hybrid" }), warnings, opts.logger, tag));
     }
   }
-}
-
-export function buildRecallQuery(input: AssembleInput, config: BiblePluginConfig): RecallQuery {
-  const parts: string[] = [];
-  const current = textFromUnknown(input.currentUserMessage);
-  if (current) parts.push(current);
-  const recent = (input.messages ?? [])
-    .slice(-6)
-    .map((message) => messageToText(message))
-    .filter(Boolean);
-  parts.push(...recent);
-  const text = stripNoisyBlocks(parts.join("\n\n")).slice(0, Math.max(500, config.injectionTokenBudget * 2));
-  return { text: text.trim().slice(0, 2_000) };
-}
-
-function messageToText(message: ConversationMessage): string {
-  const role = typeof message.role === "string" ? `${message.role}: ` : "";
-  return role + textFromUnknown(message.content ?? message.text);
-}
-
-function textFromUnknown(value: unknown): string {
-  if (typeof value === "string") return value;
-  if (Array.isArray(value)) {
-    return value.map(textFromUnknown).filter(Boolean).join("\n");
+  if (tasks.length === 0) {
+    action.done({ skipped: "no_domains" });
+    return { hits: [], rendered: "", warnings };
   }
-  if (isRecord(value)) {
-    if (typeof value.text === "string") return value.text;
-    if (typeof value.content === "string") return value.content;
+  const settled = await Promise.allSettled(tasks);
+  const hits = settled.flatMap((result) => result.status === "fulfilled" ? result.value : []);
+  const ranked = filterRankAndTrim(hits, query, opts.config.recallMinScore, opts.config.recallTopK);
+  const budget = Math.min(opts.input.contextTokenBudget ?? opts.ctx.contextTokenBudget ?? opts.config.injectionTokenBudget, opts.config.injectionTokenBudget);
+  const rendered = renderRelevantMemories(ranked, budget);
+  action.done({ domains: tasks.length, rawHits: hits.length, rankedHits: ranked.length, renderedChars: rendered.length, warnings: warnings.length });
+  return { hits: ranked, rendered, warnings };
+}
+
+export function buildRecallQuery(input: AssembleInput): string {
+  const current = textFromUnknown(input.currentUserMessage) || lastUserMessage(input.messages ?? []);
+  const recent = (input.messages ?? []).slice(-6).map((message) => textFromUnknown(message.content ?? message.text)).filter(Boolean).join("\n");
+  const raw = [recent, current].filter(Boolean).join("\n");
+  return cleanForQuery(raw).slice(0, 2000).trim();
+}
+
+async function searchDomain(domain: "memory" | "skill" | "knowledge", fn: () => Promise<Record<string, unknown>>, warnings: string[], logger?: PluginLogger, tag?: string): Promise<RecallHit[]> {
+  const action = actionLogger(logger, "recall.searchDomain", { domain, tag });
+  action.start();
+  try {
+    const hits = normalizeHits(domain, await fn(), tag);
+    action.done({ hits: hits.length });
+    return hits;
+  } catch (err) {
+    warnings.push(`${domain} recall failed: ${err instanceof Error ? err.message : String(err)}`);
+    log(logger, "warn", "recall.searchDomain warning", { domain, tag, error: err instanceof Error ? err.message : String(err) });
+    action.done({ failed: true, hits: 0 });
+    return [];
+  }
+}
+
+function lastUserMessage(messages: OpenClawMessage[]): string {
+  for (const message of [...messages].reverse()) {
+    if (message.role === "user") return textFromUnknown(message.content ?? message.text);
   }
   return "";
 }
 
-function stripNoisyBlocks(value: string): string {
-  return value
-    .replace(/```[\s\S]*?```/g, " ")
-    .replace(/[A-Za-z0-9+/]{120,}={0,2}/g, " ")
-    .replace(/\s+/g, " ")
+export function textFromUnknown(value: unknown): string {
+  if (typeof value === "string") return value;
+  if (Array.isArray(value)) return value.map(textFromUnknown).filter(Boolean).join("\n");
+  if (typeof value === "object" && value !== null) {
+    const record = value as Record<string, unknown>;
+    if (typeof record.text === "string") return record.text;
+    if (typeof record.content === "string") return record.content;
+  }
+  return "";
+}
+
+function cleanForQuery(text: string): string {
+  return text
+    .replace(/```[\s\S]*?```/g, (block) => block.length > 500 ? " [code block omitted] " : block)
+    .replace(/[A-Za-z0-9+/=]{120,}/g, " [encoded blob omitted] ")
+    .replace(/\n{3,}/g, "\n\n")
     .trim();
-}
-
-function withTimeout<T>(promise: Promise<T>, timeoutMs: number): Promise<T> {
-  let timeout: NodeJS.Timeout | undefined;
-  const timeoutPromise = new Promise<never>((_, reject) => {
-    timeout = setTimeout(() => reject(new Error("Recall domain request timed out.")), timeoutMs);
-  });
-  return Promise.race([promise, timeoutPromise]).finally(() => {
-    if (timeout) clearTimeout(timeout);
-  });
-}
-
-function serializeError(error: unknown): Record<string, unknown> {
-  if (error instanceof Error) return { name: error.name, message: error.message };
-  return { error };
-}
-
-function isRecord(value: unknown): value is Record<string, unknown> {
-  return typeof value === "object" && value !== null && !Array.isArray(value);
 }

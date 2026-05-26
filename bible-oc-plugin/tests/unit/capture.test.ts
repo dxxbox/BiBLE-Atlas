@@ -1,46 +1,35 @@
 import { describe, expect, it, vi } from "vitest";
 import { resolveBibleConfig } from "../../src/config/schema.js";
 import { SessionCaptureStore } from "../../src/context/capture.js";
+import type { BibleRuntime } from "../../src/runtime/bible-runtime.js";
 
-describe("SessionCaptureStore", () => {
-  it("buffers turns below threshold and commits when threshold is reached", async () => {
-    const config = resolveBibleConfig({
-      baseUrl: "http://127.0.0.1:1",
-      captureCommitThresholdTurns: 2,
-    });
-    const commitSessionMemory = vi.fn().mockResolvedValue({ raw: {}, memoryId: "mem_1" });
-    const store = new SessionCaptureStore({
-      config,
-      runtime: { commitSessionMemory } as never,
-    });
+function runtime(commit = vi.fn(async () => ({ memoryId: "m1", summary: "server summary", raw: { memory_id: "m1" } }))): BibleRuntime {
+  return { commitSessionMemory: commit } as unknown as BibleRuntime;
+}
 
-    await store.afterTurn({ sessionKey: "s1", userMessage: "u1", assistantMessage: "a1" }, {}, false);
-    expect(commitSessionMemory).not.toHaveBeenCalled();
-
-    await store.afterTurn({ sessionKey: "s1", userMessage: "u2", assistantMessage: "a2" }, {}, false);
-    await new Promise((resolve) => setTimeout(resolve, 0));
-
-    expect(commitSessionMemory).toHaveBeenCalledTimes(1);
-    expect(commitSessionMemory.mock.calls[0]?.[0]).toMatchObject({
-      sessionKey: "s1",
-      reason: "threshold",
-    });
+describe("capture store", () => {
+  it("commits asynchronously when threshold is reached", async () => {
+    const commit = vi.fn(async () => ({ memoryId: "m1", raw: { memory_id: "m1" } }));
+    const store = new SessionCaptureStore({ config: resolveBibleConfig({ baseUrl: "http://x", captureCommitThresholdTurns: 1 }), runtime: runtime(commit) });
+    store.captureTurn("s1", undefined, { userMessage: "hello", assistantMessage: "world" });
+    await vi.waitFor(() => expect(commit).toHaveBeenCalledTimes(1));
   });
 
-  it("compact returns fallback summary if commit fails", async () => {
-    const config = resolveBibleConfig({ baseUrl: "http://127.0.0.1:1" });
-    const store = new SessionCaptureStore({
-      config,
-      runtime: { commitSessionMemory: vi.fn().mockRejectedValue(new Error("down")) } as never,
-    });
+  it("retains buffer when commit fails and retries", async () => {
+    const commit = vi.fn()
+      .mockRejectedValueOnce(new Error("down"))
+      .mockResolvedValueOnce({ memoryId: "m1", raw: { memory_id: "m1" } });
+    const store = new SessionCaptureStore({ config: resolveBibleConfig({ baseUrl: "http://x" }), runtime: runtime(commit) });
+    store.captureTurn("s1", undefined, { userMessage: "hello" });
+    await expect(store.flush("s1", "compact")).rejects.toThrow("down");
+    await expect(store.flush("s1", "compact")).resolves.toMatchObject({ memoryId: "m1" });
+    expect(commit).toHaveBeenCalledTimes(2);
+  });
 
-    const result = await store.compact(
-      { sessionKey: "s2", messages: [{ role: "user", content: "Build the plugin" }] },
-      {},
-      false,
-    );
-
-    expect(result.summary).toContain("Summary:");
-    expect(result.metadata?.warnings?.[0]).toContain("BiBLE compact commit failed");
+  it("compact fallback summary is returned when no server summary exists", () => {
+    const store = new SessionCaptureStore({ config: resolveBibleConfig({ baseUrl: "http://x" }), runtime: runtime() });
+    store.captureTurn("s1", undefined, { userMessage: "implement plugin" });
+    expect(store.fallbackSummary("s1")).toContain("Summary:");
+    expect(store.fallbackSummary("s1")).toContain("implement plugin");
   });
 });

@@ -11,165 +11,118 @@ export interface RecallHit {
   tag?: string;
   updatedAt?: string;
   metadata?: Record<string, unknown>;
+  finalScore?: number;
+  promptInjectionRisk?: boolean;
 }
 
-export function normalizeRecallHits(
-  domain: RecallDomain,
-  payload: Record<string, unknown>,
-  tag?: string,
-): RecallHit[] {
-  return collectRawHits(payload)
-    .map((raw, index) => normalizeHit(domain, raw, index, tag))
-    .filter((hit): hit is RecallHit => hit !== undefined);
+const DOMAIN_BOOST: Record<RecallDomain, number> = { memory: 0.08, skill: 0.04, knowledge: 0 };
+const DOMAIN_PRIORITY: Record<RecallDomain, number> = { memory: 3, skill: 2, knowledge: 1 };
+
+export function normalizeHits(domain: RecallDomain, payload: Record<string, unknown>, tag?: string): RecallHit[] {
+  const rawHits = pickHits(payload);
+  return rawHits.map((raw, index) => normalizeHit(domain, raw, index, tag)).filter((hit): hit is RecallHit => Boolean(hit));
 }
 
-export function filterAndRankHits(
-  hits: RecallHit[],
-  queryText: string,
-  minScore: number,
-  limit: number,
-): RecallHit[] {
-  const deduped = dedupeHits(hits);
-  const terms = extractQueryTerms(queryText);
-  return deduped
-    .filter((hit) => hit.score >= minScore)
-    .filter((hit) => Boolean(hit.title ?? hit.summary ?? hit.contentPreview))
-    .map((hit) => ({ hit, finalScore: finalScore(hit, terms) }))
-    .sort((a, b) => b.finalScore - a.finalScore)
-    .slice(0, limit)
-    .map(({ hit }) => hit);
+export function filterRankAndTrim(hits: RecallHit[], query: string, minScore: number, topK: number): RecallHit[] {
+  return dedupeHits(hits)
+    .filter((hit) => hit.score >= minScore && Boolean(hit.title || hit.summary || hit.contentPreview))
+    .map((hit) => ({ ...hit, promptInjectionRisk: hasPromptInjectionRisk(hit), finalScore: computeFinalScore(hit, query) }))
+    .sort((a, b) => (b.finalScore ?? 0) - (a.finalScore ?? 0))
+    .slice(0, topK);
 }
 
-function normalizeHit(
-  domain: RecallDomain,
-  raw: Record<string, unknown>,
-  index: number,
-  tag?: string,
-): RecallHit | undefined {
-  const id =
-    readString(raw, ["memory_id", "memoryId", "skill_id", "skillId", "doc_id", "chunk_id", "id", "name"]) ??
-    `${domain}:${index}`;
-  const score = normalizeScore(readNumber(raw, ["score", "similarity", "rank_score"]) ?? 0);
-  const title = readString(raw, ["title", "name"]);
-  const summary = readString(raw, ["abstract", "summary", "description", "overview"]);
-  const contentPreview = readString(raw, [
-    "matched_message_preview",
-    "preview",
-    "text",
-    "content",
-    "excerpt",
-  ]);
-  const sourceRef = readString(raw, ["source", "source_ref", "path", "storage_path"]);
-  const updatedAt = readString(raw, ["updated_at", "updatedAt", "created_at", "timestamp"]);
+export function dedupeHits(hits: RecallHit[]): RecallHit[] {
+  const byKey = new Map<string, RecallHit>();
+  for (const hit of hits) {
+    const strongKey = `${hit.domain}:${hit.id || hit.sourceRef}`;
+    const weakKey = fingerprint(`${hit.title ?? ""}\n${hit.contentPreview ?? hit.summary ?? ""}`);
+    const key = hit.id || hit.sourceRef ? strongKey : weakKey;
+    const existing = byKey.get(key);
+    if (!existing || hit.score > existing.score || (hit.score === existing.score && DOMAIN_PRIORITY[hit.domain] > DOMAIN_PRIORITY[existing.domain])) {
+      byKey.set(key, hit);
+    }
+  }
+  return [...byKey.values()];
+}
+
+function normalizeHit(domain: RecallDomain, raw: Record<string, unknown>, index: number, tag?: string): RecallHit | undefined {
+  const id = firstString(raw, ["memory_id", "memoryId", "doc_id", "chunk_id", "skill_id", "id", "name"]) ?? `${domain}_${index}`;
+  const title = firstString(raw, ["title", "name", "heading"]);
+  const summary = firstString(raw, ["abstract", "summary", "description", "overview"]);
+  const contentPreview = firstString(raw, ["matched_message_preview", "preview", "text", "content", "excerpt"]);
+  const rawScore = firstNumber(raw, ["score", "similarity", "relevance"]);
   return {
     id,
     domain,
-    score,
-    ...(title !== undefined ? { title } : {}),
-    ...(summary !== undefined ? { summary } : {}),
-    ...(contentPreview !== undefined ? { contentPreview } : {}),
-    ...(sourceRef !== undefined ? { sourceRef } : {}),
-    ...(tag !== undefined ? { tag } : {}),
-    ...(updatedAt !== undefined ? { updatedAt } : {}),
+    title,
+    summary,
+    contentPreview,
+    sourceRef: firstString(raw, ["source", "source_ref", "path", "storage_path"]),
+    score: normalizeScore(rawScore ?? 1),
+    tag: tag ?? firstString(raw, ["tag", "kb_tag"]),
+    updatedAt: firstString(raw, ["updated_at", "updatedAt", "timestamp"]),
     metadata: raw,
   };
 }
 
-function dedupeHits(hits: RecallHit[]): RecallHit[] {
-  const seen = new Map<string, RecallHit>();
-  for (const hit of hits) {
-    const keys = [
-      `${hit.domain}:${hit.id}`,
-      fingerprint(`${hit.title ?? ""}\n${hit.contentPreview ?? hit.summary ?? ""}`),
-    ];
-    const existing = keys.map((key) => seen.get(key)).find(Boolean);
-    if (!existing || hit.score > existing.score) {
-      for (const key of keys) seen.set(key, hit);
-    }
-  }
-  return Array.from(new Set(seen.values()));
-}
-
-function finalScore(hit: RecallHit, terms: Set<string>): number {
-  const recencyBoost = isRecent(hit.updatedAt) ? 0.1 : 0;
-  const domainBoost = hit.domain === "memory" ? 0.08 : hit.domain === "skill" ? 0.04 : 0;
-  const overlap = queryTermOverlap(hit, terms) * 0.1;
-  const exactSymbolBoost = hasExactSymbolOverlap(hit, terms) ? 0.05 : 0;
-  return hit.score * 0.55 + recencyBoost * 0.15 + domainBoost * 0.15 + overlap + exactSymbolBoost;
-}
-
-function collectRawHits(payload: Record<string, unknown>): Record<string, unknown>[] {
-  for (const key of ["hits", "results", "items", "memories", "skills", "documents", "chunks"]) {
+function pickHits(payload: Record<string, unknown>): Record<string, unknown>[] {
+  for (const key of ["hits", "items", "results", "documents", "memories", "skills"]) {
     const value = payload[key];
     if (Array.isArray(value)) return value.filter(isRecord);
   }
-  const result = payload.result;
-  if (Array.isArray(result)) return result.filter(isRecord);
-  if (isRecord(result)) return collectRawHits(result);
+  if (Array.isArray(payload.result)) return payload.result.filter(isRecord);
   return [];
 }
 
-function readString(raw: Record<string, unknown>, keys: string[]): string | undefined {
-  for (const key of keys) {
-    const value = raw[key];
-    if (typeof value === "string" && value.trim() !== "") return value;
-  }
-  return undefined;
+function computeFinalScore(hit: RecallHit, query: string): number {
+  const recencyBoost = hit.updatedAt && Date.now() - Date.parse(hit.updatedAt) < 30 * 24 * 3600 * 1000 ? 0.1 : 0;
+  const overlap = queryTermOverlap(query, [hit.title, hit.summary, hit.contentPreview].filter(Boolean).join(" ")) * 0.1;
+  const symbolBoost = exactSymbolBoost(query, hit) ? 0.05 : 0;
+  return hit.score * 0.55 + recencyBoost + DOMAIN_BOOST[hit.domain] + overlap + symbolBoost;
 }
 
-function readNumber(raw: Record<string, unknown>, keys: string[]): number | undefined {
-  for (const key of keys) {
-    const value = raw[key];
-    if (typeof value === "number" && Number.isFinite(value)) return value;
-  }
-  return undefined;
+function queryTermOverlap(query: string, text: string): number {
+  const q = new Set(tokens(query));
+  if (q.size === 0) return 0;
+  const t = new Set(tokens(text));
+  let matches = 0;
+  for (const token of q) if (t.has(token)) matches += 1;
+  return Math.min(1, matches / q.size);
+}
+
+function exactSymbolBoost(query: string, hit: RecallHit): boolean {
+  const symbols = query.match(/[A-Za-z0-9_./-]{6,}/g) ?? [];
+  const haystack = `${hit.title ?? ""} ${hit.summary ?? ""} ${hit.contentPreview ?? ""}`;
+  return symbols.some((symbol) => haystack.includes(symbol));
+}
+
+function hasPromptInjectionRisk(hit: RecallHit): boolean {
+  const text = `${hit.title ?? ""}\n${hit.summary ?? ""}\n${hit.contentPreview ?? ""}`.toLowerCase();
+  return /ignore (all )?(previous|above) instructions|system prompt|developer message|you are now/.test(text);
+}
+
+function tokens(text: string): string[] {
+  return text.toLowerCase().match(/[\p{L}\p{N}_./-]{2,}/gu) ?? [];
 }
 
 function normalizeScore(score: number): number {
-  if (score > 1) return Math.min(1, score / 100);
-  if (score < 0) return 0;
-  return score;
+  if (!Number.isFinite(score)) return 0;
+  if (score > 1) return Math.max(0, Math.min(1, score / 100));
+  return Math.max(0, Math.min(1, score));
 }
 
-function fingerprint(value: string): string {
-  return value.toLowerCase().replace(/\s+/g, " ").trim().slice(0, 240);
+function fingerprint(text: string): string {
+  return text.toLowerCase().replace(/\s+/g, " ").trim().slice(0, 256);
 }
 
-function extractQueryTerms(queryText: string): Set<string> {
-  return new Set(
-    queryText
-      .toLowerCase()
-      .split(/[^a-z0-9_./:-]+/i)
-      .map((term) => term.trim())
-      .filter((term) => term.length >= 3),
-  );
+function firstString(raw: Record<string, unknown>, keys: string[]): string | undefined {
+  for (const key of keys) if (typeof raw[key] === "string" && raw[key].trim()) return raw[key] as string;
+  return undefined;
 }
 
-function queryTermOverlap(hit: RecallHit, terms: Set<string>): number {
-  if (terms.size === 0) return 0;
-  const text = `${hit.title ?? ""} ${hit.summary ?? ""} ${hit.contentPreview ?? ""}`.toLowerCase();
-  let matches = 0;
-  for (const term of terms) {
-    if (text.includes(term)) matches += 1;
-  }
-  return Math.min(1, matches / Math.min(terms.size, 10));
-}
-
-function hasExactSymbolOverlap(hit: RecallHit, terms: Set<string>): boolean {
-  const text = `${hit.title ?? ""} ${hit.summary ?? ""} ${hit.contentPreview ?? ""}`;
-  for (const term of terms) {
-    if ((term.includes("/") || term.includes(".") || term.includes(":")) && text.includes(term)) {
-      return true;
-    }
-  }
-  return false;
-}
-
-function isRecent(value: string | undefined): boolean {
-  if (!value) return false;
-  const timestamp = Date.parse(value);
-  if (!Number.isFinite(timestamp)) return false;
-  return Date.now() - timestamp < 30 * 24 * 60 * 60 * 1000;
+function firstNumber(raw: Record<string, unknown>, keys: string[]): number | undefined {
+  for (const key of keys) if (typeof raw[key] === "number") return raw[key] as number;
+  return undefined;
 }
 
 function isRecord(value: unknown): value is Record<string, unknown> {

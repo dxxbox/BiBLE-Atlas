@@ -250,15 +250,15 @@ phase 2 advanced: memory + skill + knowledge
 
 ### ~~R4：Context Engine 返回结构仍需以 OpenClaw 实测为准~~
 
-~~新设计提出 `appendContext / user-message suffix` 两种可能，但最终实现必须以 OpenClaw 2026.5.18 的实际 Context Engine contract 为准。~~
+~~新设计提出 `appendContext / user-message suffix` 两种可能，但最终实现必须以 OpenClaw 实测 Context Engine contract 为准。~~
 
-覆盖状态：已覆盖。当前设计保留最小 Context Engine 鸭子类型，并在实施计划中要求 mock runtime / fixture 验证最终 prompt 中 `<relevant-memories>` 的位置。
+覆盖状态：resolved。OpenClaw 2026.5.22 实测要求 `info`、`ingest()`、新版 `assemble()` 和必需 `compact()`；当前实现通过 `systemPromptAddition` 注入 `<relevant-memories>`，并在 smoke test 中校验 `info` / `ingest` contract。
 
 ### ~~R5：commit API 与 server 当前能力可能有差距~~
 
 ~~两版都假设 memory commit/save 能通过 HTTP 完成，但当前可能需要 multipart import 或 `bible_cli_go` 已封装的 save 语义。~~
 
-覆盖状态：已覆盖。当前设计要求内部只暴露 `commitSessionMemory` runtime 方法；底层可适配 multipart import、JSON save 或后续 server API，而不影响 Context Engine / hooks。
+覆盖状态：partially resolved / blocked by server capability。当前设计要求内部只暴露 `commitSessionMemory` runtime 方法；底层可适配 multipart import、JSON save 或后续 server API，而不影响 Context Engine / hooks。当前 BiBLE Atlas Server 尚未部署 session memory import/commit，开发期可通过 `captureEnabled=false` 关闭自动归档。
 
 ## 最终建议
 

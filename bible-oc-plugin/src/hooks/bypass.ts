@@ -1,14 +1,14 @@
-import type { BiblePluginConfig } from "../config/types.js";
+import type { ResolvedBibleConfig } from "../config/types.js";
+import type { AssembleInput, ContextEngineRuntimeContext, HookEvent } from "../types/openclaw.js";
 
-export class BypassMatcher {
-  private readonly patterns: RegExp[];
+export function getSessionKey(input?: { sessionKey?: string; sessionId?: string }, ctx?: { sessionKey?: string; sessionId?: string }): string {
+  return input?.sessionKey || ctx?.sessionKey || input?.sessionId || ctx?.sessionId || "default";
+}
 
-  constructor(config: Pick<BiblePluginConfig, "compiledBypassPatterns">) {
-    this.patterns = config.compiledBypassPatterns;
-  }
+export function isBypassedSession(config: ResolvedBibleConfig, sessionKey: string): boolean {
+  return config.compiledBypassPatterns.some((pattern) => pattern.test(sessionKey));
+}
 
-  matches(sessionKey: string | undefined): boolean {
-    if (!sessionKey) return false;
-    return this.patterns.some((pattern) => pattern.test(sessionKey));
-  }
+export function shouldBypassContext(config: ResolvedBibleConfig, input: AssembleInput | HookEvent, ctx?: ContextEngineRuntimeContext): boolean {
+  return isBypassedSession(config, getSessionKey(input, ctx));
 }

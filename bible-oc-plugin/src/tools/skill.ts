@@ -1,65 +1,39 @@
 import type { BibleRuntime } from "../runtime/bible-runtime.js";
 import type { OpenClawTool } from "../types/openclaw.js";
-import {
-  errorResult,
-  extractParams,
-  optionalNumber,
-  optionalString,
-  requireString,
-  summarizeHits,
-  textResult,
-} from "./common.js";
+import { asObject, fail, ok, optionalInteger, optionalSearchType, requireString, summarizeHits } from "./helpers.js";
 
 export function createSkillTools(runtime: BibleRuntime): OpenClawTool[] {
   return [
     {
       name: "bible_skill_search",
       description: "Search BiBLE Atlas skills.",
-      parameters: {
-        type: "object",
-        additionalProperties: false,
-        required: ["query"],
-        properties: {
-          query: { type: "string", minLength: 1 },
-          topK: { type: "integer", minimum: 1, maximum: 50 },
-          searchType: { type: "string", enum: ["text", "vector", "hybrid"], default: "hybrid" },
-        },
-      },
-      async execute(...args) {
+      inputSchema: schema({ query: { type: "string" }, topK: { type: "integer", minimum: 1, maximum: 50 }, searchType: { enum: ["text", "vector", "hybrid"] } }, ["query"]),
+      async execute(input) {
         try {
-          const params = extractParams<Record<string, unknown>>(args);
-          const payload = await runtime.searchSkill({
-            query: requireString(params, "query"),
-            topK: optionalNumber(params, "topK"),
-            searchType: optionalString(params, "searchType") as "text" | "vector" | "hybrid" | undefined,
-          });
-          return textResult(summarizeHits(payload, "skill"), payload);
-        } catch (error) {
-          return errorResult(error);
-        }
+          const args = asObject(input);
+          const payload = await runtime.searchSkill({ query: requireString(args, "query"), topK: optionalInteger(args, "topK", 8, 1, 50), searchType: optionalSearchType(args) });
+          return ok(summarizeHits("skill", payload), { hits: payload.hits ?? payload.results ?? [], raw: payload });
+        } catch (err) { return fail(err); }
       },
     },
     {
       name: "bible_skill_get",
-      description: "Fetch or locate a BiBLE Atlas skill by id or name.",
-      parameters: {
-        type: "object",
-        additionalProperties: false,
-        required: ["skillId"],
-        properties: {
-          skillId: { type: "string", minLength: 1 },
-        },
-      },
-      async execute(...args) {
+      description: "Get a BiBLE Atlas skill by id or name.",
+      inputSchema: schema({ skillId: { type: "string" }, name: { type: "string" } }, []),
+      async execute(input) {
         try {
-          const params = extractParams<Record<string, unknown>>(args);
-          const skillId = requireString(params, "skillId");
-          const payload = await runtime.getSkill(skillId);
-          return textResult(`Fetched BiBLE skill ${skillId}.`, payload);
-        } catch (error) {
-          return errorResult(error);
-        }
+          const args = asObject(input);
+          const skillId = typeof args.skillId === "string" ? args.skillId : undefined;
+          const name = typeof args.name === "string" ? args.name : undefined;
+          if (!skillId && !name) throw new Error("skillId or name is required.");
+          const payload = await runtime.getSkill({ skillId, name });
+          return ok(`Loaded BiBLE skill: ${String(payload.name ?? skillId ?? name)}.`, { skill: payload });
+        } catch (err) { return fail(err); }
       },
     },
   ];
+}
+
+function schema(properties: Record<string, unknown>, required: string[]): Record<string, unknown> {
+  return { type: "object", additionalProperties: false, required, properties };
 }

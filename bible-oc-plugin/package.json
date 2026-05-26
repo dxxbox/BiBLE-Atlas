@@ -1,34 +1,22 @@
 {
   "name": "bible-oc-plugin",
   "version": "0.1.0",
-  "description": "OpenClaw context engine, lifecycle hooks, tools, and CLI integration for BiBLE Atlas.",
   "type": "module",
   "main": "./dist/index.js",
   "types": "./dist/index.d.ts",
-  "files": [
-    "dist",
-    "scripts",
-    "openclaw.plugin.json",
-    "README.md"
-  ],
-  "engines": {
-    "node": ">=22.19",
-    "openclaw": ">=2026.5.18"
-  },
   "scripts": {
     "build": "tsc -p tsconfig.json",
     "typecheck": "tsc -p tsconfig.json --noEmit",
     "test": "vitest run",
-    "lint": "tsc -p tsconfig.json --noEmit",
-    "verify:contracts": "node scripts/verify-contracts.mjs"
+    "verify:contracts": "vitest run tests/unit/contracts.test.ts"
+  },
+  "engines": {
+    "node": ">=20",
+    "openclaw": ">=2026.5.18"
   },
   "openclaw": {
-    "extensions": [
-      "./src/index.ts"
-    ],
-    "runtimeExtensions": [
-      "./dist/index.js"
-    ],
+    "extensions": ["./src/index.ts"],
+    "runtimeExtensions": ["./dist/index.js"],
     "setupEntry": "./src/setup-entry.ts",
     "runtimeSetupEntry": "./dist/setup-entry.js",
     "compat": {
@@ -46,8 +34,8 @@
     }
   },
   "devDependencies": {
-    "@types/node": "^25.9.1",
-    "typescript": "^6.0.3",
-    "vitest": "^4.1.7"
+    "@types/node": "latest",
+    "typescript": "latest",
+    "vitest": "latest"
   }
 }
