@@ -6,24 +6,29 @@ import * as crypto from 'node:crypto';
 import { CliRunner, CliInvocation } from '../../core/cli/cli-runner';
 import { ExtensionConfig } from '../../core/config/extension-config';
 import { OutputChannel } from '../../core/ui/output-channel';
-import { ChatExportResult, exportCurrentChat, fromMessages } from '../../core/chat/chat-export';
+import { TaskTracker } from '../../core/task/task-tracker';
+import { ChatExportResult, exportCurrentChat, fromMessages, toCleanSource, rawJson } from '../../core/chat/chat-export';
 import { ChatTurn } from '../../core/lm/budget';
 import { MemoryBuilder } from './memory-builder';
 import {
   ArtifactFetchResponse,
   ChatSource,
+  MemoryHit,
   MemoryMeta,
   MemorySearchResult,
   SearchType,
   SubmitDownloadResponse,
   SubmitImportResponse,
 } from './memory-types';
+import { formatHit } from './memory-format';
 
 /** 最近一次 import 写出的临时文件路径（debug 用）。 */
 export interface LastImportFiles {
   dir: string;
   sourceFile: string;
   metaFile: string;
+  /** 原始 VSCode export，本地留存供测试验证，不发给 server。 */
+  rawFile?: string;
   sessionId: string;
   writtenAt: string;
 }
@@ -80,6 +85,41 @@ export interface MemoryService {
     artifactId: string;
     outputPath: string;
   }): Promise<ArtifactFetchResponse>;
+
+  /**
+   * 把一个 search hit 渲染为 markdown 写到 `${ws}/.bible/memory/loaded-context.md`，
+   * 返回绝对路径。供命令路径"加载到上下文"使用（用户随后在 Chat 用 #file: 引用）。
+   *
+   * 同名文件**覆盖式**写入：始终只保留"最近一次加载"。
+   */
+  loadHitToContextFile(hit: MemoryHit, sourceFilePath?: string): Promise<string>;
+
+  /**
+   * 确保 hit 对应的 source.json 已在本地落盘，返回本地路径。
+   *
+   * 缓存策略（first version）：
+   *   - 缓存目录：`bible.memory.downloadDir`（默认 `${workspaceFolder}/.bible/memory/`）
+   *   - 缓存文件名：`<sanitize(session_id ?? storage_path)>.json`
+   *   - 文件存在 → 视为命中，跳过下载
+   *   - 文件不存在 → 内部走完整 download + task wait + artifact fetch 流程
+   *
+   * 不重复下载；下载失败抛错，由调用方决定降级（如只 Load summary）。
+   */
+  ensureLocalSource(input: EnsureSourceInput): Promise<EnsureSourceResult>;
+
+  /** 仅查 cache，不发起下载。 */
+  getCachedSourcePath(hit: Pick<MemoryHit, 'session_id' | 'storage_path'>): string | undefined;
+}
+
+export interface EnsureSourceInput {
+  hit: Pick<MemoryHit, 'session_id' | 'storage_path'>;
+  cancellationToken?: vscode.CancellationToken;
+}
+
+export interface EnsureSourceResult {
+  path: string;
+  fromCache: boolean;
+  sizeBytes: number;
 }
 
 export interface MemoryServiceDeps {
@@ -87,6 +127,8 @@ export interface MemoryServiceDeps {
   config: ExtensionConfig;
   output: OutputChannel;
   builder: MemoryBuilder;
+  /** 用于 ensureLocalSource 内部驱动异步下载任务并复用统一的进度/取消 UI。 */
+  tasks: TaskTracker;
 }
 
 export class DefaultMemoryService implements MemoryService {
@@ -139,18 +181,18 @@ export class DefaultMemoryService implements MemoryService {
   // ---------- import (high-level: from current chat) ----------
 
   async importCurrentChat(input?: { kbIndex?: string; cancellationToken?: vscode.CancellationToken }): Promise<SubmitImportResponse> {
-    const source = await this.exportCurrentChat();
+    const exported = await this.exportCurrentChat();
     return this.importFromSource({
-      source: { session_id: source.session_id, exported_at: source.exported_at, messages: source.messages, raw: source.raw },
+      exported,
       kbIndex: input?.kbIndex,
       cancellationToken: input?.cancellationToken,
     });
   }
 
   async importFromMessages(input: { messages: ChatTurn[]; title?: string; kbIndex?: string; cancellationToken?: vscode.CancellationToken }): Promise<SubmitImportResponse> {
-    const exp = fromMessages(input.messages);
+    const exported = fromMessages(input.messages);
     return this.importFromSource({
-      source: { session_id: exp.session_id, exported_at: exp.exported_at, messages: exp.messages, raw: exp.raw },
+      exported,
       title: input.title,
       kbIndex: input.kbIndex,
       cancellationToken: input.cancellationToken,
@@ -158,23 +200,26 @@ export class DefaultMemoryService implements MemoryService {
   }
 
   private async importFromSource(input: {
-    source: ChatSource;
+    exported: ChatExportResult;
     title?: string;
     kbIndex?: string;
     cancellationToken?: vscode.CancellationToken;
   }): Promise<SubmitImportResponse> {
+    const source = toCleanSource(input.exported);
+
     const { meta } = await this.buildMeta({
-      source: input.source,
-      sessionId: input.source.session_id,
+      source,
+      sessionId: source.session_id,
       title: input.title,
       cancellationToken: input.cancellationToken,
     });
 
-    const { sourceFile, metaFile, dir } = await writeImportFiles(input.source, meta);
+    const { sourceFile, metaFile, rawFile, dir } = await writeImportFiles(source, meta, input.exported);
     setLastImportFiles({
       dir,
       sourceFile,
       metaFile,
+      rawFile,
       sessionId: meta.session_id,
       writtenAt: new Date().toISOString(),
     });
@@ -182,10 +227,9 @@ export class DefaultMemoryService implements MemoryService {
     // 打印可点击链接（VSCode OutputChannel 会自动识别 file:// URL）
     this.deps.output.info('memory.import.files', {
       sessionId: meta.session_id,
-      sourceFile,
-      metaFile,
       source_link: `file://${sourceFile}`,
       meta_link: `file://${metaFile}`,
+      ...(rawFile ? { raw_link: `file://${rawFile}` } : {}),
     });
 
     return this.submitImport({
@@ -210,18 +254,156 @@ export class DefaultMemoryService implements MemoryService {
       args: ['memory', 'artifact', 'fetch', '--id', input.artifactId, '--out', input.outputPath],
     });
   }
+
+  // ---------- ensureLocalSource (download + cache) ----------
+
+  getCachedSourcePath(hit: Pick<MemoryHit, 'session_id' | 'storage_path'>): string | undefined {
+    const dir = resolveDownloadDir(this.deps.config.memoryDownloadDir());
+    const filePath = path.join(dir, cacheFilename(hit));
+    try {
+      const stat = require('node:fs').statSync(filePath);
+      return stat.isFile() ? filePath : undefined;
+    } catch {
+      return undefined;
+    }
+  }
+
+  async ensureLocalSource(input: EnsureSourceInput): Promise<EnsureSourceResult> {
+    const dir = resolveDownloadDir(this.deps.config.memoryDownloadDir());
+    await fs.mkdir(dir, { recursive: true });
+
+    const filename = cacheFilename(input.hit);
+    const localPath = path.join(dir, filename);
+
+    // 1. cache hit
+    try {
+      const stat = await fs.stat(localPath);
+      if (stat.isFile() && stat.size > 0) {
+        this.deps.output.info('memory.source.cacheHit', {
+          sessionId: input.hit.session_id,
+          path: localPath,
+          sizeBytes: stat.size,
+        });
+        return { path: localPath, fromCache: true, sizeBytes: stat.size };
+      }
+    } catch {
+      /* not cached; fall through to download */
+    }
+
+    // 2. cache miss → 走异步下载任务
+    this.deps.output.info('memory.source.cacheMiss.startDownload', {
+      sessionId: input.hit.session_id,
+      storagePath: input.hit.storage_path,
+      target: localPath,
+    });
+
+    const handle = await this.deps.tasks.submit({
+      taskType: 'download.memory',
+      domain: 'memory',
+      title: `Caching ${input.hit.session_id ?? input.hit.storage_path}`,
+      submit: async () => this.submitDownloadFile({ storagePath: input.hit.storage_path }),
+      showProgress: true,
+    });
+
+    const cancelSub = input.cancellationToken?.onCancellationRequested(() => {
+      void this.deps.tasks.cancel(handle.taskId);
+    });
+
+    let record;
+    try {
+      record = await handle.promise;
+    } finally {
+      cancelSub?.dispose();
+    }
+
+    if (record.status !== 'completed') {
+      const msg = record.error ? `${record.error.code}: ${record.error.message}` : record.status;
+      throw new Error(`Download task ended (${msg})`);
+    }
+
+    const r = record.result as { artifact_id?: string } | undefined;
+    if (!r?.artifact_id) {
+      throw new Error('Download task completed but server returned no artifact_id');
+    }
+
+    const fetched = await this.fetchArtifact({ artifactId: r.artifact_id, outputPath: localPath });
+    this.deps.output.info('memory.source.downloaded', {
+      sessionId: input.hit.session_id,
+      path: fetched.path,
+      sizeBytes: fetched.size_bytes,
+    });
+    return { path: fetched.path, fromCache: false, sizeBytes: fetched.size_bytes };
+  }
+
+  // ---------- load to context ----------
+
+  async loadHitToContextFile(hit: MemoryHit, sourceFilePath?: string): Promise<string> {
+    const dir = resolveContextDir(this.deps.config.memoryDownloadDir());
+    await fs.mkdir(dir, { recursive: true });
+    const outPath = path.join(dir, 'loaded-context.md');
+
+    const lines: string[] = [
+      `<!-- Loaded by Bible Atlas at ${new Date().toISOString()} -->`,
+      '',
+      formatHit(hit, 1),
+    ];
+    if (sourceFilePath) {
+      lines.push('', `> Full source file: \`${sourceFilePath}\``);
+    }
+    await fs.writeFile(outPath, lines.join('\n') + '\n', 'utf-8');
+
+    this.deps.output.info('memory.context.loaded', { path: outPath, sessionId: hit.session_id });
+    return outPath;
+  }
+}
+
+function resolveContextDir(template: string): string {
+  return resolveDownloadDir(template);
+}
+
+function resolveDownloadDir(template: string): string {
+  const ws = vscode.workspace.workspaceFolders?.[0]?.uri.fsPath;
+  return template.replace('${workspaceFolder}', ws ?? os.tmpdir());
+}
+
+/** 算 hit 的本地缓存文件名：优先 session_id，回退 storage_path。 */
+function cacheFilename(hit: Pick<MemoryHit, 'session_id' | 'storage_path'>): string {
+  const base = hit.session_id?.trim() || hit.storage_path;
+  return sanitizeFilename(base) + '.json';
+}
+
+function sanitizeFilename(s: string): string {
+  return s.replace(/[^a-zA-Z0-9._-]/g, '_').slice(0, 200);
 }
 
 // ---------- 临时文件辅助 ----------
 
-export async function writeImportFiles(source: ChatSource, meta: MemoryMeta): Promise<{ sourceFile: string; metaFile: string; dir: string }> {
+/**
+ * 写出三个临时文件：
+ *   source.json     — 精简对话（bible-chat-v1），发给 server
+ *   meta.json       — LM 提炼的结构化摘要，发给 server
+ *   source.raw.json — 原始 VSCode export JSON，**仅本地留存**，不发给 CLI
+ */
+export async function writeImportFiles(
+  source: ChatSource,
+  meta: MemoryMeta,
+  exported?: ChatExportResult,
+): Promise<{ sourceFile: string; metaFile: string; rawFile: string | undefined; dir: string }> {
   const dir = path.join(os.tmpdir(), 'bible-vscode', crypto.randomUUID());
   await fs.mkdir(dir, { recursive: true });
+
   const sourceFile = path.join(dir, 'source.json');
   const metaFile = path.join(dir, 'meta.json');
   await fs.writeFile(sourceFile, JSON.stringify(source, null, 2), 'utf-8');
   await fs.writeFile(metaFile, JSON.stringify(meta, null, 2), 'utf-8');
-  return { sourceFile, metaFile, dir };
+
+  let rawFile: string | undefined;
+  if (exported) {
+    rawFile = path.join(dir, 'source.raw.json');
+    await fs.writeFile(rawFile, rawJson(exported), 'utf-8');
+  }
+
+  return { sourceFile, metaFile, rawFile, dir };
 }
 
 export async function cleanupDir(dir: string): Promise<void> {

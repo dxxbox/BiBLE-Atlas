@@ -136,10 +136,7 @@
       { "command": "bible.runSelfCheck",            "title": "Bible: Run Self-Check",                 "category": "Bible" },
       { "command": "bible.memory.search",           "title": "Bible: Search Memory",                  "category": "Bible" },
       { "command": "bible.memory.saveCurrentChat",  "title": "Bible: Save Current Chat as Memory",    "category": "Bible" },
-      { "command": "bible.memory.downloadFile",     "title": "Bible: Download Memory File",           "category": "Bible" },
-      { "command": "bible.memory.showLastImportFiles", "title": "Bible: Show Last Import Files (debug)", "category": "Bible" },
-      { "command": "bible.task.showStatus",         "title": "Bible: Show Task Status",               "category": "Bible" },
-      { "command": "bible.debug.toggleDryRun",      "title": "Bible: Toggle Debug Dry-Run",           "category": "Bible" }
+      { "command": "bible.task.showStatus",         "title": "Bible: Show Task Status",               "category": "Bible" }
     ],
     "languageModelTools": [
       {

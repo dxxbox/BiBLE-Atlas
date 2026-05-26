@@ -26,7 +26,7 @@ export class DefaultMemoryBuilder implements MemoryBuilder {
     const lmResult = await this.tryLm(sessionId, input);
     if (lmResult) return lmResult;
 
-    const meta = buildRuleFallback(sessionId, input.source.messages, input.title);
+    const meta = buildRuleFallback(sessionId, input.source.turns, input.title);
     this.output.info('memory.builder.fallback', { sessionId, reason: 'lm_unavailable_or_failed' });
     return { meta, via: 'rules' };
   }
@@ -41,7 +41,7 @@ export class DefaultMemoryBuilder implements MemoryBuilder {
       return undefined;
     }
 
-    const budget = applyConvBudget(input.source.messages, {
+    const budget = applyConvBudget(input.source.turns, {
       convMaxChars: this.config.memoryLmConvMaxChars(),
       turnMaxChars: this.config.memoryLmTurnMaxChars(),
     });

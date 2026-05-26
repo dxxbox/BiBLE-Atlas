@@ -1,19 +1,25 @@
 import * as vscode from 'vscode';
+import * as fs from 'node:fs/promises';
 import { ModuleDeps } from '../../types';
 import { MemoryService } from '../memory-service';
 import { formatHit } from '../memory-format';
 import { selectOneOrTop } from '../../../core/ui/quick-pick';
-import { MemoryHit } from '../memory-types';
+import { LoadedContext, MemoryHit } from '../memory-types';
 
 const LAST_LOADED_KEY = 'bible.memory.lastLoadedContext';
+/** stream 出来的 source 内容截断上限，避免巨大文件爆掉 chat。 */
+const MAX_SOURCE_CHARS = 60_000;
 
 /**
  * @bible-memory chat participant：
  *   /save             — 导出当前 chat → buildMeta → submitImport（不消耗 LM token）
  *   /search <query>   — 检索并以 markdown 流式返回到 Chat
- *   /load             — 复用上一次成功检索的上下文
+ *   /load             — 复用上一次成功"加载"的上下文（命令路径或 participant 自身写入）
  *   /load <query>     — 立即检索 + 自动选 top-1 + 注入
  *   /help             — 帮助
+ *
+ * 「加载到上下文」的最终保证：/load 把 hit 摘要 + sourceFilePath 全文用
+ * stream.markdown 输出 —— 这段输出即 chat 历史，下一轮 LM 必然能看到。
  */
 export function registerMemoryParticipant(
   ctx: vscode.ExtensionContext,
@@ -51,10 +57,11 @@ async function handleSave(
   token: vscode.CancellationToken,
 ): Promise<vscode.ChatResult> {
   stream.progress('Exporting current chat...');
-  const source = await service.exportCurrentChat();
-  stream.progress(`Building meta from ${source.messages.length} messages...`);
+  const exported = await service.exportCurrentChat();
+  stream.progress(`Building meta from ${exported.messages.length} messages...`);
+  // toCleanSource is applied inside importCurrentChat; here we only need it for the progress message
   const built = await service.buildMeta({
-    source: { session_id: source.session_id, exported_at: source.exported_at, messages: source.messages, raw: source.raw },
+    source: { source_format: 'bible-chat-v1', session_id: exported.session_id, exported_at: exported.exported_at, turns: exported.messages },
     cancellationToken: token,
   });
   stream.progress(`Submitting import (${built.via}-based)...`);
@@ -95,15 +102,15 @@ async function handleLoad(
   query: string,
   stream: vscode.ChatResponseStream,
 ): Promise<vscode.ChatResult> {
-  let hit: MemoryHit | undefined;
+  let context: LoadedContext | undefined;
 
   if (!query) {
-    hit = ctx.workspaceState.get<MemoryHit>(LAST_LOADED_KEY);
-    if (!hit) {
-      stream.markdown('No previously loaded memory. Use `/load <query>` to search and load top-1.');
+    context = readLoadedContext(ctx);
+    if (!context) {
+      stream.markdown('No previously loaded memory. Use `/load <query>` to search and load top-1, or invoke "Bible: Search Memory → Load to @bible-memory" from the command palette.');
       return {};
     }
-    stream.markdown(`Re-loading last context: \`${hit.session_id}\`\n\n`);
+    stream.markdown(`Re-injecting last loaded context: \`${context.hit.session_id}\` (loaded at ${context.loadedAt}).\n\n`);
   } else {
     stream.progress(`Searching memory: ${query}`);
     const result = await service.search({ query, topK: 10 });
@@ -115,14 +122,69 @@ async function handleLoad(
       stream.markdown(`_No memory found for "${query}"._`);
       return {};
     }
-    hit = picked.selected;
-    await ctx.workspaceState.update(LAST_LOADED_KEY, hit);
+    const hit = picked.selected;
     stream.markdown(`Auto-selected top-1: \`${hit.session_id}\` (score=${hit.score.toFixed(3)})\n\n`);
+
+    // 自动 ensureLocalSource：缓存命中直接复用，否则触发后台下载并等待
+    let sourceFilePath: string | undefined;
+    try {
+      stream.progress('Preparing source...');
+      const ensured = await service.ensureLocalSource({ hit });
+      sourceFilePath = ensured.path;
+      stream.markdown(
+        ensured.fromCache
+          ? `_(source from cache: \`${ensured.path}\`)_\n\n`
+          : `_(downloaded: \`${ensured.path}\`, ${ensured.sizeBytes} bytes)_\n\n`,
+      );
+    } catch (err) {
+      stream.markdown(`_(source unavailable: ${(err as Error).message}; loading summary only)_\n\n`);
+    }
+
+    context = { hit, sourceFilePath, loadedAt: new Date().toISOString() };
+    await ctx.workspaceState.update(LAST_LOADED_KEY, context);
   }
 
-  stream.markdown(formatHit(hit, 1));
-  deps.output.info('memory.participant.load', { sessionId: hit.session_id });
+  // 1. 摘要（abstract / overview / 元数据）
+  stream.markdown(formatHit(context.hit, 1));
+
+  // 2. 如果绑了 sourceFilePath，把全文也流出来 —— 这是 LM 看到完整原文的唯一可靠途径
+  if (context.sourceFilePath) {
+    try {
+      const raw = await fs.readFile(context.sourceFilePath, 'utf-8');
+      const body = raw.length > MAX_SOURCE_CHARS
+        ? raw.slice(0, MAX_SOURCE_CHARS) + `\n\n... [truncated ${raw.length - MAX_SOURCE_CHARS} chars]`
+        : raw;
+      stream.markdown('\n\n---\n\n### Full source content\n\n');
+      stream.markdown('```json\n' + body + '\n```\n');
+      stream.reference(vscode.Uri.file(context.sourceFilePath));
+      deps.output.info('memory.participant.load.sourceStreamed', {
+        sessionId: context.hit.session_id,
+        sourceFile: context.sourceFilePath,
+        chars: body.length,
+        truncated: raw.length > MAX_SOURCE_CHARS,
+      });
+    } catch (err) {
+      stream.markdown(`\n\n_(Source file not readable: \`${context.sourceFilePath}\` — ${(err as Error).message}.)_`);
+    }
+  } else {
+    stream.markdown('\n\n---\n\n_Source file not downloaded yet. Run **Bible: Download Memory File** to fetch the full content; the next `/load` will inject it._');
+  }
+
+  // 3. 同时把 loaded-context.md 作为 reference 列出，便用户回顾
+  if (context.loadedContextMdPath) {
+    stream.reference(vscode.Uri.file(context.loadedContextMdPath));
+  }
+
   return {};
+}
+
+/** 读取 workspaceState，向前兼容老版本只存 MemoryHit 的格式。 */
+function readLoadedContext(ctx: vscode.ExtensionContext): LoadedContext | undefined {
+  const raw = ctx.workspaceState.get<LoadedContext | MemoryHit>(LAST_LOADED_KEY);
+  if (!raw) return undefined;
+  if ('hit' in raw && raw.hit && typeof raw.hit === 'object') return raw as LoadedContext;
+  // 老格式：裸 MemoryHit
+  return { hit: raw as MemoryHit, loadedAt: 'unknown' };
 }
 
 function helpMarkdown(): string {
@@ -131,7 +193,7 @@ function helpMarkdown(): string {
     '',
     '- `/save` — save the current chat as a memory entry (no LM tokens consumed)',
     '- `/search <query>` — search saved memory and show results',
-    '- `/load` — re-inject the previously selected memory entry',
+    '- `/load` — re-inject the previously loaded memory entry (set via /load <query> here, or via the command palette "Bible: Search Memory → Load to @bible-memory")',
     '- `/load <query>` — search and auto-load top-1',
     '- `/help` — this help',
   ].join('\n');
