@@ -186,7 +186,7 @@ bible_cli_go/
 当前状态（2026-04-23）：已完成
 
 1. 已完成：`cli-contract-v1.md` 已落地，且含验收记录。
-2. 已完成：golden 样例与对拍脚本已落地（`testdata/golden`、`scripts/compare_python_go_cli.sh`）。
+2. 已完成：golden 样例与 Go CLI 回归测试已落地（`bible_cli_go/testdata/golden`、`bible_cli_go/internal/cli/run_test.go`）。
 3. 已完成：性能基线报告已固化（`docs/manual/go-cli-performance-baseline-2026-04-23.md`）。
 
 ### Phase 1：Go 框架与基础命令（3-4周）

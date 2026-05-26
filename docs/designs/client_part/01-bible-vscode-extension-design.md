@@ -157,8 +157,8 @@ tags: [cpp, memory, analysis]      # 可选，辅助过滤和检索
   用户用 skill-creator 生成 .skill 包
     ↓
 上传（bible_skill_upload 工具 / Bible: Upload Skill 命令）
-  → POST /api/v1/skills/upload
-  → Server: 解析 frontmatter → ZIP 安全校验 → 向量化 → ES upsert
+  → POST /api/import/skill（multipart：files[] + kb_index + tag=skill）
+  → Server：API 异步入队（202 + task_id）；Celery Worker 执行 parse_skill.py → store_skill（ZIP 安全、绑定、可选向量化、写库）
     ↓
 发现（被动）                        发现（主动）
   知识库搜索附带 results.skill        bible_skill_list / bible_skill_search
@@ -167,6 +167,8 @@ tags: [cpp, memory, analysis]      # 可选，辅助过滤和检索
   bible_skill_get → SKILL.md 注入      bible_skill_download → ~/.claude/skills/<name>/
   上下文（文档层面）                   → Claude Code Skill tool（含脚本执行）
 ```
+
+> Skill 导入走 `POST /api/import/skill`；CLI 附带 `kb_index`（可由配置默认）与固定 `tag=skill`，并可 `--wait` 轮询 `GET /api/control/admin/tasks/{task_id}` 直至完成。
 
 ### 4.3 两种执行环境的差异
 
@@ -268,9 +270,12 @@ Copilot LM 推理：这是个技术问题，查询知识库
 bible CLI: bible search --query "C++ 内存泄漏处理" --top-k 5 --enable-hit
       │
       ▼
-Server: 语义搜索，返回
-  knowledge: [{title: "内存管理最佳实践", score: 0.91, content: "..."}]
-  skill:     [{name: "memory_leak_checker", score: 0.87, description: "..."}]
+Server（由 CLI 编排）：主检索 `POST /api/search/knowledge-base`；`--enable-hit` 时附带 `POST /api/search/skill` 与 `POST /api/search/memory`（失败分支写入 `hit_warnings`）
+      │
+      ▼
+  knowledge_base: [{doc_id, title, score, content, ...}]
+  skill:          [{doc_id, name, score, description, ...}]
+  memory:         [{doc_id, memory_id, title, abstract, score, ...}]
       │
       ▼
 工具返回文本（格式化 JSON）给 LM
@@ -285,7 +290,7 @@ LM 推理：有相关 skill，需要读取其指令
 bible CLI: bible skills get memory_leak_checker --content
       │
       ▼
-返回 SKILL.md 全文给 LM
+返回 SKILL.md 正文（检索结果中的 `body` / `content` 等字段；CLI 可映射为展示用文本）给 LM
       │
       ▼
 LM 综合知识条目 + skill 指令，生成回答
@@ -309,14 +314,14 @@ showWarningMessage 确认对话框：
 用户点击 Upload
       │
       ▼
-runCli(['skills', 'upload', '--file', '/path/to/my_skill.skill'])
+runCli(['skills', 'upload', '--file', '/path/to/my_skill.skill', '--kb-index', '...'])
       → execFile(cliPath, args)
       │
       ▼
-Server: 解析 frontmatter → ZIP 安全校验 → 向量化 → ES upsert
+Server：`POST /api/import/skill` → 202 + `task_id`；Worker 异步解析/入库
       │
       ▼
-showInformationMessage: "Uploaded skill 'my_skill'"
+showInformationMessage: "Upload queued for 'my_skill' (task_id: ...)" 或 --wait 后 "Import completed"
 ```
 
 ### 7.3 场景 B2：用户保存对话（agent 工具调用）
@@ -348,10 +353,15 @@ bible_session_save.invoke()
       → execFile(cliPath, ['session', 'save', '--input', JSON.stringify({title, messages})])
       │
       ▼
-返回：Saved session "C++ 内存泄漏处理方案" (6 messages, ID: sess-xyz)
+CLI：将 `{title, messages}` 转为 `meta.json` + `message.json`（MEMORY 域），`POST /api/import/memory`（multipart）
+      │
+      ▼
+返回：Queued MEMORY import (task_id, memory_id)；可选 --wait 后轮询任务直至 completed
 ```
 
 **说明：** `messages` 由调用工具的 LM 从其上下文中提取并作为输入传入，无需 Extension 层任何注入机制。LM 在 agent 对话中已持有完整的对话历史，可以直接构造 messages 数组传给工具。
+
+**实现要点：** `bible session save` 在临时目录生成 `meta.json`（含 `memory_id`、`title`、`abstract` 等）与 `message.json`（如 `requests[]` 等，详见 `04-message-json-acquisition-design.md`），再执行与 `bible memory upload` 相同的 `POST /api/import/memory` 异步导入；Extension 仍只传 `--input`，转换与 multipart 由 CLI 完成。
 
 ---
 

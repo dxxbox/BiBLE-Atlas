@@ -1,0 +1,65 @@
+{
+  "id": "bible-oc-plugin",
+  "name": "BiBLE Atlas",
+  "description": "Remote BiBLE Atlas context engine, lifecycle capture, tools, and CLI integration.",
+  "version": "0.1.0",
+  "kind": "context-engine",
+  "activation": {
+    "onStartup": false,
+    "onConfigPaths": ["plugins.entries.bible-oc-plugin"],
+    "onCapabilities": ["tool", "hook"]
+  },
+  "contracts": {
+    "tools": [
+      "bible_memory_search",
+      "bible_memory_save",
+      "bible_memory_get",
+      "bible_knowledge_search",
+      "bible_knowledge_list",
+      "bible_skill_search",
+      "bible_skill_get"
+]
+  },
+  "toolMetadata": {
+    "bible_memory_search": { "configSignals": [{ "rootPath": "plugins.entries.bible-oc-plugin.config", "required": ["baseUrl"] }] },
+    "bible_memory_save": { "configSignals": [{ "rootPath": "plugins.entries.bible-oc-plugin.config", "required": ["baseUrl"] }] },
+    "bible_memory_get": { "configSignals": [{ "rootPath": "plugins.entries.bible-oc-plugin.config", "required": ["baseUrl"] }] },
+    "bible_knowledge_search": { "configSignals": [{ "rootPath": "plugins.entries.bible-oc-plugin.config", "required": ["baseUrl"] }] },
+    "bible_knowledge_list": { "configSignals": [{ "rootPath": "plugins.entries.bible-oc-plugin.config", "required": ["baseUrl"] }] },
+    "bible_skill_search": { "configSignals": [{ "rootPath": "plugins.entries.bible-oc-plugin.config", "required": ["baseUrl"] }] },
+    "bible_skill_get": { "configSignals": [{ "rootPath": "plugins.entries.bible-oc-plugin.config", "required": ["baseUrl"] }] }
+  },
+  "setup": {
+    "requiresRuntime": false,
+    "providers": [
+      {
+        "id": "bible-oc-plugin",
+        "label": "BiBLE Atlas HTTP Service",
+        "envVars": ["BIBLE_ATLAS_BASE_URL", "BIBLE_CLI_BASE_URL"],
+        "authMethods": ["none", "bearer-token"]
+      }
+    ]
+  },
+  "configSchema": {
+    "type": "object",
+    "additionalProperties": false,
+    "required": [],
+    "properties": {
+      "baseUrl": { "type": "string", "description": "BiBLE Atlas HTTP base URL" },
+      "token": { "type": "string", "description": "Optional bearer token" },
+      "timeoutMs": { "type": "integer", "minimum": 1000, "default": 30000 },
+      "contextEngineId": { "type": "string", "default": "bible-oc-plugin" },
+      "enableMemoryRecall": { "type": "boolean", "default": true },
+      "enableSkillRecall": { "type": "boolean", "default": false },
+      "enableKnowledgeRecall": { "type": "boolean", "default": false },
+      "knowledgeTags": { "type": "array", "items": { "type": "string" }, "default": [] },
+      "recallTopK": { "type": "integer", "minimum": 1, "maximum": 50, "default": 8 },
+      "recallMinScore": { "type": "number", "minimum": 0, "maximum": 1, "default": 0.35 },
+      "injectionTokenBudget": { "type": "integer", "minimum": 128, "default": 1200 },
+      "captureEnabled": { "type": "boolean", "default": true },
+      "captureCommitThresholdTurns": { "type": "integer", "minimum": 1, "default": 8 },
+      "captureCommitThresholdChars": { "type": "integer", "minimum": 1000, "default": 16000 },
+      "bypassSessionPatterns": { "type": "array", "items": { "type": "string" }, "default": [] }
+    }
+  }
+}

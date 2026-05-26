@@ -8,9 +8,19 @@ on:
     branches:
       - "main"
       - "feature/**"
+      - "bugfix/**"
+      - "release/**"
+      - "security/**"
+      - "performance/**"
+      - "refactor/**"
+      - "poc/**"
+      - "memory*/**"
+
+
   pull_request:
     branches:
       - "main"
+      - "release/**"
 
 jobs:
 
@@ -25,6 +35,9 @@ jobs:
 
   go-cli:
     uses: ./.github/workflows/_go_cli.yml
+
+  oc-plugin:
+    uses: ./.github/workflows/_oc_plugin.yml
 
   check-dependencies:
     runs-on: ubuntu-24.04

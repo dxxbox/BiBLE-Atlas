@@ -12,16 +12,16 @@ BiBLE Atlas contains:
 - BiBLE Atlas server backend and opensearch DB
 - BiBLE Plugin for VSCode
 - BiBLE CLI
+- BiBLE Plugin for OpenClaw
 
 ## Environment Prepare
 
-uv sync --all-extras
-
-source .venv/bin/activate
+> uv sync --all-extras
+> source .venv/bin/activate
 
 **Note:** You should switch to proper python version (3.10+) or you'll face import issue.
 
-## check/foramt before push
+## check/format before push
 
 Github has been configured with LINT, you'd better run below command and format your code before submit.
 

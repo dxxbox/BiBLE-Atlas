@@ -241,12 +241,15 @@ Server API: `GET /api/v1/system/status`
 
 #### `bible search` — 知识库搜索，附带 skill/memory 命中（可降级）
 
-Server API：`POST /api/v1/knowledge/search`
+Server API（由 CLI 编排，非单一 server 端点）：
+
+- **主检索**：`POST /api/search/knowledge-base`（`application/json`：`query`、`tag`（如 `design`/`flow` 等 KNOWLEDGE_BASE 子标签）、`search_type`、`top_k`、`vector_model`、`vector_weight` 等，以 `server_part/v4/02_API接口文档.md` 为准）
+- **`--enable-hit`**：CLI 额外调用 `POST /api/search/skill`（`tag: "skill"`）与 `POST /api/search/memory`（`tag: "memory"`）；任一失败不阻塞主检索，失败信息写入 `data.hit_warnings`
 
 语义说明：
-- `bible search` 是 CLI 聚合入口（面向工具调用的统一命令）。
-- 当前实现中，主检索底层调用 `knowledge search` 对应接口，并在 `--enable-hit` 时附带调用 `skills/memory` 命中检索。
-- 因此 `bible search` 与 `knowledge search` 是“入口与底层能力”的关系，不是冲突的两套功能定义。
+
+- `bible search` 是 CLI **聚合入口**；不存在单一 HTTP 路径覆盖「主检索 + 可选命中」的完整语义，由 CLI 依次调用各 search 端点并合并结果。
+- 主检索与命中检索为 **三个独立 search 路由**；CLI 负责合并为统一的 `{ ok, data }` 形状。
 
 ```
 bible search --query <string> [--top-k <int, default 5>] [--enable-hit] [--hit-types <csv, default: skill,memory>]
@@ -256,13 +259,15 @@ bible search --query <string> [--top-k <int, default 5>] [--enable-hit] [--hit-t
 
 降级规则：附带检索分支（skill 或 memory）失败不影响主知识检索返回；失败分支写入 `data.hit_warnings`。
 
+> **字段说明**：server 返回 `results.knowledge_base` / `results.skill` / `results.memory`；CLI 可映射为下列 `data` 键名以便与旧客户端对齐。主键字段为 **`doc_id`**；`skill` 命中中的 `author` / `tags` 为 **可选**（取决于绑定 `search_profile` 是否包含）。
+
 ```json
 {
   "ok": true,
   "data": {
     "knowledge": [
       {
-        "id": "entry-uuid",
+        "doc_id": "doc_abc#1.2",
         "title": "内存管理最佳实践",
         "content": "匹配片段...",
         "score": 0.92
@@ -270,7 +275,7 @@ bible search --query <string> [--top-k <int, default 5>] [--enable-hit] [--hit-t
     ],
     "skill": [
       {
-        "skill_id": "skill-abc123",
+        "doc_id": "skill_3b8f4b8d9e6d",
         "name": "memory_leak_checker",
         "description": "检查 C++ 代码中的内存泄漏，生成分析报告",
         "author": "xiapei",
@@ -280,6 +285,7 @@ bible search --query <string> [--top-k <int, default 5>] [--enable-hit] [--hit-t
     ],
     "memory": [
       {
+        "doc_id": "mem-001",
         "memory_id": "mem-001",
         "title": "CNI-12345 并发修复记录",
         "abstract": "并发场景下 context 未初始化导致 NPE，建议入口判空。",
@@ -294,9 +300,9 @@ bible search --query <string> [--top-k <int, default 5>] [--enable-hit] [--hit-t
 
 ---
 
-#### `bible skills ls` — 列出所有已注册 skill
+#### `bible skills ls` — 列出已注册 skill（无服务端游标分页）
 
-Server API：`GET /api/v1/skills?page=N&limit=N&tag=TAG`
+Server API：`POST /api/search/skill`（`application/json`：`query`（可用通配或空串策略由 CLI 决定）、`tag: "skill"`、`search_type`（如 `title`）、`top_k` 等）
 
 ```
 bible skills ls [--page <int, default 1>] [--limit <int, default 20>] [--tag <string>]
@@ -304,13 +310,15 @@ bible skills ls [--page <int, default 1>] [--limit <int, default 20>] [--tag <st
 
 兼容说明：`bible skills list ...` 与 `bible skills ls ...` 等价。
 
+> **列表语义**：当前 search 接口不提供游标分页。**`--limit`** 映射为请求体 **`top_k`**。**`--page`** 无服务端语义；CLI 可实现客户端分页（例如按 `top_k` 拉取较大窗口后本地切片）或忽略 `--page` 并在文档中说明限制。
+
 ```json
 {
   "ok": true,
   "data": {
     "skills": [
       {
-        "skill_id": "skill-abc123",
+        "doc_id": "skill_3b8f4b8d9e6d",
         "name": "memory_leak_checker",
         "description": "检查 C++ 代码中的内存泄漏，生成分析报告",
         "author": "xiapei",
@@ -325,15 +333,19 @@ bible skills ls [--page <int, default 1>] [--limit <int, default 20>] [--tag <st
 }
 ```
 
+> 检索默认不返回 `download_url`；下载走 `POST /api/download/skill/file` + `storage_path`（通常来自 `metadata.related_storage_paths`）。
+
 ---
 
 #### `bible skills search` — 主动语义搜索 skill 元数据
 
-Server API：`POST /api/v1/skills/search`
+Server API：`POST /api/search/skill`
 
 ```
 bible skills search --query <string> [--top-k <int, default 10>] [--threshold <float, default 0.0>] [--tag <string>]
 ```
+
+> **`--threshold`**：当前 server 请求体无独立 threshold；若需按分数截断，由 **CLI 在收到 `score` 后过滤** 或后续 server 扩展。
 
 ```json
 {
@@ -341,13 +353,12 @@ bible skills search --query <string> [--top-k <int, default 10>] [--threshold <f
   "data": {
     "skills": [
       {
-        "skill_id": "skill-abc123",
+        "doc_id": "skill_3b8f4b8d9e6d",
         "name": "memory_leak_checker",
         "description": "检查 C++ 代码中的内存泄漏，生成分析报告",
         "author": "xiapei",
         "tags": ["cpp", "memory", "analysis"],
-        "score": 0.94,
-        "download_url": "/api/v1/skills/skill-abc123/download"
+        "score": 0.94
       }
     ],
     "total": 3
@@ -357,28 +368,27 @@ bible skills search --query <string> [--top-k <int, default 10>] [--threshold <f
 
 ---
 
-#### `bible skills get` — 获取 skill 元数据，可选附带 SKILL.md 全文
+#### `bible skills get` — 获取 skill 元数据，可选附带 SKILL.md 正文
 
-Server API：`GET /api/v1/skills/{name_or_id}`
+Server API：`POST /api/search/skill`（例如 `search_type: "keyword"`，`query` 为 skill `name`；无按资源 id 的 REST GET）
 
 ```
 bible skills get <name_or_id> [--content]
 ```
 
-`--content`：同时返回 SKILL.md 全文（`skill_md_content` 字段）。Server 端从 `.skill` 包提取。
+`--content`：同时返回 SKILL.md 正文。**`skill_md_content` 与检索结果中的 `body` / `content` 对齐**（CLI 可将 `body` 映射为工具输出字段名 `skill_md_content` 以保持形状稳定）。
 
 ```json
 {
   "ok": true,
   "data": {
-    "skill_id": "skill-abc123",
+    "doc_id": "skill_3b8f4b8d9e6d",
     "name": "memory_leak_checker",
     "description": "检查 C++ 代码中的内存泄漏，生成分析报告",
     "author": "xiapei",
     "tags": ["cpp", "memory", "analysis"],
     "package_hash": "sha256:8d4e...",
     "updated_at": "2026-04-15T10:30:45Z",
-    "download_url": "/api/v1/skills/memory_leak_checker/download",
     "skill_md_content": "---\nname: memory_leak_checker\ndescription: ...\n---\n\n# Memory Leak Checker\n..."
   }
 }
@@ -390,46 +400,58 @@ bible skills get <name_or_id> [--content]
 
 #### `bible skills upload` — 上传 `.skill` 包
 
-Server API：`POST /api/v1/skills/upload`（multipart/form-data）
+Server API：`POST /api/import/skill`（`multipart/form-data`：`files[]`（含且仅含一个 `.skill` 包）、`kb_index`、`tag` 固定 `skill`、可选 `parser_script`、`vector_model`、`parser_context`）
 
 ```
-bible skills upload --file <absolute-path-to-.skill>
+bible skills upload --file <absolute-path-to-.skill> [--kb-index <kb_index>] [--wait]
 ```
 
 客户端本地校验：文件扩展名必须为 `.skill`，否则报 `INVALID_ARGS` 不发送请求。
+
+**异步**：HTTP **202**，立即体类似 `{ success, task_id, domain: "SKILL", kb_index, tag, status: "queued" }`；CLI 归一化为：
 
 ```json
 {
   "ok": true,
   "data": {
-    "skill_id": "skill-abc123",
+    "task_id": "import_20260422_001",
+    "domain": "SKILL",
+    "kb_index": "kb_skill_main",
+    "tag": "skill",
+    "status": "queued",
     "name": "memory_leak_checker",
-    "action": "created",
-    "package_hash": "sha256:8d4e...",
-    "status": "ready"
+    "action": "queued"
   }
 }
 ```
 
-`action`：`"created"`（首次）或 `"replaced"`（同名覆盖）。
+`--wait`：CLI 轮询 `GET /api/control/admin/tasks/{task_id}` 直至 `completed` / `failed` / `cancelled`，再在 `data` 中附带 `result`（如 `database_write_status`、`file_write_status`）或 `error_code`。
+
+**错误码（节选，与 skill 导入一致）**：`TAG_INVALID`、`SKILL_PACKAGE_MISSING`、`SKILL_MD_NOT_FOUND`、`INDEX_BINDING_CONFLICT`、`PARSE_RESULT_SCHEMA_INVALID`、`INTERNAL_ERROR` 等。
 
 ---
 
-#### `bible skills download` — 下载 `.skill` 包到本地
+#### `bible skills download` — 下载 `.skill` 包到本地（两阶段异步）
 
-Server API：`GET /api/v1/skills/{name_or_id}/download`
+Server API（顺序由 CLI 编排）：
+
+1. `POST /api/download/skill/file`（`application/json`：`tag: "skill"`、`storage_path`（通常来自检索结果的 `related_storage_paths`）、可选 `download_name`）→ **202** + `task_id`
+2. `GET /api/control/admin/tasks/{task_id}` 轮询至 `completed`，从 `result` 取 `artifact_id`
+3. `GET /api/download/skill/artifact/{artifact_id}` 拉取二进制流
 
 ```
-bible skills download <name_or_id> [--output <dir, default: ~/.claude/skills/>]
+bible skills download <name_or_id> [--storage-path <path>] [--output <dir, default: ~/.claude/skills/>] [--wait]
 ```
 
-**下载行为：**
-1. 下载 `.skill` 包到临时目录
-2. 校验 ZIP 完整性（CRC 校验）
-3. 原子替换 `<output_dir>/<name>/`（先写到临时，再重命名）
-4. 写入 `<output_dir>/<name>/.bible-skill-cache.json`（含 hash 和 updated_at）
+**`--storage-path`**：若调用方已从 `bible skills search` / `bible search` 获得 `related_storage_paths` 中的路径，应优先传入，避免 CLI 再次解析名称。
 
-读取响应头：`X-Skill-Hash`、`X-Skill-Updated-At`。
+**下载行为（CLI 侧）：**
+
+1. 若无 `storage_path`：CLI 可先 `POST /api/search/skill` 解析 `name_or_id` → `storage_path`
+2. 提交下载任务并 `--wait` 时轮询任务状态
+3. 拉取 artifact 后解压到输出目录；原子替换与缓存文件策略可与现实现一致
+
+> 下载经 `POST /api/download/skill/file` 与 artifact 拉取完成；无「单次 GET 即返回包体」的同步下载约定。
 
 ```json
 {
@@ -448,13 +470,15 @@ bible skills download <name_or_id> [--output <dir, default: ~/.claude/skills/>]
 
 ---
 
-#### `bible session list` — 列出历史会话
+#### `bible session list` — 列出历史会话（MEMORY 域检索）
+
+Server API：`POST /api/search/memory`（`tag: "memory"`；列表语义由 `search_type`/`query` 组合表达，例如 `text` + 宽查询或由 CLI 封装）
 
 ```
 bible session list [--limit <int, default 10>] [--uid <string>]
 ```
 
-从bible server 查询 `uid`名下的 [--limit] 条session memory, 默认查询本客户端 `uid` 名下的session memory.
+从 bible server 查询 MEMORY 文档列表；**`--limit`** 映射为请求体 **`top_k`**。**`--uid`** 可由 CLI 映射为 keyword 过滤（若服务端索引支持），否则文档化为预留。
 
 ```json
 {
@@ -462,11 +486,12 @@ bible session list [--limit <int, default 10>] [--uid <string>]
   "data": {
     "sessions": [
       {
-        "id": "sess-uuid",
+        "id": "mem-uuid",
+        "doc_id": "mem-uuid",
         "title": "C++ 内存泄漏处理讨论",
         "created_at": "2026-04-20T10:00:00Z",
-        "message_count": 18,
-        "preview": "用户：我的项目里怎么处理 C++ 内存泄漏..."
+        "message_count": 0,
+        "preview": "abstract 或首条摘要..."
       }
     ],
     "total": 25
@@ -474,9 +499,13 @@ bible session list [--limit <int, default 10>] [--uid <string>]
 }
 ```
 
+> `sessions[].id` 与 **`memory_id` / `doc_id`** 对齐；`message_count` 若检索响应不返回，CLI 可省略或填 `0`。
+
 ---
 
 #### `bible session get` — 获取会话完整内容
+
+Server API：`POST /api/search/memory`（`search_type: "keyword"` / 精确 `memory_id` 等，由 CLI 将 `--id` 映射为检索 `query`）
 
 ```
 bible session get --id <session-id>
@@ -487,7 +516,7 @@ bible session get --id <session-id>
   "ok": true,
   "data": {
     "session": {
-      "id": "sess-uuid",
+      "id": "mem-uuid",
       "title": "C++ 内存泄漏处理讨论",
       "created_at": "2026-04-20T10:00:00Z",
       "messages": [
@@ -499,19 +528,23 @@ bible session get --id <session-id>
 }
 ```
 
+> 若 server 仅返回 meta 字段，CLI 可再根据 `related_storage_paths` 触发 `POST /api/download/memory/file` 等拉取 `message.json` 后组装 `messages`（实现细节属 CLI，本规格约定 **对外 JSON 形状** 保持兼容）。
+
 ---
 
-#### `bible session save` — 保存对话记录
+#### `bible session save` — 保存对话记录（等价 MEMORY 导入）
+
+Server API：`POST /api/import/memory`（`multipart/form-data`：`meta.json` + `message.json`（及可选附件）、`kb_index`、`tag` 固定 `memory`）
 
 ```
-bible session save --input <json-string>
+bible session save --input <json-string> [--kb-index <kb_index>] [--wait]
 ```
 
-`--input` 的 JSON 结构：
+`--input` 的 JSON 结构（**LM → CLI 入口不变**）：
 
 ```json
 {
-  "title": "可选标题，省略时服务端自动生成",
+  "title": "可选标题，省略时由 CLI 生成 meta.title",
   "messages": [
     { "role": "user", "content": "..." },
     { "role": "assistant", "content": "..." }
@@ -519,16 +552,25 @@ bible session save --input <json-string>
 }
 ```
 
+**CLI 内部**：将 `messages` 转为 `message.json`（如 `requests[]` 等，见 `04-message-json-acquisition-design.md`）；生成或补全 `meta.json`（`memory_id`、`abstract` 等，可与 `bible memory build-meta` 规则对齐）；再 multipart 调用 `POST /api/import/memory`；默认 **202 + `task_id`**。
+
 ```json
 {
   "ok": true,
   "data": {
-    "session_id": "sess-uuid",
+    "task_id": "import_20260422_002",
+    "domain": "MEMORY",
+    "kb_index": "kb_memory_main",
+    "tag": "memory",
+    "status": "queued",
+    "memory_id": "mem_request_<uuid>",
     "title": "C++ 内存泄漏处理讨论",
     "message_count": 18
   }
 }
 ```
+
+`--wait`：轮询 `GET /api/control/admin/tasks/{task_id}` 直至终态。
 
 ---
 
@@ -638,6 +680,16 @@ bible-vscode/
           "type": "string",
           "default": "bible",
           "description": "Path to the bible CLI binary. Defaults to 'bible' (resolved from PATH)."
+        },
+        "bible.skillsKbIndex": {
+          "type": "string",
+          "default": "",
+          "description": "Optional kb_index for skill import/search binding. Passed to CLI as --kb-index when non-empty (see ~/.bible/config.yaml skills.upload.kb_index)."
+        },
+        "bible.memoryKbIndex": {
+          "type": "string",
+          "default": "",
+          "description": "Optional kb_index for memory/session import. Passed to CLI when non-empty (see memory.upload.kb_index in 03-memory-upload-client-design.md)."
         }
       }
     },
@@ -751,15 +803,16 @@ bible-vscode/
       {
         "name": "bible_skill_download",
         "displayName": "Download Skill to Local",
-        "modelDescription": "Download a .skill package to the local ~/.claude/skills/ directory for use with Claude Code CLI. Use when the user wants to execute a skill's scripts (not just read instructions). After downloading, the skill is available in Claude Code via the Skill tool.",
+        "modelDescription": "Download a .skill package to the local ~/.claude/skills/ directory for use with Claude Code CLI. Use when the user wants to execute a skill's scripts (not just read instructions). Prefer passing storagePath from bible_skill_search / bible_knowledge_search hit metadata.related_storage_paths; otherwise pass name and let the CLI resolve. After downloading, the skill is available in Claude Code via the Skill tool.",
         "userDescription": "Download skill to ~/.claude/skills/ for Claude Code",
         "tags": ["bible"],
         "icon": "$(cloud-download)",
         "inputSchema": {
           "type": "object",
           "properties": {
-            "name":      { "type": "string", "description": "Skill name to download" },
-            "outputDir": { "type": "string", "description": "Target directory (default: ~/.claude/skills/)" }
+            "name":         { "type": "string", "description": "Skill name to download (used when storagePath is omitted)" },
+            "storagePath":  { "type": "string", "description": "Optional storage_path from search results (related_storage_paths)" },
+            "outputDir":    { "type": "string", "description": "Target directory (default: ~/.claude/skills/)" }
           },
           "required": ["name"]
         }
@@ -973,14 +1026,14 @@ interface Input {
 }
 
 interface KnowledgeHit {
-  id: string; title: string; content: string; score: number;
+  doc_id: string; title: string; content: string; score: number;
 }
 interface SkillHit {
-  skill_id: string; name: string; description: string;
-  author: string; tags: string[]; score: number;
+  doc_id: string; name: string; description: string;
+  author?: string; tags?: string[]; score: number;
 }
 interface MemoryHit {
-  memory_id: string; title: string; abstract: string; score: number;
+  doc_id: string; memory_id: string; title: string; abstract: string; score: number;
 }
 interface SearchData {
   knowledge: KnowledgeHit[];
@@ -1018,15 +1071,15 @@ export class KnowledgeSearchTool implements vscode.LanguageModelTool<Input> {
     if (data.skill?.length > 0) {
       parts.push('\n**Related Skills** — use `bible_skill_get` to load instructions:');
       data.skill.forEach(s => {
-        const tagStr = s.tags.length ? ` [${s.tags.join(', ')}]` : '';
-        parts.push(`- \`${s.name}\` (score: ${s.score.toFixed(2)}): ${s.description}${tagStr}`);
+        const tagStr = s.tags?.length ? ` [${s.tags.join(', ')}]` : '';
+        parts.push(`- \`${s.name}\` (doc_id: \`${s.doc_id}\`, score: ${s.score.toFixed(2)}): ${s.description}${tagStr}`);
       });
     }
 
     if (data.memory?.length > 0) {
       parts.push('\n**Related Memory:**');
       data.memory.forEach(m => {
-        parts.push(`- **${m.title}** (score: ${m.score.toFixed(2)}): ${m.abstract}`);
+        parts.push(`- **${m.title}** (doc_id: \`${m.doc_id}\`, score: ${m.score.toFixed(2)}): ${m.abstract}`);
       });
     }
 
@@ -1052,8 +1105,9 @@ import { runCli } from '../cli';
 
 interface Input { tag?: string; page?: number; limit?: number; }
 interface SkillItem {
-  skill_id: string; name: string; description: string;
-  author: string; tags: string[]; updated_at: string;
+  doc_id: string;
+  name: string; description: string;
+  author?: string; tags?: string[]; updated_at: string;
 }
 interface SkillListData { skills: SkillItem[]; total: number; page: number; limit: number; }
 
@@ -1077,8 +1131,9 @@ export class SkillListTool implements vscode.LanguageModelTool<Input> {
     const lines = [
       `**Skills** (${data.total} total, page ${data.page}):`,
       ...data.skills.map(s => {
-        const tagStr = s.tags.length ? ` [${s.tags.join(', ')}]` : '';
-        return `- **${s.name}**${tagStr} — ${s.description} _(${s.author})_`;
+        const tagStr = s.tags?.length ? ` [${s.tags.join(', ')}]` : '';
+        const author = s.author ? ` _(${s.author})_` : '';
+        return `- **${s.name}** (\`${s.doc_id}\`)${tagStr} — ${s.description}${author}`;
       })
     ];
 
@@ -1099,8 +1154,8 @@ import { runCli } from '../cli';
 
 interface Input { query: string; topK?: number; threshold?: number; tag?: string; }
 interface SkillSearchResult {
-  skill_id: string; name: string; description: string;
-  author: string; tags: string[]; score: number; download_url: string;
+  doc_id: string; name: string; description: string;
+  author?: string; tags?: string[]; score: number;
 }
 interface SkillSearchData { skills: SkillSearchResult[]; total: number; }
 
@@ -1128,8 +1183,8 @@ export class SkillSearchTool implements vscode.LanguageModelTool<Input> {
     const lines = [
       `**Skill Search Results** for "${query}":`,
       ...data.skills.map(s => {
-        const tagStr = s.tags.length ? ` [${s.tags.join(', ')}]` : '';
-        return `- \`${s.name}\` (score: ${s.score.toFixed(2)})${tagStr}: ${s.description}`;
+        const tagStr = s.tags?.length ? ` [${s.tags.join(', ')}]` : '';
+        return `- \`${s.name}\` (\`${s.doc_id}\`, score: ${s.score.toFixed(2)})${tagStr}: ${s.description}`;
       })
     ];
 
@@ -1150,8 +1205,8 @@ import { runCli } from '../cli';
 
 interface Input { name: string; }
 interface SkillGetData {
-  skill_id: string; name: string; description: string;
-  author: string; tags: string[]; updated_at: string;
+  doc_id: string; name: string; description: string;
+  author?: string; tags?: string[]; updated_at: string;
   skill_md_content: string;
 }
 
@@ -1164,19 +1219,20 @@ export class SkillGetTool implements vscode.LanguageModelTool<Input> {
     const data = await runCli<SkillGetData>(['skills', 'get', name, '--content']);
 
     const lines = [
-      `**Skill: ${data.name}**`,
+      `**Skill: ${data.name}** (\`${data.doc_id}\`)`,
       `Description: ${data.description}`,
-      data.tags.length ? `Tags: ${data.tags.join(', ')}` : null,
-      `Author: ${data.author} | Updated: ${data.updated_at}`,
+      data.tags?.length ? `Tags: ${data.tags.join(', ')}` : null,
+      data.author ? `Author: ${data.author}` : null,
+      `Updated: ${data.updated_at}`,
       '',
       '**SKILL.md Instructions:**',
       data.skill_md_content,
       '',
       '> **VSCode Note:** Skill scripts (.py/.sh) cannot be executed here. ' +
       'Use `bible_skill_download` to download and run scripts in Claude Code.',
-    ].filter(l => l !== null).join('\n');
+    ].filter(l => l !== null && l !== '') as string[];
 
-    return new vscode.LanguageModelToolResult([new vscode.LanguageModelTextPart(lines)]);
+    return new vscode.LanguageModelToolResult([new vscode.LanguageModelTextPart(lines.join('\n'))]);
   }
 }
 ```
@@ -1191,7 +1247,16 @@ import * as path from 'path';
 import { runCli } from '../cli';
 
 interface Input { filepath: string; }
-interface UploadData { skill_id: string; name: string; action: 'created' | 'replaced'; package_hash: string; }
+/** Async import: CLI normalizes server 202 body */
+interface UploadData {
+  task_id: string;
+  domain: string;
+  kb_index: string;
+  tag: string;
+  status: string;
+  name?: string;
+  action?: 'queued' | 'created' | 'replaced';
+}
 
 export class SkillUploadTool implements vscode.LanguageModelTool<Input> {
   async invoke(
@@ -1202,13 +1267,17 @@ export class SkillUploadTool implements vscode.LanguageModelTool<Input> {
     if (!filepath.endsWith('.skill')) {
       throw new Error(`[INVALID_ARGS] File must have .skill extension: "${filepath}"`);
     }
-    const data = await runCli<UploadData>(['skills', 'upload', '--file', filepath]);
-    const verb = data.action === 'created' ? 'Uploaded' : 'Replaced';
-    return new vscode.LanguageModelToolResult([
-      new vscode.LanguageModelTextPart(
-        `${verb} skill **${data.name}** (ID: \`${data.skill_id}\`)`
-      )
-    ]);
+    const kb = vscode.workspace.getConfiguration('bible').get<string>('skillsKbIndex', '')?.trim();
+    const args = ['skills', 'upload', '--file', filepath];
+    if (kb) args.push('--kb-index', kb);
+
+    const data = await runCli<UploadData>(args);
+    const name = data.name ?? path.basename(filepath, '.skill');
+    const msg =
+      data.status === 'queued'
+        ? `Queued skill import **${name}** (task \`${data.task_id}\`, kb_index=\`${data.kb_index}\`)`
+        : `Skill **${name}** — ${data.action ?? 'done'} (task \`${data.task_id}\`)`;
+    return new vscode.LanguageModelToolResult([new vscode.LanguageModelTextPart(msg)]);
   }
 
   async prepareInvocation(options: vscode.LanguageModelToolInvocationPrepareOptions<Input>, _token: vscode.CancellationToken) {
@@ -1237,7 +1306,8 @@ import * as os from 'os';
 import * as path from 'path';
 import { runCli } from '../cli';
 
-interface Input { name: string; outputDir?: string; }
+/** name: resolve via CLI search; storagePath: preferred from search hit related_storage_paths */
+interface Input { name: string; outputDir?: string; storagePath?: string; }
 interface DownloadData {
   name: string; output_path: string;
   package_hash: string; updated_at: string; action: 'created' | 'updated';
@@ -1248,8 +1318,14 @@ export class SkillDownloadTool implements vscode.LanguageModelTool<Input> {
     options: vscode.LanguageModelToolInvocationOptions<Input>,
     _token: vscode.CancellationToken
   ): Promise<vscode.LanguageModelToolResult> {
-    const { name, outputDir } = options.input;
-    const args = ['skills', 'download', name];
+    const { name, outputDir, storagePath } = options.input;
+    const args = ['skills', 'download'];
+    if (storagePath?.trim()) {
+      args.push('--storage-path', storagePath.trim());
+    } else {
+      args.push(name);
+    }
+    args.push('--wait');
     if (outputDir) args.push('--output', outputDir);
 
     const data = await runCli<DownloadData>(args);
@@ -1263,14 +1339,15 @@ export class SkillDownloadTool implements vscode.LanguageModelTool<Input> {
   }
 
   async prepareInvocation(options: vscode.LanguageModelToolInvocationPrepareOptions<Input>, _token: vscode.CancellationToken) {
-    const { name, outputDir } = options.input;
+    const { name, outputDir, storagePath } = options.input;
     const targetDir = outputDir ?? path.join(os.homedir(), '.claude', 'skills', name);
+    const src = storagePath?.trim() ? `storage path \`${storagePath.trim()}\`` : `name \`${name}\``;
     return {
-      invocationMessage: `Downloading skill "${name}"...`,
+      invocationMessage: `Downloading skill (${src})...`,
       confirmationMessages: {
         title: `Download skill "${name}"?`,
         message: new vscode.MarkdownString(
-          `Download \`${name}\` to:\n\`${targetDir}\`\n\n` +
+          `Download (${src}) to:\n\`${targetDir}\`\n\n` +
           `Existing version will be replaced. ` +
           `The skill will then be available in Claude Code.`
         ),
@@ -1372,7 +1449,16 @@ import { runCli } from '../cli';
 interface Message { role: string; content: string; }
 interface Input { title?: string; messages: Message[]; }
 interface SavePayload { title?: string; messages: Message[]; }
-interface SaveData { session_id: string; title: string; message_count: number; }
+interface SaveData {
+  task_id: string;
+  domain: string;
+  kb_index: string;
+  tag: string;
+  status: string;
+  memory_id: string;
+  title: string;
+  message_count: number;
+}
 
 export class SessionSaveTool implements vscode.LanguageModelTool<Input> {
   async invoke(
@@ -1384,11 +1470,17 @@ export class SessionSaveTool implements vscode.LanguageModelTool<Input> {
       throw new Error('[INVALID_ARGS] messages array is required and must not be empty.');
     }
     const payload: SavePayload = { title, messages };
-    const data = await runCli<SaveData>(['session', 'save', '--input', JSON.stringify(payload)]);
+    const kb = vscode.workspace.getConfiguration('bible').get<string>('memoryKbIndex', '')?.trim();
+    const args = ['session', 'save', '--input', JSON.stringify(payload), '--wait'];
+    if (kb) args.push('--kb-index', kb);
+
+    const data = await runCli<SaveData>(args);
+    const tail =
+      data.status === 'completed'
+        ? `Import **completed** (memory_id: \`${data.memory_id}\`, task: \`${data.task_id}\`)`
+        : `Import **${data.status}** — ${data.message_count} messages (memory_id: \`${data.memory_id}\`, task: \`${data.task_id}\`)`;
     return new vscode.LanguageModelToolResult([
-      new vscode.LanguageModelTextPart(
-        `Saved session **"${data.title}"** — ${data.message_count} messages (ID: \`${data.session_id}\`)`
-      )
+      new vscode.LanguageModelTextPart(`${tail}\n\nTitle: **${data.title}**`)
     ]);
   }
 
@@ -1404,7 +1496,7 @@ export class SessionSaveTool implements vscode.LanguageModelTool<Input> {
       confirmationMessages: {
         title: 'Save chat to bible?',
         message: new vscode.MarkdownString(
-          `Save **${count} messages** to your knowledge base for future retrieval.${titleLine}`
+          `Save **${count} messages** as a MEMORY import (multipart to \`/api/import/memory\`) for future retrieval.${titleLine}`
         ),
       },
     };
@@ -1575,9 +1667,15 @@ export function registerCommands(context: vscode.ExtensionContext): void {
         { location: vscode.ProgressLocation.Notification, title: `Uploading ${filename}...`, cancellable: false },
         async () => {
           try {
-            const data = await runCli<any>(['skills', 'upload', '--file', filepath]);
-            const verb = data.action === 'created' ? 'Uploaded' : 'Replaced';
-            vscode.window.showInformationMessage(`${verb} skill "${data.name}"`);
+            const kb = vscode.workspace.getConfiguration('bible').get<string>('skillsKbIndex', '')?.trim();
+            const args = ['skills', 'upload', '--file', filepath, '--wait'];
+            if (kb) args.push('--kb-index', kb);
+            const data = await runCli<any>(args);
+            const msg =
+              data.status === 'queued'
+                ? `Queued import: ${data.task_id ?? 'task'}`
+                : `Skill "${data.name ?? filename}" — ${data.status ?? 'done'}`;
+            vscode.window.showInformationMessage(msg);
           } catch (err: any) {
             vscode.window.showErrorMessage(`Upload failed: ${err.message}`);
           }
@@ -1678,37 +1776,37 @@ export function deactivate(): void {}
 
 ## Part D：Server API 对照表
 
-### D1. 目标态 API（`02` 规格）
+### D1. 目标态 API（v4，与 `server_part/v4/02_API接口文档.md` 对齐）
 
-| CLI 命令 | Server API |
-|---|---|
-| `bible search` | `POST /api/v1/search` |
-| `bible skills ls` | `GET /api/v1/skills` |
-| `bible skills search` | `POST /api/v1/skills/search` |
-| `bible skills get <name>` | `GET /api/v1/skills/{name_or_id}` |
-| `bible skills upload` | `POST /api/v1/skills/upload` (multipart/form-data) |
-| `bible skills download <name>` | `GET /api/v1/skills/{name_or_id}/download` |
-| `bible session list` | `GET /api/v1/sessions` |
-| `bible session get` | `GET /api/v1/sessions/{id}` |
-| `bible session save` | `POST /api/v1/sessions` |
-| `bible data delete` | `DELETE /api/v1/data/{key}` |
+> v4 不使用 `/api/v1/`；search/import/download 按域拆分。CLI 输出仍为 `{ ok, data, error }`，由 CLI 将 server 的 `{ success, ... }` 归一化。
 
-补充说明：D1 的 `bible search -> POST /api/v1/search` 表示目标态统一聚合端点；在当前过渡实现（D2）中，`bible search` 的主检索路径仍落到 `knowledge search`，并可附带 `skills/memory` 命中查询。
-
-### D2. 当前骨架已实现 API（`bible_cli_go` 现状）
-
-| 当前 CLI 命令 | 当前请求路径 | 备注 |
+| CLI 命令 | Server API（v4） | 说明 |
 |---|---|---|
-| `health` | `GET /health` | 无 |
-| `system status` | `GET /api/v1/system/status` | 若 404 回退 `GET /health` |
-| `system info` | `GET /api/v1/system/info` | 若 404 回退 `GET /health` |
-| `search --query <q>` | `GET /api/v1/knowledge/search?query=...` | 已实现（主检索） |
-| `search --enable-hit` | `POST /api/v1/skills/search` | 已实现（附带命中，失败可降级） |
-| `search --enable-hit` | `POST /api/v1/memory/search` | 已实现（附带命中，失败可降级） |
-| `knowledge list` | `GET /api/v1/knowledge/list` | 已实现 |
-| `knowledge search [query]` | `GET /api/v1/knowledge/search?query=...` | query 可选 |
+| `bible search` | `POST /api/search/knowledge-base`；`--enable-hit` 时附带 `POST /api/search/skill`、`POST /api/search/memory` | CLI 聚合三路由 |
+| `bible skills ls` | `POST /api/search/skill` | `tag=skill`；`--limit` → `top_k` |
+| `bible skills search` | `POST /api/search/skill` | 同上 |
+| `bible skills get <name>` | `POST /api/search/skill` | 如 `keyword` + `query=name`；无独立 GET |
+| `bible skills upload` | `POST /api/import/skill`（multipart） | 异步 202 + `task_id`；`GET /api/control/admin/tasks/{task_id}` 轮询 |
+| `bible skills download` | `POST /api/download/skill/file` → `GET /api/control/admin/tasks/{task_id}` → `GET /api/download/skill/artifact/{artifact_id}` | 两阶段异步 |
+| `bible session list` | `POST /api/search/memory` | v4 中 session 归入 MEMORY |
+| `bible session get` | `POST /api/search/memory` | 同上 |
+| `bible session save` | `POST /api/import/memory`（multipart：`meta.json`+`message.json`） | CLI 将 `--input` 转为 v4 文件与 multipart |
+| `bible data delete` | （v4 未定义等价能力） | 待后续 control 域规划 |
 
-说明：`skills/session/data` 的 API 路径在目标态按 D1 逐步补齐，属于后续开发阶段范围。
+补充说明：主检索请求体字段为 `query` / `tag` / `search_type` / `top_k` / `vector_model` / `vector_weight`（见 v4 API 文档）；**不使用** v3 的 `filters` 字段。
+
+### D2. 过渡骨架（pre-v4 / 本地联调遗留）
+
+| 当前 CLI 命令 | 历史请求路径（v3） | v4 目标 |
+|---|---|---|
+| `health` | `GET /health` | 不变（非 v4 核心契约） |
+| `system status` | `GET /api/v1/system/status` | 运维面；与 import/search 域独立 |
+| `system info` | `GET /api/v1/system/info` | 同上 |
+| `search --query` | `GET /api/v1/knowledge/search?...` | `POST /api/search/knowledge-base` |
+| `search --enable-hit` | `POST /api/v1/skills/search` / `POST /api/v1/memory/search` | `POST /api/search/skill` / `POST /api/search/memory` |
+| `knowledge list` / `knowledge search` | `GET /api/v1/knowledge/...` | v4 以 search 为主，无独立 list 契约 |
+
+说明：新实现以 **D1（v4）** 为准；D2 仅作迁移对照。
 
 ---
 
@@ -1721,4 +1819,4 @@ export function deactivate(): void {}
 | `github.com/your-org/bible` | `go.mod` | 确定 GitHub org/repo 名称 |
 | `https://api.bible.example.com` | `~/.bible/config.json` 默认值 | 实际 server 部署地址 |
 | `https://github.com/your-org/bible#installation` | `setup-check.ts` | 实际安装文档 URL |
-| `bible skills get --content` server 实现 | Server 端需从 .skill 包提取 SKILL.md 并在 GET 响应中返回 | 需 server 端确认或新增此能力 |
+| `bible skills get --content` 与 v4 对齐 | `POST /api/search/skill` 返回字段中含 `body`/`content`；CLI 映射为 `skill_md_content` | 以 `server_part/v4/search_implementation/skill_search_implementation.md` 为准 |
