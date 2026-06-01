@@ -18,12 +18,30 @@ dependencies = [
     "PyYAML>=6.0",
     "uvicorn>=0.34.0",
     "types-PyYAML>=6.0",
+    "python-multipart>=0.0.9",
+    "pydantic>=2.0.0",
+    "opensearch-py>=3.2.0",
+    "celery[redis]>=5.3.0",
 ]
 
 [project.optional-dependencies]
+
+vector = [
+    "sentence-transformers>=3.0.0",
+]
+
+minio = [
+    "minio>=7.0.0",
+]
+
+s3 = [
+    "boto3>=1.26.0",
+]
+
 test = [
     "pytest>=8.0",
     "httpx>=0.24.0",
+    "fakeredis>=2.0"
 ]
 
 dev = [
