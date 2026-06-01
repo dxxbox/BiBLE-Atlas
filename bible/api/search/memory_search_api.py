@@ -1,0 +1,133 @@
+from __future__ import annotations
+
+import logging
+
+from fastapi import APIRouter, Depends, HTTPException
+from fastapi.responses import JSONResponse
+from pydantic import BaseModel, Field, field_validator
+
+from bible.api.deps import get_memory_search_service, get_search_cfg
+from bible.config.configure import SearchConfig
+from bible.features.search.errors import raise_search_http_exception
+from bible.features.search.memory_search.memory_search_service import MemorySearchService
+
+logger = logging.getLogger(__name__)
+
+router = APIRouter()
+
+_REQUIRED_TAG = "memory"
+
+class MemorySearchRequest(BaseModel):
+    """Request body for POST /api/search/memory."""
+
+    query: str = Field(..., description="Query text (required, non-empty).")
+    tag: str = Field(..., description="Memory tag (required); must be 'memory'.")
+    search_type: str | None = Field(
+        default=None,
+        description="keyword | title | text | vector | hybrid",
+    )
+    top_k: int | None = Field(
+        default=None,
+        ge=1,
+        description="Maximum hits to return.",
+    )
+    vector_model: str | None = Field(
+        default=None,
+        description="Embedding model name; must match the binding's model.",
+    )
+    vector_weight: float | None = Field(
+        default=None,
+        ge=0.0,
+        le=1.0,
+        description="kNN weight for hybrid search (0 ≤ w ≤ 1).",
+    )
+
+    @field_validator("query")
+    @classmethod
+    def query_non_empty(cls, v: str) -> str:
+        if not v or not v.strip():
+            raise ValueError("'query' must not be empty.")
+        return v
+
+    @field_validator("tag")
+    @classmethod
+    def tag_non_empty(cls, v: str) -> str:
+        if not v or not v.strip():
+            raise ValueError("'tag' must not be empty.")
+        return v
+
+
+
+@router.post(
+    "/api/search/memory",
+    tags=["Search"],
+    summary="MEMORY search",
+    status_code=200,
+)
+async def search_memory(
+    body: MemorySearchRequest,
+    search_cfg: SearchConfig = Depends(get_search_cfg),
+    svc: MemorySearchService = Depends(get_memory_search_service),
+) -> JSONResponse:
+
+    _validate_search_type(body.search_type, search_cfg)
+    _validate_top_k(body.top_k, search_cfg)
+    _validate_tag(body.tag)
+
+    try:
+        result = svc.search(
+            query=body.query,
+            tag=body.tag,
+            search_type=body.search_type,
+            top_k=body.top_k,
+            vector_model=body.vector_model,
+            vector_weight=body.vector_weight,
+        )
+    except Exception as exc:
+        if isinstance(exc, HTTPException):
+            raise
+        logger.debug("Search exception caught: %s: %s", type(exc).__name__, exc)
+        raise_search_http_exception(exc)   # raises HTTPException or re-raises
+
+    return JSONResponse(status_code=200, content=result)
+
+def _validate_search_type(search_type: str | None, cfg: SearchConfig) -> None:
+    if search_type is None:
+        return
+    if search_type not in cfg.allowed_search_types:
+        raise HTTPException(
+            status_code=400,
+            detail={
+                "code": "SEARCH_TYPE_INVALID",
+                "message": (
+                    f"search_type '{search_type}' is not allowed. "
+                    f"Allowed values: {cfg.allowed_search_types}"
+                ),
+            },
+        )
+
+def _validate_top_k(top_k: int | None, cfg: SearchConfig) -> None:
+    if top_k is None:
+        return
+    if top_k > cfg.max_top_k:
+        raise HTTPException(
+            status_code=400,
+            detail={
+                "code": "INVALID_ARGUMENT",
+                "message": f"top_k={top_k} exceeds max_top_k={cfg.max_top_k}.",
+            },
+        )
+
+def _validate_tag(tag: str) -> None:
+    """Enforce that tag == 'memory' (case-sensitive)."""
+    if tag != _REQUIRED_TAG:
+        raise HTTPException(
+            status_code=400,
+            detail={
+                "code": "TAG_INVALID",
+                "message": (
+                    f"tag '{tag}' is invalid for this endpoint. "
+                    f"Expected '{_REQUIRED_TAG}' (case-sensitive)."
+                ),
+            },
+        )
