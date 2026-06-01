@@ -8,6 +8,7 @@ from bible.common.schemas import ErrorInfo
 
 class ErrorCode(str, Enum):
     INVALID_ARGUMENT = "INVALID_ARGUMENT"
+    INVALID_TAG = "INVALID_TAG"
     UNAUTHENTICATED = "UNAUTHENTICATED"
     PERMISSION_DENIED = "PERMISSION_DENIED"
     NOT_FOUND = "NOT_FOUND"
