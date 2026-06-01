@@ -2,7 +2,7 @@ from copy import deepcopy
 from pathlib import Path
 from typing import Any, Dict, Optional
 
-from pydantic import BaseModel, Field, model_validator
+from pydantic import AliasChoices, BaseModel, ConfigDict, Field, model_validator
 
 from bible.common.consts import CONFIG_PATH_ENV_VAR
 from bible.config.config_loader import (
@@ -27,10 +27,16 @@ class StorageConfig(BaseModel):
     workspace_dir: str = "./workspace/memory"
 
 class FileSystemLocalConfig(BaseModel):
+    model_config = ConfigDict(populate_by_name=True)
+
     root_dir: str = "./workspace/memory/files"
-    has_algo: str = "sha256"
+    hash_algo: str = Field(default="sha256", validation_alias=AliasChoices("hash_algo", "has_algo"))
     chunk_size: int = 1024 * 1024  # 1MB
     use_atomic_rename: bool = True
+
+    @property
+    def has_algo(self) -> str:
+        return self.hash_algo
 
 class FileSystemMinioConfig(BaseModel):
     endpoint: str = "localhost:9000"
@@ -203,7 +209,7 @@ class BibleAtlasConfig(BaseModel):
     storage: StorageConfig = Field(
         default_factory=lambda: StorageConfig(), description="Storage configuration"
     )
-    
+
     log: LogConfig = Field(default_factory=lambda: LogConfig(), description="Logging configuration")
 
     vector: VectorConfig = Field(default_factory=lambda: VectorConfig(), description="Vector model configuration")
@@ -215,13 +221,15 @@ class BibleAtlasConfig(BaseModel):
     filesystem: FileSystemConfig = Field(default_factory=lambda: FileSystemConfig(), description="File system configuration")
     search: SearchConfig = Field(default_factory=lambda: SearchConfig(), description="Search configuration")
     celery: CeleryConfig = Field(default_factory=lambda: CeleryConfig(), description="Celery configuration")
-    
+
     # add other config fields as needed
 
     @classmethod
     def load_config_from_dict(cls, config_dict: Dict[str, Any]) -> "BibleAtlasConfig":
         """Create a BibleAtlasConfig instance from a raw config dictionary."""
         config_copy = deepcopy(config_dict)
+        if "file_system" in config_copy and "filesystem" not in config_copy:
+            config_copy["filesystem"] = config_copy.pop("file_system")
 
         return cls(**config_copy)  # TO-DO: change this to real function.
 
