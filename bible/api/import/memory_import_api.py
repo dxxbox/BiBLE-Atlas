@@ -130,6 +130,30 @@ async def import_memory(
         },
     )
 
+@router.get("/memory/task/{task_id}", tags=["Import"])
+async def get_import_task_status(task_id: str) -> JSONResponse:
+
+    repository = get_task_service().repository
+    task = repository.get_task(task_id)
+    if task is None:
+        raise HTTPException(
+            status_code=404,
+            detail={"code": "TASK_NOT_FOUND", "message": f"No task found with id '{task_id}'"},
+        )
+
+    return JSONResponse(
+        content = {
+            "task_id": task_id,
+            "task_type": task.task_type,
+            "status": task.status,
+            "result": task.result,
+            "error": task.error,
+            "created_at": task.created_at.isoformat(),
+            "updated_at": task.updated_at.isoformat(),
+        }
+    )
+    pass
+
 def _validate_upload_constraints(file_objects: list[dict[str, Any]], config: Any) -> None:
     """Validate count, extension, per-file size and total size against config limits."""
     from bible.config.configure import UploadConstraintsConfig
