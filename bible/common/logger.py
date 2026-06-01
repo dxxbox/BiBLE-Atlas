@@ -3,6 +3,18 @@ import sys
 from logging.handlers import TimedRotatingFileHandler
 from pathlib import Path
 from typing import Any, Optional, Tuple
+from datetime import datetime
+
+class _MicroFormatter(logging.Formatter):
+
+    def formatTime (self, record: logging.LogRecord, datefmt: str | None = None) -> str:
+
+        ct = datetime.fromtimestamp(record.created)
+        base = ct.strftime(datefmt) if datefmt else ct.strftime("%Y:%m-%d %H:%M:%S")
+
+        return f"{base}.{ct.microsecond:06d}"
+
+    pass
 
 def _load_log_config() -> Tuple[str, str, str, Optional[Any]]:
     config = None
@@ -15,13 +27,17 @@ def _load_log_config() -> Tuple[str, str, str, Optional[Any]]:
         log_output = config.log.output
 
         if log_output == "file":
-            workspace_path = Path(config.storage.workspace_dir).resolve()
-            log_dir = workspace_path / "log"
+            if config.log.log_dir:
+                log_dir = Path(config.log.log_dir).resolve()
+            else:
+                log_dir = Path(config.storage.workspace_dir).resolve() / "log"
+
             log_dir.mkdir(parents=True, exist_ok=True)
             log_output = str(log_dir / "bible-atlas.log")
+            
     except Exception:
         log_level_str = "INFO"
-        log_format = "%(asctime)s - %(name)s - %(levelname)s - %(message)s"
+        log_format = "[%(asctime)s][%(processName)s/%(threadName)s][%(levelname)s] %(filename)s:%(lineno)d: %(message)s"
         log_output = "stdout"
 
     return log_level_str, log_format, log_output, config
@@ -77,7 +93,7 @@ def get_logger(
 
         if format_string is None:
             format_string = log_format
-        formatter = logging.Formatter(format_string)
+        formatter = _MicroFormatter(format_string)
         handler.setFormatter(formatter)
         logger.addHandler(handler)
         logger.propagate = False
