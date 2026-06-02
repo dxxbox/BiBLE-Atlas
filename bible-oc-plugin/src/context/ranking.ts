@@ -74,6 +74,15 @@ function pickHits(payload: Record<string, unknown>): Record<string, unknown>[] {
   return [];
 }
 
+function extractHits(domain: RecallDomain, payload: Record<string, unknown>, tag?: string): Record<string, unknown> [] {
+  const results = payload.results;
+  if (isRecord(results)) {
+    const key = domain === 'knowledge' ? (tag ?? domain) : domain;
+    if (Array.isArray(results[key])) return (results[key] as unknown[]).filter(isRecord);
+  }
+  return []
+}
+
 function computeFinalScore(hit: RecallHit, query: string): number {
   const recencyBoost = hit.updatedAt && Date.now() - Date.parse(hit.updatedAt) < 30 * 24 * 3600 * 1000 ? 0.1 : 0;
   const overlap = queryTermOverlap(query, [hit.title, hit.summary, hit.contentPreview].filter(Boolean).join(" ")) * 0.1;

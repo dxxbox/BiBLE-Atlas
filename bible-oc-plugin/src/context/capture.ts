@@ -21,6 +21,7 @@ interface BibleSessionState {
   turnCount: number;
   bufferedChars: number;
   pendingTurns: CapturedTurn[];
+  lastCompactionSummary?: string;
   commitInFlight?: Promise<CommitSessionMemoryResponse>;
   lastCommitHash?: string;
   bypassed: boolean;
@@ -62,6 +63,11 @@ export class SessionCaptureStore {
     state.pendingTurns.push(turn);
     state.turnCount += 1;
     state.bufferedChars += JSON.stringify(turn).length;
+
+    if (typeof input.autoCompactionSummary == "string" && input.autoCompactionSummary.trim()) {
+      state.lastCompactionSummary = input.autoCompactionSummary.trim()
+    }
+
     this.enforceHardCap(state);
     if (state.pendingTurns.length >= this.opts.config.captureCommitThresholdTurns || state.bufferedChars >= this.opts.config.captureCommitThresholdChars) {
       log(this.opts.logger, "info", "capture.threshold reached", { sessionKey, pendingTurns: state.pendingTurns.length, bufferedChars: state.bufferedChars });
@@ -97,11 +103,17 @@ export class SessionCaptureStore {
       return undefined;
     }
     const committedPendingCount = state.pendingTurns.length;
+
+    const abstract = (state.lastCompactionSummary ?? deriveAbstract(turns)).slice(0,500);
+    const overview = deriveOverview(turns).slice(0,2000)
+
     const promise = this.opts.runtime.commitSessionMemory({
       sessionKey,
       sessionId: state.sessionId,
       reason,
       title: makeTitle(sessionKey, turns),
+      abstract,
+      overview,
       messages: turns.flatMap(turnToMessages),
       metadata: { source: "openclaw", pluginId: "bible-oc-plugin", turnCount: turns.length, startedAt: state.startedAt },
     });
@@ -196,6 +208,20 @@ function lastMessageText(messages: OpenClawMessage[] | undefined, role: string):
 function makeTitle(sessionKey: string, turns: CapturedTurn[]): string {
   const first = turns.find((turn) => turn.userMessage)?.userMessage?.slice(0, 80);
   return first || `OpenClaw session ${sessionKey}`;
+}
+
+function deriveAbstract(turns: CapturedTurn[]):string {
+  return turns.find((t) => t.userMessage)?.userMessage ?? "";
+}
+
+function deriveOverview(turns: CapturedTurn[]): string {
+  return turns.flatMap((t) => {
+    const parts: string[] = [];
+    if (t.userMessage) parts.push(`user: ${t.userMessage}`);
+    if (t.assistantMessage) parts.push(`assistant: ${t.assistantMessage}`);
+    return parts;
+  }
+  ).join("\n");
 }
 
 function commitHash(turns: CapturedTurn[]): string {

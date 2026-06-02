@@ -3,6 +3,8 @@ export interface BiblePluginConfig {
   token?: string;
   timeoutMs: number;
   contextEngineId: string;
+  defaultKbIndex: string;
+  sourceClient: string;
   enableMemoryRecall: boolean;
   enableSkillRecall: boolean;
   enableKnowledgeRecall: boolean;

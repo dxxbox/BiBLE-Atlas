@@ -24,6 +24,8 @@ export interface CommitSessionMemoryRequest {
   sessionId?: string;
   reason: "threshold" | "compact" | "before_reset" | "session_end" | "manual";
   title: string;
+  abstract?: string;
+  overview?: string;
   messages: Array<{ role: "user" | "assistant" | "tool"; content: string; timestamp?: string }>;
   metadata: Record<string, unknown>;
 }
@@ -36,8 +38,12 @@ export interface CommitSessionMemoryResponse {
 }
 
 export function createBibleRuntime(opts: { config: ResolvedBibleConfig; logger?: PluginLogger; client?: BibleAtlasClient }): BibleRuntime {
-  const client = opts.client ?? new BibleAtlasClient({ baseUrl: opts.config.baseUrl, token: opts.config.token, timeoutMs: opts.config.timeoutMs });
+
+  const client = opts.client ?? new BibleAtlasClient({ baseUrl: opts.config.baseUrl, token: opts.config.token, timeoutMs: 
+    opts.config.timeoutMs, defaultKbIndex: opts.config.defaultKbIndex, sourceClient: opts.config.sourceClient, logger:opts.logger });
+
   log(opts.logger, "info", "runtime created", { baseUrl: opts.config.baseUrl, timeoutMs: opts.config.timeoutMs });
+
   return {
     probeHealth: () => runRuntimeAction(opts.logger, "runtime.probeHealth", {}, () => client.health()),
     status: () => runRuntimeAction(opts.logger, "runtime.status", {}, () => client.systemStatus()),
@@ -56,6 +62,8 @@ export function createBibleRuntime(opts: { config: ResolvedBibleConfig; logger?:
       try {
         const raw = await client.saveMemory({
           title: req.title,
+          abstract: req.abstract,
+          overview: req.overview,
           messages: req.messages,
           metadata: { ...req.metadata, sessionKey: req.sessionKey, sessionId: req.sessionId, reason: req.reason },
           wait: req.reason === "compact" || req.reason === "before_reset" || req.reason === "session_end",

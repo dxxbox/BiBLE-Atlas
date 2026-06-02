@@ -9,7 +9,7 @@ describe("tools", () => {
   });
 
   it("returns model-visible content and structured details", async () => {
-    const tools = createBibleTools({ searchMemory: vi.fn(async () => ({ hits: [{ title: "A", score: 0.8 }] })) } as unknown as BibleRuntime);
+    const tools = createBibleTools({ searchMemory: vi.fn(async () => ({ results: { memory: [{ title: "A", score: 0.8 }] } })) } as unknown as BibleRuntime);
     const result = await tools.find((tool) => tool.name === "bible_memory_search")!.execute({ query: "A" });
     expect(result.content).toContain("Found 1 BiBLE memory hits");
     expect(result.details).toHaveProperty("hits");

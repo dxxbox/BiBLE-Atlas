@@ -1,6 +1,6 @@
 import type { BibleRuntime } from "../runtime/bible-runtime.js";
 import type { OpenClawTool } from "../types/openclaw.js";
-import { asObject, fail, ok, optionalInteger, optionalSearchType, requireString, summarizeHits } from "./helpers.js";
+import { asObject, extractHits, fail, ok, optionalInteger, optionalSearchType, requireString, summarizeHits } from "./helpers.js";
 
 export function createKnowledgeTools(runtime: BibleRuntime): OpenClawTool[] {
   return [
@@ -12,7 +12,7 @@ export function createKnowledgeTools(runtime: BibleRuntime): OpenClawTool[] {
         try {
           const args = asObject(input);
           const payload = await runtime.searchKnowledge({ query: requireString(args, "query"), tag: requireString(args, "tag"), topK: optionalInteger(args, "topK", 8, 1, 50), searchType: optionalSearchType(args) });
-          return ok(summarizeHits("knowledge", payload), { hits: payload.hits ?? payload.results ?? [], raw: payload });
+          return ok(summarizeHits("knowledge", payload), { hits: extractHits("knowledge", payload), raw: payload });
         } catch (err) { return fail(err); }
       },
     },

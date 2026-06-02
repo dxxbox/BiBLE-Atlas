@@ -14,10 +14,10 @@ export function optionalInteger(input: Record<string, unknown>, key: string, fal
   return value as number;
 }
 
-export function optionalSearchType(input: Record<string, unknown>): "text" | "vector" | "hybrid" {
+export function optionalSearchType(input: Record<string, unknown>): "keyword" | "title" | "text" | "vector" | "hybrid" {
   const value = input.searchType;
   if (value === undefined) return "hybrid";
-  if (value !== "text" && value !== "vector" && value !== "hybrid") throw new Error("searchType must be text, vector, or hybrid.");
+  if (value !== "title" && value !== "keyword" && value !== "text" && value !== "vector" && value !== "hybrid") throw new Error("searchType must be keyword, title, text, vector, or hybrid.");
   return value;
 }
 
@@ -36,7 +36,7 @@ export function fail(err: unknown): ToolResult {
 }
 
 export function summarizeHits(domain: string, payload: Record<string, unknown>): string {
-  const hits = pickHits(payload);
+  const hits = extractHits(domain, payload);
   if (hits.length === 0) return `Found 0 BiBLE ${domain} hits.`;
   const top = hits[0];
   const title = typeof top.title === "string" ? top.title : typeof top.name === "string" ? top.name : typeof top.memory_id === "string" ? top.memory_id : "untitled";
@@ -48,6 +48,15 @@ export function pickHits(payload: Record<string, unknown>): Record<string, unkno
   for (const key of ["hits", "items", "results", "documents", "memories", "skills"]) {
     const value = payload[key];
     if (Array.isArray(value)) return value.filter((item): item is Record<string, unknown> => typeof item === "object" && item !== null && !Array.isArray(item));
+  }
+  return [];
+}
+
+export function extractHits(domain: string, payload: Record<string, unknown>): Record<string, unknown>[] {
+  const results = payload.results;
+  if (typeof results === "object" && results !== null && !Array.isArray(results)) {
+    const nested = results as Record<string, unknown>;
+    if (Array.isArray(nested[domain])) return (nested[domain] as unknown[]).filter((v): v is Record<string, unknown> => typeof v === "object" && v !== null && !Array.isArray(v))
   }
   return [];
 }

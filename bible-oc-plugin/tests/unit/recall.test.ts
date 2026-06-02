@@ -7,9 +7,11 @@ import type { BibleRuntime } from "../../src/runtime/bible-runtime.js";
 function runtime(overrides: Partial<BibleRuntime> = {}): BibleRuntime {
   return {
     probeHealth: vi.fn(), status: vi.fn(), listKnowledge: vi.fn(), getSkill: vi.fn(), saveMemory: vi.fn(), getMemory: vi.fn(), commitSessionMemory: vi.fn(), getTask: vi.fn(), pollTask: vi.fn(),
-    searchMemory: vi.fn(async () => ({ hits: [{ memory_id: "m1", title: "OpenClaw context", abstract: "Context engine details", matched_message_preview: "assemble afterTurn compact", score: 0.9 }] })),
-    searchKnowledge: vi.fn(async () => ({ hits: [{ doc_id: "k1", title: "Knowledge", text: "knowledge text", score: 0.8 }] })),
-    searchSkill: vi.fn(async () => ({ hits: [{ id: "s1", name: "Skill", description: "skill text", score: 0.8 }] })),
+
+    searchMemory: vi.fn(async () => ({ results: { memory: [{ memory_id: "m1", title: "OpenClaw context", abstract: "Context engine details", matched_message_preview: "assemble afterTurn compact", score: 0.9 }] }, total: 1 })),
+    searchKnowledge: vi.fn(async () => ({ results: { knowledge: [{ doc_id: "k1", title: "Knowledge", text: "knowledge text", score: 0.8 }] }, total: 1 })),
+    searchSkill: vi.fn(async () => ({ results: { skill: [{ id: "s1", name: "Skill", description: "skill text", score: 0.8 }] }, total: 1 })),    
+    
     ...overrides,
   } as BibleRuntime;
 }
