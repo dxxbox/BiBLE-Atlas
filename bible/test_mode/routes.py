@@ -13,6 +13,7 @@ from starlette.datastructures import UploadFile
 from bible.common.errors import DomainError
 from bible.common.logger import get_logger
 from bible.test_mode.resolver import FixtureConflictError, FixtureResolver
+from bible.test_mode.constants import SERVICE_NAME
 from bible.test_mode.responses import binary_response, error_response, json_response
 from bible.test_mode.schemas import RequestContext, ResponseFixture, TaskFixture
 from bible.test_mode.task_store import InMemoryTaskStore
@@ -34,7 +35,7 @@ run_import_preflight = _preflight_module.run_import_preflight
 async def health(request: Request):
     _log_client_input(_context(request))
     logger.info("Test Mode health check")
-    return json_response({"status": "ok", "service": "bible-atlas-test-mode", "mode": "server"})
+    return json_response({"status": "ok", "service": SERVICE_NAME, "mode": "server"})
 
 
 @router.post("/api/search/knowledge-base")

@@ -7,6 +7,7 @@ from fastapi import FastAPI
 from bible.common import _get_version
 from bible.common.logger import get_logger
 from bible.test_mode.artifact_store import ArtifactStore
+from bible.test_mode.constants import SERVICE_NAME
 from bible.test_mode.fixture_store import FixtureStore
 from bible.test_mode.resolver import FixtureResolver
 from bible.test_mode.routes import router
