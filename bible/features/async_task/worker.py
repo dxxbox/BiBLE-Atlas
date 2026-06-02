@@ -1,3 +1,8 @@
+"""Celery worker entry point.
+
+Start the worker with:
+    celery -A bible.features.async_task.worker worker --loglevel=info
+"""
 from __future__ import annotations
 
 import multiprocessing
@@ -10,8 +15,10 @@ import bible.features.async_task.tasks.dispatch_task  # noqa: F401 – registers
 
 logger = get_logger(__name__)
 
+
 @worker_init.connect
 def _bootstrap_worker(**_kwargs: object) -> None:
+    """Initialize the import container when the Celery main worker process starts."""
     multiprocessing.current_process().name = "celery-main"
     try:
         import importlib
@@ -19,6 +26,9 @@ def _bootstrap_worker(**_kwargs: object) -> None:
         from bible.config.configure import get_bible_atlas_config
         from bible.features.async_task.container import build_task_container
 
+        # "import" is a reserved keyword so the package cannot be imported with
+        # a plain from-import statement; use importlib instead (same pattern as
+        # bible/main.py).
         container = importlib.import_module("bible.features.import.container")
 
         config = get_bible_atlas_config()
@@ -26,6 +36,10 @@ def _bootstrap_worker(**_kwargs: object) -> None:
         container.build_import_container(config)
         logger.info("Celery worker: import container initialized.")
 
+        # Worker 独立进程，需在 fork pool workers 之前同步预加载所有模型。
+        # fork 后的 pool workers 直接继承已填充的 _model_cache，
+        # 不需要在任务执行时重复加载（每个大模型冷启动需 10-15s）。
+        # 代价：deploy.sh 等待 PID 文件的超时需要足够长（见 worker_start）。
         _preload_vector = bool(config.vector.preload_on_startup and config.vector.available_models)
         _preload_rerank = bool(config.rerank.preload_on_startup and config.rerank.available_models)
         if _preload_vector or _preload_rerank:
@@ -56,10 +70,23 @@ def _bootstrap_worker(**_kwargs: object) -> None:
     except Exception:
         logger.exception("Celery worker: failed to initialize import container.")
 
+
 @worker_process_init.connect
 def _reset_db_connections(**_kwargs: object) -> None:
+    """Reset database connection pool in each forked pool worker.
+
+    Celery uses a prefork pool: the main process builds the container, then forks
+    worker subprocesses. Forking after threading can leave internal locks (e.g.
+    import locks, urllib3 connection pool locks) in a partially-acquired state in
+    the child, causing the first OpenSearch call to deadlock indefinitely.
+
+    Resetting the DatabaseFactory in every forked worker ensures each subprocess
+    opens its own fresh connections rather than inheriting potentially-broken ones.
+    """
     try:
         import importlib
+
+        # "import" is a reserved keyword – use importlib for this package.
         container = importlib.import_module("bible.features.import.container")
         executor = getattr(container, "_import_executor", None)
         if executor is None:
@@ -76,7 +103,7 @@ def _reset_db_connections(**_kwargs: object) -> None:
             return
 
         db_factory.reset()
-
+        # Shorten the default name "ForkPoolWorker-N" → "Worker-N" for cleaner log output.
         proc = multiprocessing.current_process()
         proc.name = proc.name.replace("ForkPoolWorker-", "Worker-")
         logger.info("Celery pool worker: DatabaseFactory reset after fork.")

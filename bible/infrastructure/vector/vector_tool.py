@@ -1,17 +1,20 @@
 from __future__ import annotations
+
 import fcntl
 import os
 import threading
 from typing import Any
+
 from bible.common.logger import get_logger
 from bible.infrastructure.vector._model_utils import download_lock_path, get_local_model_path
 
 logger = get_logger(__name__)
 
-# Fallback embedding dimension when sentence-transformers is unavailable. 
+# Fallback embedding dimension when sentence-transformers is unavailable.
 _FALLBACK_DIM = 384
 
-def _get_embedding_dimension (model:Any) -> int:
+
+def _get_embedding_dimension(model: Any) -> int:
     """Return the embedding dimension of a SentenceTransformer model.
 
     ``get_embedding_dimension`` is the current API (sentence-transformers ≥ 3.x);
@@ -19,6 +22,7 @@ def _get_embedding_dimension (model:Any) -> int:
     compatibility with older installations.
     """
     try:
+        # Prefer the new name to avoid FutureWarning in sentence-transformers ≥ 3.x
         return model.get_embedding_dimension()
     except AttributeError:
         pass
@@ -27,10 +31,19 @@ def _get_embedding_dimension (model:Any) -> int:
     except Exception:
         return _FALLBACK_DIM
 
-class VectorTool:
 
+class VectorTool:
+    """Thread-safe vector embedding tool backed by sentence-transformers.
+
+    Falls back to zero-vectors when sentence-transformers is not installed so
+    that the rest of the import pipeline can be exercised in environments
+    without the heavy ML dependency.
+    """
+
+    # Shared model cache – keyed by model_name.
     _model_cache: dict[str, Any] = {}
     _cache_lock = threading.Lock()
+    # Limit concurrent encode calls to avoid resource contention.
     _encode_semaphore = threading.Semaphore(3)
 
     def __init__(self, workspace_dir: str, hf_cache_dir: str | None = None) -> None:
@@ -41,6 +54,10 @@ class VectorTool:
             or os.environ.get("HF_HOME")
             or os.path.join(workspace_dir, "hf_cache")
         )
+
+    # ------------------------------------------------------------------
+    # Public API
+    # ------------------------------------------------------------------
 
     def ensure_model_ready(self, model_name: str) -> dict[str, Any]:
         """Load model from local cache; download if absent. Returns status dict.
@@ -86,7 +103,7 @@ class VectorTool:
         """Download model via sentence-transformers (sets HF_HOME beforehand)."""
         os.environ.setdefault("HF_HOME", self._hf_cache_dir)
         return self._load_model(model_name, model_name, source="download")
-    
+
     def embed_chunks(
         self,
         chunks: list[dict[str, Any]],
@@ -121,11 +138,10 @@ class VectorTool:
         if model is None:
             return _FALLBACK_DIM
         return _get_embedding_dimension(model)
-    
-    def _get_cached_model(self, model_name: str) -> Any:
-        if model_name not in VectorTool._model_cache:
-            self.ensure_model_ready(model_name)
-        return VectorTool._model_cache.get(model_name)
+
+    # ------------------------------------------------------------------
+    # Private helpers
+    # ------------------------------------------------------------------
 
     def _load_model(self, model_name: str, load_path: str, source: str) -> dict[str, Any]:
         try:
@@ -159,7 +175,12 @@ class VectorTool:
                     raise
 
         return {"model_name": model_name, "status": "ready", "source": source}
-    
+
+    def _get_cached_model(self, model_name: str) -> Any:
+        if model_name not in VectorTool._model_cache:
+            self.ensure_model_ready(model_name)
+        return VectorTool._model_cache.get(model_name)
+
     def _encode(self, model: Any, text: str, model_name: str) -> list[float]:
         if model is None:
             # sentence-transformers not installed – return zero-vector
@@ -175,7 +196,7 @@ class VectorTool:
         except Exception as exc:
             logger.error("Encoding failed for model '%s': %s", model_name, exc)
             return [0.0] * _get_embedding_dimension(model)
-        
+
     @staticmethod
     def _extract_text(chunk: dict[str, Any], source_template: str | None) -> str:
         if source_template:

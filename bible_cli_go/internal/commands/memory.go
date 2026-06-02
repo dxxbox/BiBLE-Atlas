@@ -49,6 +49,14 @@ type MemoryCommandOptions struct {
 	TopK       int
 	Threshold  float64
 	SearchType string
+
+	// download
+	StoragePath     string
+	StoragePaths    []string
+	OutputDir       string
+	DownloadName    string
+	PackageName     string
+	IncludeMetadata bool
 }
 
 // MemoryExecute dispatches a memory subcommand.
@@ -68,6 +76,8 @@ func (d *Dispatcher) MemoryExecute(action string, opts MemoryCommandOptions) (ma
 		return memorySearch(d.client, opts)
 	case "cache-status":
 		return memoryCacheStatus(opts)
+	case "download":
+		return memoryDownload(d.client, opts)
 	default:
 		return nil, protocol.NotImplemented("memory " + action)
 	}
@@ -455,9 +465,12 @@ func memoryList(client *clienthttp.Client, opts MemoryCommandOptions) (map[strin
 		limit = 20
 	}
 	req := clienthttp.MemorySearchRequest{
-		Query:      "",
+		Query:      "*",
 		TopK:       limit,
 		SearchType: "title",
+		Page:       opts.Page,
+		FilterTag:  opts.Tag,
+		Since:      opts.Since,
 	}
 	return client.MemorySearch(req)
 }
@@ -477,6 +490,101 @@ func memorySearch(client *clienthttp.Client, opts MemoryCommandOptions) (map[str
 		SearchType: opts.SearchType,
 	}
 	return client.MemorySearch(req)
+}
+
+func memoryDownload(client *clienthttp.Client, opts MemoryCommandOptions) (map[string]any, error) {
+	storagePath := strings.TrimSpace(opts.StoragePath)
+	if storagePath == "" && strings.TrimSpace(opts.MemoryID) != "" {
+		storagePath = opts.MemoryID
+	}
+
+	storagePaths := normalizedStoragePaths(opts.StoragePaths)
+	if storagePath != "" {
+		storagePaths = append([]string{storagePath}, storagePaths...)
+	}
+	if len(storagePaths) == 0 {
+		return nil, protocol.CLIError{Code: "INVALID_ARGS", Message: "Provide a memory id or --storage-path for download.", ExitCode: 1}
+	}
+
+	var (
+		payload map[string]any
+		err     error
+	)
+	if len(storagePaths) == 1 {
+		downloadReq := clienthttp.DownloadFileRequest{
+			Tag:          "memory",
+			StoragePath:  storagePaths[0],
+			DownloadName: opts.DownloadName,
+		}
+		payload, err = client.DownloadFile("memory", downloadReq)
+	} else {
+		downloadReq := clienthttp.DownloadBatchRequest{
+			Tag:             "memory",
+			StoragePaths:    storagePaths,
+			PackageName:     opts.PackageName,
+			IncludeMetadata: opts.IncludeMetadata,
+		}
+		payload, err = client.DownloadBatch("memory", downloadReq)
+	}
+	if err != nil {
+		return nil, err
+	}
+
+	taskID, _ := payload["task_id"].(string)
+	if taskID == "" {
+		return payload, nil
+	}
+
+	finalPayload, err := client.PollTask(taskID, 3*time.Second, 5*time.Minute)
+	if err != nil {
+		return nil, err
+	}
+
+	result, _ := finalPayload["result"].(map[string]any)
+	artifactID, _ := result["artifact_id"].(string)
+	if artifactID == "" {
+		return finalPayload, nil
+	}
+
+	data, err := client.GetArtifact("memory", artifactID)
+	if err != nil {
+		return nil, err
+	}
+
+	outputDir := strings.TrimSpace(opts.OutputDir)
+	if outputDir == "" {
+		home, _ := os.UserHomeDir()
+		outputDir = filepath.Join(home, ".bible", "memory")
+	}
+	if err := os.MkdirAll(outputDir, 0o755); err != nil {
+		return nil, protocol.CLIError{Code: "INTERNAL", Message: "Cannot create output directory: " + err.Error(), ExitCode: 1}
+	}
+
+	filename := artifactName(finalPayload)
+	if filename == "" {
+		filename = strings.TrimSpace(opts.DownloadName)
+	}
+	if filename == "" {
+		filename = strings.TrimSpace(opts.PackageName)
+	}
+	if filename == "" {
+		filename = filepath.Base(storagePaths[0])
+	}
+	if filename == "." || filename == string(filepath.Separator) || filename == "" {
+		filename = artifactID
+	}
+	if filepath.Ext(filename) == "" {
+		filename += ".zip"
+	}
+	destPath := filepath.Join(outputDir, filename)
+	if err := os.WriteFile(destPath, data, 0o644); err != nil {
+		return nil, protocol.CLIError{Code: "INTERNAL", Message: "Failed to write memory file: " + err.Error(), ExitCode: 1}
+	}
+
+	return map[string]any{
+		"status":      "downloaded",
+		"output_path": destPath,
+	}, nil
 }
 
 func memoryCacheStatus(opts MemoryCommandOptions) (map[string]any, error) {

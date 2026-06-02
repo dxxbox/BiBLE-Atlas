@@ -1,3 +1,12 @@
+"""KnowledgeBaseSearcher — executes a single knowledge-base search request.
+
+Orchestration order (per PUML knowledge_base_search_flow):
+  1. (vector / hybrid only) ensure_model_ready → embed_query   (VectorTool)
+  2. compile DSL                                                (QueryProfileCompiler)
+  3. search_content_docs                                        (IDatabaseWriter)
+  4. map_hits → return result dict
+"""
+
 from __future__ import annotations
 
 import logging
@@ -16,8 +25,11 @@ _VECTOR_TYPES = frozenset({"vector", "hybrid"})
 
 
 class SearchInternalError(RuntimeError):
-    """Wraps unexpected database"""
-    pass
+    """Wraps unexpected database / encoding failures.
+
+    Maps to INTERNAL_ERROR (HTTP 500) at the API layer.
+    """
+
 
 class KnowledgeBaseSearcher:
     """Searcher for the KNOWLEDGE_BASE domain.
@@ -35,7 +47,10 @@ class KnowledgeBaseSearcher:
         self._db_writer = db_writer
         self._vector_tool = vector_tool
         self._compiler = compiler or QueryProfileCompiler()
-        pass
+
+    # ------------------------------------------------------------------ #
+    # Public interface                                                     #
+    # ------------------------------------------------------------------ #
 
     def search(
         self,
@@ -47,7 +62,6 @@ class KnowledgeBaseSearcher:
         vector_model: str | None,
         vector_weight: float | None,
     ) -> dict[str, Any]:
-
         """Execute a knowledge-base search and return a normalised result dict.
 
         Parameters
@@ -102,7 +116,6 @@ class KnowledgeBaseSearcher:
 
         # ── Step 2: compile DSL ───────────────────────────────────────────
         # SearchProfileInvalidError is intentionally allowed to propagate.
-
         dsl, response_fields = self._compiler.compile(
             search_type=search_type,
             query=query,
@@ -131,12 +144,27 @@ class KnowledgeBaseSearcher:
             "items": items,
         }
 
+    # ------------------------------------------------------------------ #
+    # Private helpers                                                      #
+    # ------------------------------------------------------------------ #
 
     @staticmethod
     def _map_hits(
         hits: list[dict[str, Any]],
         response_fields: list[str],
     ) -> list[dict[str, Any]]:
+        """Convert raw OpenSearch hits into clean result dicts.
+
+        Rules:
+        - Only include fields listed in *response_fields* from ``_source``.
+        - ``score`` is taken from ``_score`` (never from ``_source``).
+        - ``chunk_id`` and ``took_ms`` are explicitly excluded even if present
+          in *response_fields*.
+
+        When *response_fields* is empty every ``_source`` field is included
+        (except the two excluded names above) so callers always get usable
+        output even when a profile omits the field list.
+        """
         _excluded = frozenset({"chunk_id", "took_ms"})
         result: list[dict[str, Any]] = []
 

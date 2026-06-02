@@ -4,10 +4,12 @@ import logging
 import threading
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
-from typing import Any, Dict, Optional
+from typing import Any
 
 logger = logging.getLogger(__name__)
 
+# Valid state machine transitions.
+# Terminal states (completed / failed / cancelled) have no outgoing edges.
 _VALID_TRANSITIONS: dict[str, frozenset[str]] = {
     "queued":    frozenset({"running", "cancelled"}),
     "running":   frozenset({"completed", "failed"}),
@@ -17,8 +19,10 @@ _VALID_TRANSITIONS: dict[str, frozenset[str]] = {
 }
 _TERMINAL_STATES = frozenset({"completed", "failed", "cancelled"})
 
+
 def _utcnow() -> datetime:
     return datetime.now(timezone.utc)
+
 
 @dataclass
 class AsyncTask:
@@ -30,6 +34,7 @@ class AsyncTask:
     error: str | None = None
     created_at: datetime = field(default_factory=_utcnow)
     updated_at: datetime = field(default_factory=_utcnow)
+
 
 class AsyncTaskRepository:
     def __init__(self) -> None:
@@ -50,7 +55,6 @@ class AsyncTaskRepository:
     def get(self, task_id: str) -> AsyncTask | None:
         with self._lock:
             return self._store.get(task_id)
-    
 
     def update_status(
         self,
@@ -92,4 +96,4 @@ class AsyncTaskRepository:
 
     def list_by_type(self, task_type: str) -> list[AsyncTask]:
         with self._lock:
-            return [t for t in self._store.values() if t.task_type == task_type]    
+            return [t for t in self._store.values() if t.task_type == task_type]

@@ -1,0 +1,243 @@
+{
+  "version": 1,
+  "routes": [
+    {
+      "id": "kb_search_design_default",
+      "method": "POST",
+      "path": "/api/search/knowledge-base",
+      "domain": "KNOWLEDGE_BASE",
+      "selector": {
+        "tag": "design"
+      },
+      "response": {
+        "status": 200,
+        "json": {
+          "success": true,
+          "domain": "KNOWLEDGE_BASE",
+          "kb_index": "kb_design_test",
+          "tag": "design",
+          "total": 1,
+          "results": {
+            "knowledge_base": [
+              {
+                "doc_id": "design_fixture_001",
+                "section_id": "1",
+                "section_title": "Test Mode Design",
+                "score": 0.99,
+                "content": "Built-in knowledge-base fixture result."
+              }
+            ]
+          }
+        }
+      }
+    },
+    {
+      "id": "skill_search_default",
+      "method": "POST",
+      "path": "/api/search/skill",
+      "domain": "SKILL",
+      "selector": {
+        "tag": "skill",
+        "query": "skill-standard"
+      },
+      "response": {
+        "status": 200,
+        "json": {
+          "success": true,
+          "domain": "SKILL",
+          "kb_index": "kb_skill_test",
+          "tag": "skill",
+          "total": 1,
+          "results": {
+            "skill": [
+              {
+                "id": "skill_fixture_001",
+                "name": "skill-standard",
+                "description": "Built-in skill fixture result.",
+                "score": 0.99,
+                "related_storage_paths": ["skill/skill-standard.skill"]
+              }
+            ]
+          }
+        }
+      }
+    },
+    {
+      "id": "skill_list_default",
+      "method": "POST",
+      "path": "/api/search/skill",
+      "domain": "SKILL",
+      "selector": {
+        "tag": "skill",
+        "query": "*"
+      },
+      "response": {
+        "status": 200,
+        "json": {
+          "success": true,
+          "domain": "SKILL",
+          "kb_index": "kb_skill_test",
+          "tag": "skill",
+          "total": 1,
+          "results": {
+            "skill": [
+              {
+                "id": "skill_fixture_001",
+                "name": "skill-standard",
+                "description": "Built-in skill fixture result.",
+                "score": 0.99,
+                "related_storage_paths": ["skill/skill-standard.skill"]
+              }
+            ]
+          }
+        }
+      }
+    },
+    {
+      "id": "memory_search_default",
+      "method": "POST",
+      "path": "/api/search/memory",
+      "domain": "MEMORY",
+      "selector": {
+        "tag": "memory",
+        "query": "Fixture Memory"
+      },
+      "response": {
+        "status": 200,
+        "json": {
+          "success": true,
+          "domain": "MEMORY",
+          "kb_index": "kb_memory_test",
+          "tag": "memory",
+          "total": 1,
+          "results": {
+            "memory": [
+              {
+                "id": "memory_fixture_001",
+                "title": "Fixture Memory",
+                "content": "Built-in memory fixture result.",
+                "score": 0.99,
+                "related_storage_paths": ["memory/fixture-memory.json"]
+              }
+            ]
+          }
+        }
+      }
+    },
+    {
+      "id": "memory_list_default",
+      "method": "POST",
+      "path": "/api/search/memory",
+      "domain": "MEMORY",
+      "selector": {
+        "tag": "memory",
+        "query": "*"
+      },
+      "response": {
+        "status": 200,
+        "json": {
+          "success": true,
+          "domain": "MEMORY",
+          "kb_index": "kb_memory_test",
+          "tag": "memory",
+          "total": 1,
+          "results": {
+            "memory": [
+              {
+                "id": "memory_fixture_001",
+                "title": "Fixture Memory",
+                "content": "Built-in memory fixture result.",
+                "score": 0.99,
+                "related_storage_paths": ["memory/fixture-memory.json"]
+              }
+            ]
+          }
+        }
+      }
+    },
+    {
+      "id": "memory_download_file_default",
+      "method": "POST",
+      "path": "/api/download/memory/file",
+      "domain": "MEMORY",
+      "selector": {
+        "tag": "memory"
+      },
+      "response": {
+        "status": 202,
+        "json": {
+          "success": true,
+          "task_id": "download_memory_builtin",
+          "domain": "MEMORY",
+          "tag": "memory",
+          "status": "queued"
+        }
+      }
+    },
+    {
+      "id": "skill_download_file_default",
+      "method": "POST",
+      "path": "/api/download/skill/file",
+      "domain": "SKILL",
+      "selector": {
+        "tag": "skill",
+        "storage_path": "skill-standard"
+      },
+      "response": {
+        "status": 202,
+        "json": {
+          "success": true,
+          "task_id": "download_skill_builtin",
+          "domain": "SKILL",
+          "tag": "skill",
+          "status": "queued"
+        }
+      }
+    }
+  ],
+  "tasks": [
+    {
+      "task_id": "download_memory_builtin",
+      "task_type": "download.memory.file",
+      "domain": "MEMORY",
+      "tag": "memory",
+      "status": "queued",
+      "final_status": "completed",
+      "result": {
+        "artifact_id": "artifact_memory_builtin",
+        "artifact_name": "memory-standard.json",
+        "expires_at": "2099-01-01T00:00:00Z"
+      }
+    },
+    {
+      "task_id": "download_skill_builtin",
+      "task_type": "download.skill.file",
+      "domain": "SKILL",
+      "tag": "skill",
+      "status": "queued",
+      "final_status": "completed",
+      "result": {
+        "artifact_id": "artifact_skill_builtin",
+        "artifact_name": "skill-standard.skill",
+        "expires_at": "2099-01-01T00:00:00Z"
+      }
+    }
+  ],
+  "artifacts": [
+    {
+      "artifact_id": "artifact_memory_builtin",
+      "domain": "MEMORY",
+      "content_type": "application/json",
+      "file_name": "memory-standard.json",
+      "body_base64": "eyJvayI6dHJ1ZSwidHlwZSI6Im1lbW9yeSJ9Cg=="
+    },
+    {
+      "artifact_id": "artifact_skill_builtin",
+      "domain": "SKILL",
+      "content_type": "application/zip",
+      "file_name": "skill-standard.skill",
+      "body_base64": "UEsDBBQAAAAAAE5cwVxI+VeCDQAAAA0AAAAYAAAAc2tpbGwtc3RhbmRhcmQvU0tJTExTLm1kIyBUZXN0IFNraWxsClBLAwQUAAAAAABOXMFc/puiDhsAAAAbAAAAFQAAAHNraWxsLXN0YW5kYXJkL2FwaS5weWRlZiBydW4oKToKICAgIHJldHVybiAib2siClBLAQIUAxQAAAAAAE5cwVxI+VeCDQAAAA0AAAAYAAAAAAAAAAAAAACAAQAAAABza2lsbC1zdGFuZGFyZC9TS0lMTFMubWRQSwECFAMUAAAAAABOXMFc/puiDhsAAAAbAAAAFQAAAAAAAAAAAAAAgAFDAAAAc2tpbGwtc3RhbmRhcmQvYXBpLnB5UEsFBgAAAAACAAIAiQAAAJEAAAAAAA=="
+    }
+  ]
+}
+

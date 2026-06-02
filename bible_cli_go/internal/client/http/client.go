@@ -201,27 +201,7 @@ func (c *Client) getEnvelope(path string) (map[string]any, error) {
 		return nil, err
 	}
 
-	status, _ := payload["status"].(string)
-	if status == "ok" {
-		result, exists := payload["result"]
-		if !exists {
-			return payload, nil
-		}
-		if resultObject, ok := result.(map[string]any); ok {
-			return resultObject, nil
-		}
-		return map[string]any{"result": result}, nil
-	}
-
-	if status == "error" {
-		return nil, parseErrorPayload(payload["error"], statusCode)
-	}
-
-	return nil, protocol.CLIError{
-		Code:     "INTERNAL",
-		Message:  "Malformed response envelope.",
-		ExitCode: 1,
-	}
+	return unwrapEnvelopeOrPlain(payload, statusCode)
 }
 
 func (c *Client) postEnvelope(path string, requestBody map[string]any) (map[string]any, error) {
@@ -230,6 +210,10 @@ func (c *Client) postEnvelope(path string, requestBody map[string]any) (map[stri
 		return nil, err
 	}
 
+	return unwrapEnvelopeOrPlain(payload, statusCode)
+}
+
+func unwrapEnvelopeOrPlain(payload map[string]any, statusCode int) (map[string]any, error) {
 	status, _ := payload["status"].(string)
 	if status == "ok" {
 		result, exists := payload["result"]
@@ -244,6 +228,10 @@ func (c *Client) postEnvelope(path string, requestBody map[string]any) (map[stri
 
 	if status == "error" {
 		return nil, parseErrorPayload(payload["error"], statusCode)
+	}
+
+	if _, ok := payload["success"].(bool); ok {
+		return payload, nil
 	}
 
 	return nil, protocol.CLIError{
@@ -371,6 +359,9 @@ func parseErrorPayload(raw any, statusCode int) error {
 func errorFromStatus(statusCode int, payload map[string]any) error {
 	if status, _ := payload["status"].(string); status == "error" {
 		return parseErrorPayload(payload["error"], statusCode)
+	}
+	if _, ok := payload["code"].(string); ok {
+		return parseErrorPayload(payload, statusCode)
 	}
 
 	detail := ""

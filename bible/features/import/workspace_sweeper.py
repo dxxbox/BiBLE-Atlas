@@ -8,6 +8,7 @@ from bible.common.logger import get_logger
 
 logger = get_logger(__name__)
 
+
 class WorkspaceSweeper:
     """Daemon thread that periodically calls ``StoreMemory.sweep_expired_task_workspaces``.
 
@@ -27,7 +28,10 @@ class WorkspaceSweeper:
         self._interval = float(interval_seconds)
         self._stop_event = threading.Event()
         self._thread: threading.Thread | None = None
-        pass
+
+    # ------------------------------------------------------------------
+    # Lifecycle
+    # ------------------------------------------------------------------
 
     def start(self) -> None:
         if self._ttl_hours <= 0:
@@ -57,8 +61,14 @@ class WorkspaceSweeper:
             self._thread = None
         logger.info("WorkspaceSweeper stopped.")
 
+    # ------------------------------------------------------------------
+    # Internal loop
+    # ------------------------------------------------------------------
+
     def _loop(self) -> None:
+        # Run once immediately on startup to handle accumulated leftovers.
         self._sweep_once()
+        # Then repeat every interval until stop is requested.
         while not self._stop_event.wait(timeout=self._interval):
             self._sweep_once()
 
@@ -71,4 +81,3 @@ class WorkspaceSweeper:
                 logger.debug("WorkspaceSweeper: sweep complete, nothing to remove.")
         except Exception:
             logger.exception("WorkspaceSweeper: unexpected error during sweep.")
-

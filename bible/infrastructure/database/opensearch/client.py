@@ -3,59 +3,60 @@ from __future__ import annotations
 import threading
 from typing import TYPE_CHECKING, Any
 
-from opensearchpy import OpenSearch
-
-from bible.common.errors import ErrorCode
-from bible.common.logger import get_logger
-from bible.infrastructure.database.types import DatabaseError
+from ..types import DatabaseError
 
 if TYPE_CHECKING:
     from bible.config.configure import BibleAtlasConfig
+    from opensearchpy import OpenSearch
 
 
 class OpenSearchClientProvider:
     def __init__(self, cfg: "BibleAtlasConfig") -> None:
-        self._cfg = cfg
-        self._config = cfg.database.opensearch
-        self._client: OpenSearch | None = None
+        os_cfg = cfg.database.opensearch
+        self._hosts = os_cfg.hosts
+        self._timeout_seconds = os_cfg.timeout_seconds
+        self._use_ssl = os_cfg.use_ssl
+        self._verify_certs = os_cfg.verify_certs
+        self._username = os_cfg.username or None
+        self._password = os_cfg.password or None
+        self._client: "OpenSearch | None" = None
         self._lock = threading.RLock()
-        self._logger = get_logger(__name__)
 
-    def get_client(self) -> OpenSearch:
+    def get_client(self) -> "OpenSearch":
         with self._lock:
             if self._client is not None:
                 return self._client
 
-            kwargs: dict[str, Any] = {
-                "hosts": self._config.hosts,
-                "timeout": self._config.timeout_seconds,
-                "use_ssl": self._config.use_ssl,
-                "verify_certs": self._config.verify_certs,
-            }
-            if self._config.username and self._config.password:
-                kwargs["http_auth"] = (self._config.username, self._config.password)
-
-            client = OpenSearch(**kwargs)
             try:
-                ping_ok = bool(client.ping())
-            except Exception as exc:
+                from opensearchpy import OpenSearch
+            except ImportError as exc:
                 raise DatabaseError(
-                    ErrorCode.DATABASE_BACKEND_UNAVAILABLE,
-                    "OpenSearch ping failed.",
-                    details=self._diagnostic_details(),
+                    code="DATABASE_BACKEND_UNAVAILABLE",
+                    message="opensearch-py is not installed. "
+                    "Install it with: pip install 'opensearch-py'",
                 ) from exc
 
-            if not ping_ok:
+            kwargs: dict[str, Any] = {
+                "hosts": self._hosts,
+                "timeout": self._timeout_seconds,
+                "use_ssl": self._use_ssl,
+                "verify_certs": self._verify_certs,
+            }
+            if self._username and self._password:
+                kwargs["http_auth"] = (self._username, self._password)
+
+            client = OpenSearch(**kwargs)
+            if not client.ping():
                 raise DatabaseError(
-                    ErrorCode.DATABASE_BACKEND_UNAVAILABLE,
-                    "OpenSearch ping returned false.",
-                    details=self._diagnostic_details(),
+                    code="DATABASE_BACKEND_UNAVAILABLE",
+                    message="OpenSearch ping failed.",
+                    details={
+                        "hosts": self._hosts,
+                        "timeout_seconds": self._timeout_seconds,
+                        "use_ssl": self._use_ssl,
+                    },
                 )
 
-            self._logger.info(
-                "OpenSearch client initialized",
-                extra=self._diagnostic_details(include_hosts=True),
-            )
             self._client = client
             return client
 
@@ -64,17 +65,6 @@ class OpenSearchClientProvider:
             if self._client is None:
                 return
             transport = getattr(self._client, "transport", None)
-            close = getattr(transport, "close", None)
-            if callable(close):
-                close()
+            if transport is not None and hasattr(transport, "close"):
+                transport.close()
             self._client = None
-
-    def _diagnostic_details(self, *, include_hosts: bool = True) -> dict[str, Any]:
-        details: dict[str, Any] = {
-            "timeout_seconds": self._config.timeout_seconds,
-            "use_ssl": self._config.use_ssl,
-            "verify_certs": self._config.verify_certs,
-        }
-        if include_hosts:
-            details["hosts"] = self._config.hosts
-        return details

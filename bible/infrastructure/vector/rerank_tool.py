@@ -1,3 +1,15 @@
+"""Rerank tool backed by sentence-transformers CrossEncoder.
+
+Design mirrors :class:`VectorTool`:
+- Thread-safe in-process model cache (class-level dict + lock).
+- Cross-process exclusive download lock (``fcntl.LOCK_EX``) prevents multiple
+  processes from downloading the same model simultaneously.
+- Graceful fallback (scores of 0.0) when sentence-transformers is unavailable,
+  so the rest of the search pipeline can operate in lightweight environments.
+
+Shared utilities (``get_local_model_path``, ``download_lock_path``) live in
+:mod:`bible.infrastructure.vector._model_utils` and are reused by both tools.
+"""
 from __future__ import annotations
 
 import fcntl
@@ -10,7 +22,18 @@ from bible.infrastructure.vector._model_utils import download_lock_path, get_loc
 
 logger = get_logger(__name__)
 
+
 class RerankTool:
+    """Thread-safe rerank tool backed by sentence-transformers CrossEncoder.
+
+    Falls back to zero scores when sentence-transformers is not installed so
+    that search pipelines can be exercised without the heavy ML dependency.
+
+    Cross-encoder / reranker models are plain Transformers checkpoints and do
+    **not** contain ``modules.json``; the local-cache check therefore only
+    requires ``config.json`` + a weights file.
+    """
+
     # Shared model cache – keyed by model_name.
     _model_cache: dict[str, Any] = {}
     _cache_lock = threading.Lock()
@@ -26,46 +49,47 @@ class RerankTool:
             or os.path.join(workspace_dir, "hf_cache")
         )
 
-    def _get_cached_model(self, model_name: str) -> Any:
-        if model_name not in RerankTool._model_cache:
-            self.ensure_model_ready(model_name)
-        return RerankTool._model_cache.get(model_name)
+    # ------------------------------------------------------------------
+    # Public API
+    # ------------------------------------------------------------------
 
-    def _load_model(self, model_name: str, load_path: str, source: str) -> dict[str, Any]:
-        try:
-            from sentence_transformers import CrossEncoder  # type: ignore[import]
-        except ImportError:
-            logger.warning(
-                "sentence-transformers not installed; rerank model '%s' will use zero scores.",
-                model_name,
-            )
-            with RerankTool._cache_lock:
-                RerankTool._model_cache[model_name] = None
-            return {"model_name": model_name, "status": "fallback", "source": source}
+    def ensure_model_ready(self, model_name: str) -> dict[str, Any]:
+        """Load reranker from local cache; download if absent. Returns status dict.
 
+        Uses the same cross-process exclusive lock pattern as :class:`VectorTool`
+        so only one process downloads a model even when the server and Celery
+        worker start simultaneously.
+        """
+        # Fast path: model already in this process's memory.
         with RerankTool._cache_lock:
-            if model_name not in RerankTool._model_cache:
-                try:
-                    load_kwargs: dict[str, Any] = {}
-                    if source == "local":
-                        # Prevent AutoModel from making network requests when
-                        # loading from a local snapshot.
-                        load_kwargs["automodel_args"] = {"local_files_only": True}
-                    model = CrossEncoder(load_path, **load_kwargs)
+            if model_name in RerankTool._model_cache:
+                logger.info("Rerank model '%s' already in cache.", model_name)
+                return {"model_name": model_name, "status": "ready", "source": "cache"}
+
+        lock_file = download_lock_path(model_name, self._hf_cache_dir)
+        with open(lock_file, "w") as _lf:
+            fcntl.flock(_lf, fcntl.LOCK_EX)
+            try:
+                # Re-check after acquiring the lock.
+                with RerankTool._cache_lock:
+                    if model_name in RerankTool._model_cache:
+                        return {"model_name": model_name, "status": "ready", "source": "cache"}
+
+                # Cross-encoder models only need config.json (no modules.json).
+                local_path = get_local_model_path(
+                    model_name,
+                    self._hf_cache_dir,
+                    required_metadata=["config.json"],
+                )
+                if local_path:
                     logger.info(
-                        "Rerank model '%s' loaded (source=%s).", model_name, source
+                        "Loading rerank model '%s' from local path: %s", model_name, local_path
                     )
-                    RerankTool._model_cache[model_name] = model
-                except Exception as exc:
-                    logger.error("Failed to load rerank model '%s': %s", model_name, exc)
-                    raise
-
-        return {"model_name": model_name, "status": "ready", "source": source}
-
-    def _download_from_huggingface(self, model_name: str) -> dict[str, Any]:
-        """Download via sentence-transformers CrossEncoder (sets HF_HOME first)."""
-        os.environ.setdefault("HF_HOME", self._hf_cache_dir)
-        return self._load_model(model_name, model_name, source="download")
+                    return self._load_model(model_name, local_path, source="local")
+                logger.info("Rerank model '%s' not found locally, downloading…", model_name)
+                return self._download_from_huggingface(model_name)
+            finally:
+                fcntl.flock(_lf, fcntl.LOCK_UN)
 
     def rerank(
         self,
@@ -98,26 +122,47 @@ class RerankTool:
         scores = self.rerank(query, [passage], model_name)
         return scores[0] if scores else 0.0
 
-    def ensure_model_ready(self, model_name: str) -> dict[str, Any]:
+    # ------------------------------------------------------------------
+    # Private helpers
+    # ------------------------------------------------------------------
+
+    def _download_from_huggingface(self, model_name: str) -> dict[str, Any]:
+        """Download via sentence-transformers CrossEncoder (sets HF_HOME first)."""
+        os.environ.setdefault("HF_HOME", self._hf_cache_dir)
+        return self._load_model(model_name, model_name, source="download")
+
+    def _load_model(self, model_name: str, load_path: str, source: str) -> dict[str, Any]:
+        try:
+            from sentence_transformers import CrossEncoder  # type: ignore[import]
+        except ImportError:
+            logger.warning(
+                "sentence-transformers not installed; rerank model '%s' will use zero scores.",
+                model_name,
+            )
+            with RerankTool._cache_lock:
+                RerankTool._model_cache[model_name] = None
+            return {"model_name": model_name, "status": "fallback", "source": source}
+
         with RerankTool._cache_lock:
-            if model_name in RerankTool._model_cache:
-                logger.info("Rerank model '%s' already in cache.", model_name)
-                return {"model_name": model_name, "status": "ready", "source": "cache"}
+            if model_name not in RerankTool._model_cache:
+                try:
+                    load_kwargs: dict[str, Any] = {}
+                    if source == "local":
+                        # Prevent AutoModel from making network requests when
+                        # loading from a local snapshot.
+                        load_kwargs["automodel_args"] = {"local_files_only": True}
+                    model = CrossEncoder(load_path, **load_kwargs)
+                    logger.info(
+                        "Rerank model '%s' loaded (source=%s).", model_name, source
+                    )
+                    RerankTool._model_cache[model_name] = model
+                except Exception as exc:
+                    logger.error("Failed to load rerank model '%s': %s", model_name, exc)
+                    raise
 
-        lock_file = download_lock_path(model_name, self._hf_cache_dir)
-        with open(lock_file, "w") as _lf:
-            fcntl.flock(_lf, fcntl.LOCK_EX)
-            try:
-                with RerankTool._cache_lock:
-                    if model_name in RerankTool._model_cache:
-                        return {"model_name": model_name, "status": "ready", "source": "cache"}
+        return {"model_name": model_name, "status": "ready", "source": source}
 
-                local_path = get_local_model_path(model_name, self._hf_cache_dir, required_metadata=["config.json"])
-
-                if local_path:
-                    logger.info("Loading rerank Model: '%s' from local path: %s", model_name, local_path)
-                    return self._load_model(model_name, local_path, source="local")
-                logger.info("Rerank Model '%s' not found locally, downloading...", model_name)
-                return self._download_from_huggingface(model_name)
-            finally:
-                fcntl.flock(_lf, fcntl.LOCK_UN)
+    def _get_cached_model(self, model_name: str) -> Any:
+        if model_name not in RerankTool._model_cache:
+            self.ensure_model_ready(model_name)
+        return RerankTool._model_cache.get(model_name)

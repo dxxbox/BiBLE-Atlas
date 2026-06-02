@@ -3,9 +3,15 @@ from __future__ import annotations
 from dataclasses import asdict, dataclass, field
 from typing import Any, Literal
 
-from bible.common.errors import DomainError, ErrorCode
-
 DomainType = Literal["KNOWLEDGE_BASE", "SKILL", "MEMORY"]
+
+DatabaseErrorCode = Literal[
+    "INDEX_BINDING_CONFLICT",
+    "INDEX_NOT_BOUND",
+    "DATABASE_BACKEND_UNAVAILABLE",
+    "DATABASE_WRITE_PARTIAL_FAILED",
+    "DATABASE_INVALID_ARGUMENT",
+]
 
 
 @dataclass(slots=True)
@@ -34,13 +40,11 @@ class BulkWriteResult:
     errors: list[dict[str, Any]] = field(default_factory=list)
 
 
-class DatabaseError(DomainError):
-    def __init__(
-        self,
-        code: ErrorCode,
-        message: str,
-        *,
-        details: dict[str, Any] | None = None,
-        retryable: bool | None = None,
-    ) -> None:
-        super().__init__(code, message, details=details, retryable=retryable)
+@dataclass(slots=True)
+class DatabaseError(RuntimeError):
+    code: DatabaseErrorCode
+    message: str
+    details: dict[str, Any] = field(default_factory=dict)
+
+    def __str__(self) -> str:
+        return f"[{self.code}] {self.message}"

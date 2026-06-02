@@ -1,13 +1,16 @@
 from __future__ import annotations
+
 from dataclasses import dataclass, field
 
-@dataclass (slots=True)
+
+@dataclass(slots=True)
 class UploadedFile:
     file_ref: str
     filename: str
     abs_path: str
     size_bytes: int
     content_type: str | None = None
+
 
 @dataclass(slots=True)
 class MemoryMeta:

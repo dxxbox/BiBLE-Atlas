@@ -1,5 +1,7 @@
 from __future__ import annotations
+
 from .schemas import MemoryMeta, UploadedFile
+
 
 def build_single_memory_chunk(
     meta: MemoryMeta,
@@ -38,4 +40,3 @@ def build_single_memory_chunk(
             },
         }
     ]
-

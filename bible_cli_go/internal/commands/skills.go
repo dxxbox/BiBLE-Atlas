@@ -1,7 +1,11 @@
 package commands
 
 import (
+	"archive/zip"
+	"bytes"
 	"fmt"
+	"io"
+	"io/fs"
 	"os"
 	"path/filepath"
 	"strings"
@@ -33,8 +37,11 @@ type SkillsCommandOptions struct {
 	Wait        bool
 
 	// download
-	StoragePath string
-	OutputDir   string
+	StoragePath     string
+	StoragePaths    []string
+	OutputDir       string
+	PackageName     string
+	IncludeMetadata bool
 }
 
 // SkillsExecute dispatches a skills subcommand.
@@ -61,10 +68,12 @@ func skillsList(client *clienthttp.Client, opts SkillsCommandOptions) (map[strin
 		limit = 20
 	}
 	req := clienthttp.SkillSearchRequest{
-		Query:      "",
+		Query:      "*",
 		TopK:       limit,
 		SearchType: "title",
 		Tag:        opts.Tag,
+		Page:       opts.Page,
+		FilterTag:  opts.Tag,
 	}
 	return client.SkillSearch(req)
 }
@@ -120,22 +129,25 @@ func skillsUpload(client *clienthttp.Client, opts SkillsCommandOptions, cfg conf
 	if fp == "" {
 		return nil, protocol.CLIError{Code: "INVALID_ARGS", Message: "--file is required for skills upload.", ExitCode: 1}
 	}
-	if !strings.HasSuffix(strings.ToLower(fp), ".skill") {
-		return nil, protocol.CLIError{Code: "INVALID_ARGS", Message: "Invalid skill package: file must have .skill extension.", ExitCode: 1}
+
+	uploadFile, cleanup, err := prepareSkillUploadFile(fp)
+	if err != nil {
+		return nil, err
 	}
-	if _, err := os.Stat(fp); os.IsNotExist(err) {
-		return nil, protocol.CLIError{Code: "INVALID_ARGS", Message: fmt.Sprintf("File not found: %s", fp), ExitCode: 1}
-	}
+	defer cleanup()
 
 	kbIndex := resolveKbIndex(opts.KbIndex, cfg)
+	if kbIndex == "" {
+		return nil, protocol.CLIError{
+			Code:     "INVALID_ARGS",
+			Message:  "kb_index is required. Provide --kb-index flag or set BIBLE_MEMORY_KB_INDEX environment variable.",
+			ExitCode: 1,
+		}
+	}
 	vectorModel := resolveVectorModel(opts.VectorModel, cfg)
 
 	req := clienthttp.SkillImportRequest{
-		File: clienthttp.MemoryFile{
-			Filename:    filepath.Base(fp),
-			Path:        fp,
-			ContentType: "application/octet-stream",
-		},
+		File:        uploadFile,
 		KbIndex:     kbIndex,
 		Tag:         "skill",
 		VectorModel: vectorModel,
@@ -156,20 +168,233 @@ func skillsUpload(client *clienthttp.Client, opts SkillsCommandOptions, cfg conf
 	return payload, nil
 }
 
+func prepareSkillUploadFile(path string) (clienthttp.MemoryFile, func(), error) {
+	info, err := os.Stat(path)
+	if os.IsNotExist(err) {
+		return clienthttp.MemoryFile{}, func() {}, protocol.CLIError{Code: "INVALID_ARGS", Message: fmt.Sprintf("File not found: %s", path), ExitCode: 1}
+	}
+	if err != nil {
+		return clienthttp.MemoryFile{}, func() {}, protocol.CLIError{Code: "INVALID_ARGS", Message: fmt.Sprintf("Cannot access skill package: %v", err), ExitCode: 1}
+	}
+
+	if info.IsDir() {
+		return packageSkillDirectory(path)
+	}
+	if !strings.HasSuffix(strings.ToLower(path), ".skill") {
+		return clienthttp.MemoryFile{}, func() {}, protocol.CLIError{
+			Code:     "INVALID_ARGS",
+			Message:  "Invalid skill package: provide a .skill file or a directory containing SKILLS.md.",
+			ExitCode: 1,
+		}
+	}
+	if _, err := validateSkillPackageFile(path); err != nil {
+		return clienthttp.MemoryFile{}, func() {}, err
+	}
+
+	return clienthttp.MemoryFile{
+		Filename:    filepath.Base(path),
+		Path:        path,
+		ContentType: "application/octet-stream",
+	}, func() {}, nil
+}
+
+func packageSkillDirectory(dir string) (clienthttp.MemoryFile, func(), error) {
+	manifestPath := filepath.Join(dir, "SKILLS.md")
+	if info, err := os.Stat(manifestPath); os.IsNotExist(err) {
+		return clienthttp.MemoryFile{}, func() {}, protocol.CLIError{
+			Code:     "INVALID_ARGS",
+			Message:  "Invalid skill directory: SKILLS.md is required at the directory root.",
+			ExitCode: 1,
+		}
+	} else if err != nil {
+		return clienthttp.MemoryFile{}, func() {}, protocol.CLIError{Code: "INVALID_ARGS", Message: fmt.Sprintf("Cannot access SKILLS.md: %v", err), ExitCode: 1}
+	} else if info.IsDir() {
+		return clienthttp.MemoryFile{}, func() {}, protocol.CLIError{Code: "INVALID_ARGS", Message: "Invalid skill directory: SKILLS.md must be a file.", ExitCode: 1}
+	}
+
+	baseName := filepath.Base(filepath.Clean(dir))
+	tmp, err := os.CreateTemp("", baseName+"-*.skill")
+	if err != nil {
+		return clienthttp.MemoryFile{}, func() {}, protocol.CLIError{Code: "INTERNAL", Message: "Failed to create temporary skill package: " + err.Error(), ExitCode: 1}
+	}
+	tmpPath := tmp.Name()
+	cleanup := func() { _ = os.Remove(tmpPath) }
+
+	if err := writeSkillZip(tmp, dir, baseName); err != nil {
+		_ = tmp.Close()
+		cleanup()
+		return clienthttp.MemoryFile{}, func() {}, err
+	}
+	if err := tmp.Close(); err != nil {
+		cleanup()
+		return clienthttp.MemoryFile{}, func() {}, protocol.CLIError{Code: "INTERNAL", Message: "Failed to finalize temporary skill package: " + err.Error(), ExitCode: 1}
+	}
+
+	return clienthttp.MemoryFile{
+		Filename:    baseName + ".skill",
+		Path:        tmpPath,
+		ContentType: "application/zip",
+	}, cleanup, nil
+}
+
+func writeSkillZip(dest *os.File, dir, topDir string) error {
+	zw := zip.NewWriter(dest)
+	if err := filepath.WalkDir(dir, func(path string, d fs.DirEntry, walkErr error) error {
+		if walkErr != nil {
+			return walkErr
+		}
+		if d.IsDir() {
+			return nil
+		}
+		if d.Type()&os.ModeSymlink != 0 {
+			return protocol.CLIError{Code: "INVALID_ARGS", Message: "Invalid skill directory: symlinks are not supported in skill packages.", ExitCode: 1}
+		}
+
+		rel, err := filepath.Rel(dir, path)
+		if err != nil {
+			return err
+		}
+		if rel == "." {
+			return nil
+		}
+		info, err := d.Info()
+		if err != nil {
+			return err
+		}
+		header, err := zip.FileInfoHeader(info)
+		if err != nil {
+			return err
+		}
+		header.Name = filepath.ToSlash(filepath.Join(topDir, rel))
+		header.Method = zip.Deflate
+
+		part, err := zw.CreateHeader(header)
+		if err != nil {
+			return err
+		}
+		src, err := os.Open(path)
+		if err != nil {
+			return err
+		}
+		defer src.Close()
+		_, err = io.Copy(part, src)
+		return err
+	}); err != nil {
+		_ = zw.Close()
+		return protocol.CLIError{Code: "INVALID_ARGS", Message: "Failed to package skill directory: " + err.Error(), ExitCode: 1}
+	}
+	if err := zw.Close(); err != nil {
+		return protocol.CLIError{Code: "INTERNAL", Message: "Failed to write temporary skill package: " + err.Error(), ExitCode: 1}
+	}
+	return nil
+}
+
+func validateSkillPackageFile(path string) (string, error) {
+	zr, err := zip.OpenReader(path)
+	if err != nil {
+		return "", protocol.CLIError{Code: "INVALID_ARGS", Message: ".skill file must be a valid zip package", ExitCode: 1}
+	}
+	defer zr.Close()
+
+	files := make([]*zip.File, 0, len(zr.File))
+	files = append(files, zr.File...)
+	return validateSkillPackageEntries(files)
+}
+
+func validateSkillPackageData(data []byte) (string, []*zip.File, error) {
+	zr, err := zip.NewReader(bytes.NewReader(data), int64(len(data)))
+	if err != nil {
+		return "", nil, protocol.CLIError{Code: "INVALID_ARGS", Message: ".skill file must be a valid zip package", ExitCode: 1}
+	}
+	files := make([]*zip.File, 0, len(zr.File))
+	files = append(files, zr.File...)
+	topDir, err := validateSkillPackageEntries(files)
+	if err != nil {
+		return "", nil, err
+	}
+	return topDir, files, nil
+}
+
+func validateSkillPackageEntries(files []*zip.File) (string, error) {
+	topDirs := map[string]struct{}{}
+	hasManifest := false
+
+	for _, file := range files {
+		rawName := filepath.ToSlash(file.Name)
+		if strings.HasPrefix(rawName, "/") || filepath.IsAbs(rawName) {
+			return "", protocol.CLIError{Code: "INVALID_ARGS", Message: "Invalid skill package: unsafe zip path.", ExitCode: 1}
+		}
+		name := strings.TrimSuffix(rawName, "/")
+		if name == "" {
+			continue
+		}
+		clean := filepath.ToSlash(filepath.Clean(name))
+		if strings.HasPrefix(clean, "../") || clean == ".." || filepath.IsAbs(clean) {
+			return "", protocol.CLIError{Code: "INVALID_ARGS", Message: "Invalid skill package: unsafe zip path.", ExitCode: 1}
+		}
+		parts := strings.Split(clean, "/")
+		if len(parts) < 2 {
+			if file.FileInfo().IsDir() {
+				topDirs[parts[0]] = struct{}{}
+				continue
+			}
+			return "", protocol.CLIError{Code: "INVALID_ARGS", Message: "Invalid skill package: files must live under a single top-level directory.", ExitCode: 1}
+		}
+		topDirs[parts[0]] = struct{}{}
+		if len(parts) == 2 && parts[1] == "SKILLS.md" && !file.FileInfo().IsDir() {
+			hasManifest = true
+		}
+		if file.FileInfo().Mode()&os.ModeSymlink != 0 {
+			return "", protocol.CLIError{Code: "INVALID_ARGS", Message: "Invalid skill package: symlinks are not supported.", ExitCode: 1}
+		}
+	}
+
+	if len(topDirs) != 1 {
+		return "", protocol.CLIError{Code: "INVALID_ARGS", Message: "Invalid skill package: package must contain exactly one top-level directory.", ExitCode: 1}
+	}
+	var topDir string
+	for dir := range topDirs {
+		topDir = dir
+	}
+	if !hasManifest {
+		return "", protocol.CLIError{Code: "INVALID_ARGS", Message: "Invalid skill package: package must contain <skill-name>/SKILLS.md.", ExitCode: 1}
+	}
+	return topDir, nil
+}
+
 func skillsDownload(client *clienthttp.Client, opts SkillsCommandOptions) (map[string]any, error) {
 	storagePath := strings.TrimSpace(opts.StoragePath)
 	if storagePath == "" && strings.TrimSpace(opts.Name) != "" {
 		storagePath = opts.Name
 	}
-	if storagePath == "" {
+
+	storagePaths := normalizedStoragePaths(opts.StoragePaths)
+	if storagePath != "" {
+		storagePaths = append([]string{storagePath}, storagePaths...)
+	}
+	if len(storagePaths) == 0 {
 		return nil, protocol.CLIError{Code: "INVALID_ARGS", Message: "Provide a skill name/id or --storage-path for download.", ExitCode: 1}
 	}
 
-	downloadReq := clienthttp.DownloadFileRequest{
-		Tag:         "skill",
-		StoragePath: storagePath,
+	var (
+		payload map[string]any
+		err     error
+	)
+	if len(storagePaths) == 1 {
+		downloadReq := clienthttp.DownloadFileRequest{
+			Tag:         "skill",
+			StoragePath: storagePaths[0],
+		}
+		payload, err = client.DownloadFile("skill", downloadReq)
+	} else {
+		downloadReq := clienthttp.DownloadBatchRequest{
+			Tag:             "skill",
+			StoragePaths:    storagePaths,
+			PackageName:     opts.PackageName,
+			IncludeMetadata: opts.IncludeMetadata,
+		}
+		payload, err = client.DownloadBatch("skill", downloadReq)
 	}
-	payload, err := client.DownloadFile("skill", downloadReq)
 	if err != nil {
 		return nil, err
 	}
@@ -206,9 +431,28 @@ func skillsDownload(client *clienthttp.Client, opts SkillsCommandOptions) (map[s
 		return nil, protocol.CLIError{Code: "INTERNAL", Message: "Cannot create output directory: " + err.Error(), ExitCode: 1}
 	}
 
-	filename := filepath.Base(storagePath)
-	if !strings.HasSuffix(filename, ".skill") {
+	if len(storagePaths) == 1 {
+		installDir, err := installSkillPackage(data, outputDir)
+		if err != nil {
+			return nil, err
+		}
+		return map[string]any{
+			"status":      "downloaded",
+			"output_path": installDir,
+		}, nil
+	}
+
+	filename := artifactName(finalPayload)
+	if filename == "" {
+		filename = strings.TrimSpace(opts.PackageName)
+	}
+	if filename == "" {
+		filename = filepath.Base(storagePaths[0])
+	}
+	if len(storagePaths) == 1 && !strings.HasSuffix(filename, ".skill") {
 		filename += ".skill"
+	} else if len(storagePaths) > 1 && filepath.Ext(filename) == "" {
+		filename += ".zip"
 	}
 	destPath := filepath.Join(outputDir, filename)
 	if err := os.WriteFile(destPath, data, 0o644); err != nil {
@@ -219,6 +463,56 @@ func skillsDownload(client *clienthttp.Client, opts SkillsCommandOptions) (map[s
 		"status":      "downloaded",
 		"output_path": destPath,
 	}, nil
+}
+
+func installSkillPackage(data []byte, outputDir string) (string, error) {
+	topDir, files, err := validateSkillPackageData(data)
+	if err != nil {
+		return "", err
+	}
+	destRoot := filepath.Clean(outputDir)
+	installDir := filepath.Join(destRoot, topDir)
+	for _, file := range files {
+		name := strings.TrimSuffix(filepath.ToSlash(file.Name), "/")
+		if name == "" {
+			continue
+		}
+		clean := filepath.ToSlash(filepath.Clean(name))
+		targetPath := filepath.Join(destRoot, filepath.FromSlash(clean))
+		if !isWithinDirectory(destRoot, targetPath) {
+			return "", protocol.CLIError{Code: "INVALID_ARGS", Message: "Invalid skill package: unsafe zip path.", ExitCode: 1}
+		}
+		if file.FileInfo().IsDir() {
+			if err := os.MkdirAll(targetPath, 0o755); err != nil {
+				return "", protocol.CLIError{Code: "INTERNAL", Message: "Failed to create skill directory: " + err.Error(), ExitCode: 1}
+			}
+			continue
+		}
+		if err := os.MkdirAll(filepath.Dir(targetPath), 0o755); err != nil {
+			return "", protocol.CLIError{Code: "INTERNAL", Message: "Failed to create skill directory: " + err.Error(), ExitCode: 1}
+		}
+		src, err := file.Open()
+		if err != nil {
+			return "", protocol.CLIError{Code: "INTERNAL", Message: "Failed to read skill package: " + err.Error(), ExitCode: 1}
+		}
+		content, err := io.ReadAll(src)
+		_ = src.Close()
+		if err != nil {
+			return "", protocol.CLIError{Code: "INTERNAL", Message: "Failed to read skill package: " + err.Error(), ExitCode: 1}
+		}
+		if err := os.WriteFile(targetPath, content, file.FileInfo().Mode().Perm()); err != nil {
+			return "", protocol.CLIError{Code: "INTERNAL", Message: "Failed to write skill file: " + err.Error(), ExitCode: 1}
+		}
+	}
+	return installDir, nil
+}
+
+func isWithinDirectory(root, path string) bool {
+	rel, err := filepath.Rel(root, path)
+	if err != nil {
+		return false
+	}
+	return rel == "." || (!strings.HasPrefix(rel, ".."+string(filepath.Separator)) && rel != "..")
 }
 
 // extractListItems tries to get items from common server response shapes.

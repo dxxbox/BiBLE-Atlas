@@ -7,19 +7,29 @@ from typing import Any
 
 from .schemas import MemoryMeta
 
-def _str_list(value: Any) -> list[str]:
-    if value is None:
-        return []
-    if not isinstance(value, list):
-        raise ValueError(f"expected list, got {type(value).__name__}")
-    return [str(v).strip() for v in value if str(v).strip()]
 
+def parse_meta(path: str) -> MemoryMeta:
+    data: dict[str, Any] = json.loads(Path(path).read_text(encoding="utf-8"))
+    _validate_required(data)
+    _validate_lengths(data)
+    _validate_iso8601(data, "created_at", required=False)
+    _validate_iso8601(data, "updated_at", required=False)
 
-def _opt(value: Any) -> str | None:
-    if value is None:
-        return None
-    text = str(value).strip()
-    return text or None
+    return MemoryMeta(
+        memory_id=str(data["memory_id"]).strip(),
+        title=str(data["title"]).strip(),
+        abstract=str(data["abstract"]).strip(),
+        overview=str(data.get("overview", "") or "").strip(),
+        created_at=_opt(data.get("created_at")),
+        updated_at=_opt(data.get("updated_at")),
+        task_ids=_str_list(data.get("task_ids")),
+        feature_tags=_str_list(data.get("feature_tags")),
+        domain_tags=_str_list(data.get("domain_tags")),
+        component_tags=_str_list(data.get("component_tags")),
+        source_client=_opt(data.get("source_client")),
+        language=_opt(data.get("language")) or "zh",
+    )
+
 
 def _validate_required(data: dict[str, Any]) -> None:
     for field in ("memory_id", "title", "abstract"):
@@ -46,25 +56,17 @@ def _validate_iso8601(data: dict[str, Any], key: str, required: bool) -> None:
     except ValueError as exc:
         raise ValueError(f"meta.json field {key!r} must be ISO 8601 format") from exc
 
-def parse_meta(path: str) -> MemoryMeta:
-    data: dict[str, Any] = json.loads(Path(path).read_text(encoding="utf-8"))
-    _validate_required(data)
-    _validate_lengths(data)
-    _validate_iso8601(data, "created_at", required=False)
-    _validate_iso8601(data, "updated_at", required=False)
 
-    return MemoryMeta(
-        memory_id=str(data["memory_id"]).strip(),
-        title=str(data["title"]).strip(),
-        abstract=str(data["abstract"]).strip(),
-        overview=str(data.get("overview", "") or "").strip(),
-        created_at=_opt(data.get("created_at")),
-        updated_at=_opt(data.get("updated_at")),
-        task_ids=_str_list(data.get("task_ids")),
-        feature_tags=_str_list(data.get("feature_tags")),
-        domain_tags=_str_list(data.get("domain_tags")),
-        component_tags=_str_list(data.get("component_tags")),
-        source_client=_opt(data.get("source_client")),
-        language=_opt(data.get("language")) or "zh",
-    )
+def _str_list(value: Any) -> list[str]:
+    if value is None:
+        return []
+    if not isinstance(value, list):
+        raise ValueError(f"expected list, got {type(value).__name__}")
+    return [str(v).strip() for v in value if str(v).strip()]
 
+
+def _opt(value: Any) -> str | None:
+    if value is None:
+        return None
+    text = str(value).strip()
+    return text or None

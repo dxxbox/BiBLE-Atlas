@@ -38,7 +38,8 @@ def dispatch_task(task_id: str, task_type: str, payload: dict[str, Any]) -> None
     if _repository is None or _dispatcher is None:
         raise RuntimeError("dispatch_task not configured; call configure_dispatch() first")
 
-
+    # Guard against the cancel-race: if the task was cancelled between submit() and
+    # the worker picking it up, skip execution entirely.
     task = _repository.get(task_id)
     if task is not None and task.status == "cancelled":
         logger.info("Task %s was cancelled before execution started; skipping.", task_id)
@@ -67,4 +68,3 @@ def dispatch_task(task_id: str, task_type: str, payload: dict[str, Any]) -> None
             error=str(exc),
             result={"code": ErrorCode.INTERNAL.value},
         )
-

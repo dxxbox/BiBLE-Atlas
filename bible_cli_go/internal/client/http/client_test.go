@@ -4,6 +4,8 @@ import (
 	"encoding/json"
 	nethttp "net/http"
 	"net/http/httptest"
+	"os"
+	"path/filepath"
 	"strings"
 	"sync"
 	"testing"
@@ -57,6 +59,30 @@ func TestHealthRequestsHealthEndpointDirectly(t *testing.T) {
 	}
 	if payload["service"] != "alive" {
 		t.Fatalf("expected service alive, got %v", payload["service"])
+	}
+}
+
+func TestFlatErrorPayloadPreservesServerCode(t *testing.T) {
+	server := httptest.NewServer(nethttp.HandlerFunc(func(w nethttp.ResponseWriter, r *nethttp.Request) {
+		w.WriteHeader(nethttp.StatusNotFound)
+		_ = json.NewEncoder(w).Encode(map[string]any{
+			"code":    "SKILL_NOT_FOUND",
+			"message": "Skill 'sct-reviewer' not found in Test Mode fixtures.",
+		})
+	}))
+	defer server.Close()
+
+	client := New(config.ClientConfig{BaseURL: server.URL, TimeoutSeconds: 2})
+	_, err := client.DownloadFile("skill", DownloadFileRequest{Tag: "skill", StoragePath: "sct-reviewer"})
+	apiErr, ok := err.(protocol.CLIError)
+	if !ok {
+		t.Fatalf("expected CLIError, got %T: %v", err, err)
+	}
+	if apiErr.Code != "SKILL_NOT_FOUND" {
+		t.Fatalf("expected SKILL_NOT_FOUND, got %s", apiErr.Code)
+	}
+	if !strings.Contains(apiErr.Message, "sct-reviewer") {
+		t.Fatalf("expected server message to be preserved, got %q", apiErr.Message)
 	}
 }
 
@@ -115,6 +141,135 @@ func TestKnowledgeSearchReturnsEnvelopeResult(t *testing.T) {
 	}
 	if payload["count"] != float64(1) {
 		t.Fatalf("expected count 1, got %v", payload["count"])
+	}
+}
+
+func TestImportKnowledgeSendsMultipartRequest(t *testing.T) {
+	tmpDir := t.TempDir()
+	docPath := filepath.Join(tmpDir, "design.md")
+	parserPath := filepath.Join(tmpDir, "parse_design.py")
+	if err := os.WriteFile(docPath, []byte("# design"), 0o644); err != nil {
+		t.Fatalf("failed to write test doc: %v", err)
+	}
+	if err := os.WriteFile(parserPath, []byte("def parse(): pass"), 0o644); err != nil {
+		t.Fatalf("failed to write parser script: %v", err)
+	}
+
+	server := httptest.NewServer(nethttp.HandlerFunc(func(w nethttp.ResponseWriter, r *nethttp.Request) {
+		if r.URL.Path != "/api/import/knowledge-base" {
+			w.WriteHeader(nethttp.StatusNotFound)
+			return
+		}
+		if r.Method != nethttp.MethodPost {
+			t.Fatalf("expected POST, got %s", r.Method)
+		}
+		if err := r.ParseMultipartForm(32 << 20); err != nil {
+			t.Fatalf("failed to parse multipart form: %v", err)
+		}
+		if got := r.MultipartForm.Value["kb_index"]; len(got) != 1 || got[0] != "kb_design" {
+			t.Fatalf("expected kb_index kb_design, got %v", got)
+		}
+		if got := r.MultipartForm.Value["tag"]; len(got) != 1 || got[0] != "design" {
+			t.Fatalf("expected tag design, got %v", got)
+		}
+		if got := r.MultipartForm.Value["vector_model"]; len(got) != 1 || got[0] != "bge-m3" {
+			t.Fatalf("expected vector_model bge-m3, got %v", got)
+		}
+		if files := r.MultipartForm.File["files"]; len(files) != 1 || files[0].Filename != "design.md" {
+			t.Fatalf("expected one design.md files part, got %v", files)
+		}
+		if scripts := r.MultipartForm.File["parser_script"]; len(scripts) != 1 || scripts[0].Filename != "parse_design.py" {
+			t.Fatalf("expected one parser_script part, got %v", scripts)
+		}
+		_ = json.NewEncoder(w).Encode(map[string]any{
+			"task_id": "task-1",
+			"status":  "queued",
+		})
+	}))
+	defer server.Close()
+
+	client := New(config.ClientConfig{BaseURL: server.URL, TimeoutSeconds: 2})
+	payload, err := client.ImportKnowledge(KnowledgeImportRequest{
+		Files: []MemoryFile{{
+			Filename:    "design.md",
+			Path:        docPath,
+			ContentType: "text/markdown",
+		}},
+		ParserScript: &MemoryFile{
+			Filename:    "parse_design.py",
+			Path:        parserPath,
+			ContentType: "text/x-python",
+		},
+		KbIndex:     "kb_design",
+		Tag:         "design",
+		VectorModel: "bge-m3",
+	})
+	if err != nil {
+		t.Fatalf("expected no error, got %v", err)
+	}
+	if payload["task_id"] != "task-1" {
+		t.Fatalf("expected task-1 payload, got %v", payload)
+	}
+}
+
+func TestDownloadFileAcceptsPlainSubmitResponse(t *testing.T) {
+	server := httptest.NewServer(nethttp.HandlerFunc(func(w nethttp.ResponseWriter, r *nethttp.Request) {
+		if r.URL.Path != "/api/download/memory/file" {
+			w.WriteHeader(nethttp.StatusNotFound)
+			return
+		}
+		if r.Method != nethttp.MethodPost {
+			t.Fatalf("expected POST, got %s", r.Method)
+		}
+		_ = json.NewEncoder(w).Encode(map[string]any{
+			"success": true,
+			"task_id": "download-1",
+			"domain":  "MEMORY",
+			"tag":     "memory",
+			"status":  "queued",
+		})
+	}))
+	defer server.Close()
+
+	client := New(config.ClientConfig{BaseURL: server.URL, TimeoutSeconds: 2})
+	payload, err := client.DownloadFile("memory", DownloadFileRequest{Tag: "memory", StoragePath: "memory/a"})
+	if err != nil {
+		t.Fatalf("expected no error, got %v", err)
+	}
+	if payload["task_id"] != "download-1" {
+		t.Fatalf("expected download task id, got %v", payload)
+	}
+}
+
+func TestSkillSearchAcceptsPlainV4Response(t *testing.T) {
+	server := httptest.NewServer(nethttp.HandlerFunc(func(w nethttp.ResponseWriter, r *nethttp.Request) {
+		if r.URL.Path != "/api/search/skill" {
+			w.WriteHeader(nethttp.StatusNotFound)
+			return
+		}
+		if r.Method != nethttp.MethodPost {
+			t.Fatalf("expected POST, got %s", r.Method)
+		}
+		_ = json.NewEncoder(w).Encode(map[string]any{
+			"success":  true,
+			"domain":   "SKILL",
+			"kb_index": "kb_skill_test",
+			"tag":      "skill",
+			"total":    1,
+			"results": map[string]any{
+				"skill": []any{map[string]any{"name": "fixture-skill"}},
+			},
+		})
+	}))
+	defer server.Close()
+
+	client := New(config.ClientConfig{BaseURL: server.URL, TimeoutSeconds: 2})
+	payload, err := client.SkillSearch(SkillSearchRequest{Query: "*", TopK: 3, SearchType: "title"})
+	if err != nil {
+		t.Fatalf("expected no error, got %v", err)
+	}
+	if payload["total"] != float64(1) {
+		t.Fatalf("expected total=1, got %v", payload["total"])
 	}
 }
 

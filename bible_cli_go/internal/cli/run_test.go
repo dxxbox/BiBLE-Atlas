@@ -1,9 +1,11 @@
 package cli
 
 import (
+	"archive/zip"
 	"bytes"
 	"encoding/json"
 	"fmt"
+	"io"
 	nethttp "net/http"
 	"net/http/httptest"
 	"os"
@@ -61,6 +63,31 @@ func loadGoldenExpectation(t *testing.T, fileName string) goldenExpectation {
 	return expected
 }
 
+func standardSkillPackage(t *testing.T, skillName string) []byte {
+	t.Helper()
+
+	var buf bytes.Buffer
+	zw := zip.NewWriter(&buf)
+	manifest, err := zw.Create(skillName + "/SKILLS.md")
+	if err != nil {
+		t.Fatalf("failed to create skill manifest: %v", err)
+	}
+	if _, err := manifest.Write([]byte("# " + skillName + "\n")); err != nil {
+		t.Fatalf("failed to write skill manifest: %v", err)
+	}
+	script, err := zw.Create(skillName + "/api.py")
+	if err != nil {
+		t.Fatalf("failed to create skill script: %v", err)
+	}
+	if _, err := script.Write([]byte("def run():\n    return \"ok\"\n")); err != nil {
+		t.Fatalf("failed to write skill script: %v", err)
+	}
+	if err := zw.Close(); err != nil {
+		t.Fatalf("failed to close skill package: %v", err)
+	}
+	return buf.Bytes()
+}
+
 func TestRunHelpWithoutArgs(t *testing.T) {
 	var out bytes.Buffer
 	var err bytes.Buffer
@@ -71,6 +98,24 @@ func TestRunHelpWithoutArgs(t *testing.T) {
 	}
 	if !strings.Contains(out.String(), "Usage:") {
 		t.Fatalf("expected help output, got %q", out.String())
+	}
+	help := out.String()
+	expectedLines := []string{
+		"bible knowledge import --file <path> [--file <path>] --kb-index <index> --tag <tag> [--wait]",
+		"bible memory upload <session_dir> --kb-index <index> [--skip-if-exists] [--wait]",
+		"bible memory upload-all <base_dir> --kb-index <index> [--workers N]",
+		"bible skills upload --file <path.skill|skill_dir> --kb-index <index> [--wait]",
+		`bible memory save --input '{"title":"...","messages":[...]}' --kb-index <index> [--wait]`,
+		`bible session save --input '{"title":"...","messages":[...]}' --kb-index <index> [--wait]  (deprecated: use 'memory save')`,
+		"Note: --kb-index <index> may also be supplied by BIBLE_MEMORY_KB_INDEX or config.",
+	}
+	for _, line := range expectedLines {
+		if !strings.Contains(help, line) {
+			t.Fatalf("expected help output to contain %q, got %q", line, help)
+		}
+	}
+	if strings.Contains(help, "[--kb-index <index>]") {
+		t.Fatalf("expected kb-index not to be marked optional, got %q", help)
 	}
 	if err.Len() != 0 {
 		t.Fatalf("expected empty stderr, got %q", err.String())
@@ -196,6 +241,155 @@ func TestRunSkillsLsAliasNormalizesToList(t *testing.T) {
 	}
 }
 
+func TestRunSkillsListPassesPageAndFilterTag(t *testing.T) {
+	server := httptest.NewServer(nethttp.HandlerFunc(func(w nethttp.ResponseWriter, r *nethttp.Request) {
+		if r.URL.Path != "/api/search/skill" {
+			w.WriteHeader(nethttp.StatusNotFound)
+			return
+		}
+		var body map[string]any
+		_ = json.NewDecoder(r.Body).Decode(&body)
+		if body["query"] != "*" {
+			t.Fatalf("expected wildcard list query, got %v", body["query"])
+		}
+		if body["page"] != float64(3) {
+			t.Fatalf("expected page=3, got %v", body["page"])
+		}
+		if body["filter_tag"] != "agent" {
+			t.Fatalf("expected filter_tag=agent, got %v", body["filter_tag"])
+		}
+		_ = json.NewEncoder(w).Encode(map[string]any{
+			"status": "ok",
+			"result": map[string]any{"items": []any{}},
+		})
+	}))
+	defer server.Close()
+	t.Setenv("BIBLE_CLI_BASE_URL", server.URL)
+
+	var out bytes.Buffer
+	var err bytes.Buffer
+	exitCode := Run([]string{"skills", "list", "--page", "3", "--tag", "agent"}, &out, &err)
+	if exitCode != 0 {
+		t.Fatalf("expected exit code 0, got %d: %s", exitCode, out.String())
+	}
+}
+
+func TestRunSkillsUploadPackagesDirectory(t *testing.T) {
+	tmpDir := t.TempDir()
+	skillDir := filepath.Join(tmpDir, "code-reviewer")
+	if err := os.MkdirAll(filepath.Join(skillDir, "examples"), 0o755); err != nil {
+		t.Fatalf("failed to create skill directory: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(skillDir, "SKILLS.md"), []byte("# Code Reviewer\n"), 0o644); err != nil {
+		t.Fatalf("failed to write SKILLS.md: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(skillDir, "examples", "note.md"), []byte("example"), 0o644); err != nil {
+		t.Fatalf("failed to write nested skill file: %v", err)
+	}
+
+	server := httptest.NewServer(nethttp.HandlerFunc(func(w nethttp.ResponseWriter, r *nethttp.Request) {
+		if r.URL.Path != "/api/import/skill" {
+			w.WriteHeader(nethttp.StatusNotFound)
+			return
+		}
+		if r.Method != nethttp.MethodPost {
+			t.Fatalf("expected POST, got %s", r.Method)
+		}
+		if err := r.ParseMultipartForm(32 << 20); err != nil {
+			t.Fatalf("failed to parse multipart form: %v", err)
+		}
+		if got := r.MultipartForm.Value["kb_index"]; len(got) != 1 || got[0] != "rrm" {
+			t.Fatalf("expected kb_index rrm, got %v", got)
+		}
+		if got := r.MultipartForm.Value["tag"]; len(got) != 1 || got[0] != "skill" {
+			t.Fatalf("expected tag skill, got %v", got)
+		}
+
+		files := r.MultipartForm.File["files"]
+		if len(files) != 1 {
+			t.Fatalf("expected one uploaded file, got %v", files)
+		}
+		if files[0].Filename != "code-reviewer.skill" {
+			t.Fatalf("expected packaged skill filename, got %q", files[0].Filename)
+		}
+
+		uploaded, err := files[0].Open()
+		if err != nil {
+			t.Fatalf("failed to open uploaded skill package: %v", err)
+		}
+		defer uploaded.Close()
+		data, err := io.ReadAll(uploaded)
+		if err != nil {
+			t.Fatalf("failed to read uploaded skill package: %v", err)
+		}
+		zr, err := zip.NewReader(bytes.NewReader(data), int64(len(data)))
+		if err != nil {
+			t.Fatalf("expected uploaded skill package to be a zip: %v", err)
+		}
+		entries := map[string]bool{}
+		for _, f := range zr.File {
+			entries[f.Name] = true
+		}
+		if !entries["code-reviewer/SKILLS.md"] {
+			t.Fatalf("expected zip to contain code-reviewer/SKILLS.md, got %v", entries)
+		}
+		if !entries["code-reviewer/examples/note.md"] {
+			t.Fatalf("expected zip to contain nested skill file, got %v", entries)
+		}
+
+		_ = json.NewEncoder(w).Encode(map[string]any{
+			"task_id": "skill-import-1",
+			"status":  "queued",
+		})
+	}))
+	defer server.Close()
+	t.Setenv("BIBLE_CLI_BASE_URL", server.URL)
+
+	var out bytes.Buffer
+	var err bytes.Buffer
+	exitCode := Run([]string{"skills", "upload", "--file", skillDir, "--kb-index", "rrm"}, &out, &err)
+	if exitCode != 0 {
+		t.Fatalf("expected exit code 0, got %d, stdout=%q, stderr=%q", exitCode, out.String(), err.String())
+	}
+	response := decodeRunResponse(t, out.String())
+	if !response.OK {
+		t.Fatalf("expected ok=true response, got %q", out.String())
+	}
+	dataMap, ok := response.Data.(map[string]any)
+	if !ok {
+		t.Fatalf("expected object data payload, got %T", response.Data)
+	}
+	if dataMap["task_id"] != "skill-import-1" {
+		t.Fatalf("expected task id in response, got %v", dataMap)
+	}
+}
+
+func TestRunSkillsUploadMissingKbIndex(t *testing.T) {
+	tmpDir := t.TempDir()
+	skillPath := filepath.Join(tmpDir, "code-reviewer.skill")
+	if err := os.WriteFile(skillPath, standardSkillPackage(t, "code-reviewer"), 0o644); err != nil {
+		t.Fatalf("failed to write skill package: %v", err)
+	}
+	t.Setenv("BIBLE_MEMORY_KB_INDEX", "")
+
+	var out bytes.Buffer
+	var err bytes.Buffer
+	exitCode := Run([]string{"skills", "upload", "--file", skillPath}, &out, &err)
+	if exitCode != 1 {
+		t.Fatalf("expected exit code 1, got %d, stdout=%q, stderr=%q", exitCode, out.String(), err.String())
+	}
+	response := decodeRunResponse(t, out.String())
+	if response.OK {
+		t.Fatalf("expected ok=false response, got %q", out.String())
+	}
+	if response.Error == nil || response.Error.Code != "INVALID_ARGS" || !strings.Contains(response.Error.Message, "kb_index") {
+		t.Fatalf("expected INVALID_ARGS kb_index error, got %q", out.String())
+	}
+	if err.Len() != 0 {
+		t.Fatalf("expected empty stderr, got %q", err.String())
+	}
+}
+
 func TestRunKnowledgeLsAliasMapsToKnowledgeList(t *testing.T) {
 	server := httptest.NewServer(nethttp.HandlerFunc(func(w nethttp.ResponseWriter, r *nethttp.Request) {
 		switch r.URL.Path {
@@ -228,6 +422,461 @@ func TestRunKnowledgeLsAliasMapsToKnowledgeList(t *testing.T) {
 	}
 	if dataMap["count"] != float64(1) {
 		t.Fatalf("expected count 1, got %v", dataMap["count"])
+	}
+}
+
+func TestRunMemoryListPassesFilters(t *testing.T) {
+	server := httptest.NewServer(nethttp.HandlerFunc(func(w nethttp.ResponseWriter, r *nethttp.Request) {
+		if r.URL.Path != "/api/search/memory" {
+			w.WriteHeader(nethttp.StatusNotFound)
+			return
+		}
+		var body map[string]any
+		_ = json.NewDecoder(r.Body).Decode(&body)
+		if body["query"] != "*" {
+			t.Fatalf("expected wildcard list query, got %v", body["query"])
+		}
+		if body["page"] != float64(2) {
+			t.Fatalf("expected page=2, got %v", body["page"])
+		}
+		if body["filter_tag"] != "meeting" {
+			t.Fatalf("expected filter_tag=meeting, got %v", body["filter_tag"])
+		}
+		if body["since"] != "2026-05-01" {
+			t.Fatalf("expected since=2026-05-01, got %v", body["since"])
+		}
+		_ = json.NewEncoder(w).Encode(map[string]any{
+			"status": "ok",
+			"result": map[string]any{"items": []any{}},
+		})
+	}))
+	defer server.Close()
+	t.Setenv("BIBLE_CLI_BASE_URL", server.URL)
+
+	var out bytes.Buffer
+	var err bytes.Buffer
+	exitCode := Run([]string{"memory", "list", "--page", "2", "--tag", "meeting", "--since", "2026-05-01"}, &out, &err)
+	if exitCode != 0 {
+		t.Fatalf("expected exit code 0, got %d: %s", exitCode, out.String())
+	}
+}
+
+func TestRunKnowledgeImportAccepted(t *testing.T) {
+	tmpDir := t.TempDir()
+	docPath := filepath.Join(tmpDir, "design.md")
+	if err := os.WriteFile(docPath, []byte("# design"), 0o644); err != nil {
+		t.Fatalf("failed to write test doc: %v", err)
+	}
+
+	server := httptest.NewServer(nethttp.HandlerFunc(func(w nethttp.ResponseWriter, r *nethttp.Request) {
+		if r.URL.Path != "/api/import/knowledge-base" {
+			w.WriteHeader(nethttp.StatusNotFound)
+			return
+		}
+		if r.Method != nethttp.MethodPost {
+			t.Fatalf("expected POST, got %s", r.Method)
+		}
+		if err := r.ParseMultipartForm(32 << 20); err != nil {
+			t.Fatalf("failed to parse multipart form: %v", err)
+		}
+		if got := r.MultipartForm.Value["kb_index"]; len(got) != 1 || got[0] != "kb_design" {
+			t.Fatalf("expected kb_index kb_design, got %v", got)
+		}
+		if got := r.MultipartForm.Value["tag"]; len(got) != 1 || got[0] != "design" {
+			t.Fatalf("expected tag design, got %v", got)
+		}
+		if files := r.MultipartForm.File["files"]; len(files) != 1 || files[0].Filename != "design.md" {
+			t.Fatalf("expected one design.md file, got %v", files)
+		}
+		_ = json.NewEncoder(w).Encode(map[string]any{
+			"task_id": "knowledge-import-1",
+			"status":  "queued",
+		})
+	}))
+	defer server.Close()
+	t.Setenv("BIBLE_CLI_BASE_URL", server.URL)
+
+	var out bytes.Buffer
+	var err bytes.Buffer
+	exitCode := Run([]string{"knowledge", "import", "--file", docPath, "--kb-index", "kb_design", "--tag", "design"}, &out, &err)
+	if exitCode != 0 {
+		t.Fatalf("expected exit code 0, got %d, stdout=%q, stderr=%q", exitCode, out.String(), err.String())
+	}
+	response := decodeRunResponse(t, out.String())
+	if !response.OK {
+		t.Fatalf("expected ok=true response, got %q", out.String())
+	}
+	dataMap, ok := response.Data.(map[string]any)
+	if !ok {
+		t.Fatalf("expected object data payload, got %T", response.Data)
+	}
+	if dataMap["task_id"] != "knowledge-import-1" {
+		t.Fatalf("expected task id in response, got %v", dataMap)
+	}
+}
+
+func TestRunKnowledgeImportRequiresFile(t *testing.T) {
+	var out bytes.Buffer
+	var err bytes.Buffer
+	exitCode := Run([]string{"knowledge", "import", "--kb-index", "kb_design", "--tag", "design"}, &out, &err)
+	if exitCode != 1 {
+		t.Fatalf("expected exit code 1, got %d", exitCode)
+	}
+	response := decodeRunResponse(t, out.String())
+	if response.Error == nil || response.Error.Code != "INVALID_ARGS" {
+		t.Fatalf("expected INVALID_ARGS, got %q", out.String())
+	}
+}
+
+func TestRunMemoryDownloadWritesArtifact(t *testing.T) {
+	outputDir := t.TempDir()
+	server := httptest.NewServer(nethttp.HandlerFunc(func(w nethttp.ResponseWriter, r *nethttp.Request) {
+		switch r.URL.Path {
+		case "/api/download/memory/file":
+			if r.Method != nethttp.MethodPost {
+				t.Fatalf("expected POST for memory download, got %s", r.Method)
+			}
+			var body map[string]any
+			_ = json.NewDecoder(r.Body).Decode(&body)
+			if body["tag"] != "memory" {
+				t.Fatalf("expected tag memory, got %v", body["tag"])
+			}
+			if body["storage_path"] != "memory-1" {
+				t.Fatalf("expected storage_path memory-1, got %v", body["storage_path"])
+			}
+			_ = json.NewEncoder(w).Encode(map[string]any{
+				"status": "ok",
+				"result": map[string]any{"status": "queued", "task_id": "task-memory-download"},
+			})
+		case "/api/control/admin/tasks/task-memory-download":
+			_ = json.NewEncoder(w).Encode(map[string]any{
+				"status": "completed",
+				"result": map[string]any{"artifact_id": "artifact-memory"},
+			})
+		case "/api/download/memory/artifact/artifact-memory":
+			_, _ = w.Write([]byte("memory artifact"))
+		default:
+			w.WriteHeader(nethttp.StatusNotFound)
+		}
+	}))
+	defer server.Close()
+	t.Setenv("BIBLE_CLI_BASE_URL", server.URL)
+
+	var out bytes.Buffer
+	var err bytes.Buffer
+	exitCode := Run([]string{"memory", "download", "--output", outputDir, "memory-1"}, &out, &err)
+	if exitCode != 0 {
+		t.Fatalf("expected exit code 0, got %d, stdout=%q, stderr=%q", exitCode, out.String(), err.String())
+	}
+	response := decodeRunResponse(t, out.String())
+	if !response.OK {
+		t.Fatalf("expected ok=true response, got %q", out.String())
+	}
+	dataMap, ok := response.Data.(map[string]any)
+	if !ok {
+		t.Fatalf("expected object data payload, got %T", response.Data)
+	}
+	outputPath, _ := dataMap["output_path"].(string)
+	if outputPath == "" {
+		t.Fatalf("expected output_path in response, got %v", dataMap)
+	}
+	content, readErr := os.ReadFile(outputPath)
+	if readErr != nil {
+		t.Fatalf("failed to read downloaded artifact: %v", readErr)
+	}
+	if string(content) != "memory artifact" {
+		t.Fatalf("unexpected artifact content %q", string(content))
+	}
+}
+
+func TestRunMemoryBatchDownloadWritesArtifact(t *testing.T) {
+	outputDir := t.TempDir()
+	server := httptest.NewServer(nethttp.HandlerFunc(func(w nethttp.ResponseWriter, r *nethttp.Request) {
+		switch r.URL.Path {
+		case "/api/download/memory/batch":
+			if r.Method != nethttp.MethodPost {
+				t.Fatalf("expected POST for memory batch download, got %s", r.Method)
+			}
+			var body map[string]any
+			_ = json.NewDecoder(r.Body).Decode(&body)
+			paths, ok := body["storage_paths"].([]any)
+			if !ok || len(paths) != 2 {
+				t.Fatalf("expected two storage_paths, got %v", body["storage_paths"])
+			}
+			if body["package_name"] != "memories.zip" {
+				t.Fatalf("expected package_name memories.zip, got %v", body["package_name"])
+			}
+			if body["include_metadata"] != true {
+				t.Fatalf("expected include_metadata=true, got %v", body["include_metadata"])
+			}
+			_ = json.NewEncoder(w).Encode(map[string]any{
+				"status": "ok",
+				"result": map[string]any{"status": "queued", "task_id": "task-memory-batch"},
+			})
+		case "/api/control/admin/tasks/task-memory-batch":
+			_ = json.NewEncoder(w).Encode(map[string]any{
+				"status": "completed",
+				"result": map[string]any{
+					"artifact_id":   "artifact-batch",
+					"artifact_name": "memories.zip",
+				},
+			})
+		case "/api/download/memory/artifact/artifact-batch":
+			_, _ = w.Write([]byte("memory zip"))
+		default:
+			w.WriteHeader(nethttp.StatusNotFound)
+		}
+	}))
+	defer server.Close()
+	t.Setenv("BIBLE_CLI_BASE_URL", server.URL)
+
+	var out bytes.Buffer
+	var err bytes.Buffer
+	exitCode := Run([]string{
+		"memory", "download",
+		"--storage-path", "memory-a",
+		"--storage-path", "memory-b",
+		"--package-name", "memories.zip",
+		"--include-metadata",
+		"--output", outputDir,
+	}, &out, &err)
+	if exitCode != 0 {
+		t.Fatalf("expected exit code 0, got %d, stdout=%q, stderr=%q", exitCode, out.String(), err.String())
+	}
+	response := decodeRunResponse(t, out.String())
+	if !response.OK {
+		t.Fatalf("expected ok=true response, got %q", out.String())
+	}
+	dataMap, ok := response.Data.(map[string]any)
+	if !ok {
+		t.Fatalf("expected object data payload, got %T", response.Data)
+	}
+	outputPath, _ := dataMap["output_path"].(string)
+	if filepath.Base(outputPath) != "memories.zip" {
+		t.Fatalf("expected memories.zip output, got %q", outputPath)
+	}
+	content, readErr := os.ReadFile(outputPath)
+	if readErr != nil {
+		t.Fatalf("failed to read downloaded artifact: %v", readErr)
+	}
+	if string(content) != "memory zip" {
+		t.Fatalf("unexpected artifact content %q", string(content))
+	}
+}
+
+func TestRunSkillsBatchDownloadWritesArtifact(t *testing.T) {
+	outputDir := t.TempDir()
+	server := httptest.NewServer(nethttp.HandlerFunc(func(w nethttp.ResponseWriter, r *nethttp.Request) {
+		switch r.URL.Path {
+		case "/api/download/skill/batch":
+			var body map[string]any
+			_ = json.NewDecoder(r.Body).Decode(&body)
+			paths, ok := body["storage_paths"].([]any)
+			if !ok || len(paths) != 2 {
+				t.Fatalf("expected two storage_paths, got %v", body["storage_paths"])
+			}
+			_ = json.NewEncoder(w).Encode(map[string]any{
+				"status": "ok",
+				"result": map[string]any{"status": "queued", "task_id": "task-skill-batch"},
+			})
+		case "/api/control/admin/tasks/task-skill-batch":
+			_ = json.NewEncoder(w).Encode(map[string]any{
+				"status": "completed",
+				"result": map[string]any{
+					"artifact_id":   "skill-batch",
+					"artifact_name": "skills.zip",
+				},
+			})
+		case "/api/download/skill/artifact/skill-batch":
+			_, _ = w.Write([]byte("skill zip"))
+		default:
+			w.WriteHeader(nethttp.StatusNotFound)
+		}
+	}))
+	defer server.Close()
+	t.Setenv("BIBLE_CLI_BASE_URL", server.URL)
+
+	var out bytes.Buffer
+	var err bytes.Buffer
+	exitCode := Run([]string{
+		"skills", "download",
+		"--storage-path", "skill-a.skill",
+		"--storage-path", "skill-b.skill",
+		"--output", outputDir,
+	}, &out, &err)
+	if exitCode != 0 {
+		t.Fatalf("expected exit code 0, got %d, stdout=%q, stderr=%q", exitCode, out.String(), err.String())
+	}
+	response := decodeRunResponse(t, out.String())
+	if !response.OK {
+		t.Fatalf("expected ok=true response, got %q", out.String())
+	}
+	dataMap, ok := response.Data.(map[string]any)
+	if !ok {
+		t.Fatalf("expected object data payload, got %T", response.Data)
+	}
+	outputPath, _ := dataMap["output_path"].(string)
+	if filepath.Base(outputPath) != "skills.zip" {
+		t.Fatalf("expected skills.zip output, got %q", outputPath)
+	}
+}
+
+func TestRunSkillsDownloadAcceptsFlagsAfterName(t *testing.T) {
+	outputDir := t.TempDir()
+	server := httptest.NewServer(nethttp.HandlerFunc(func(w nethttp.ResponseWriter, r *nethttp.Request) {
+		switch r.URL.Path {
+		case "/api/download/skill/file":
+			if r.Method != nethttp.MethodPost {
+				t.Fatalf("expected POST for skill download, got %s", r.Method)
+			}
+			var body map[string]any
+			_ = json.NewDecoder(r.Body).Decode(&body)
+			if body["tag"] != "skill" {
+				t.Fatalf("expected tag skill, got %v", body["tag"])
+			}
+			if body["storage_path"] != "sct-reviewer" {
+				t.Fatalf("expected storage_path sct-reviewer, got %v", body["storage_path"])
+			}
+			_ = json.NewEncoder(w).Encode(map[string]any{
+				"status": "ok",
+				"result": map[string]any{"status": "queued", "task_id": "task-skill-download"},
+			})
+		case "/api/control/admin/tasks/task-skill-download":
+			_ = json.NewEncoder(w).Encode(map[string]any{
+				"status": "completed",
+				"result": map[string]any{"artifact_id": "skill-artifact"},
+			})
+		case "/api/download/skill/artifact/skill-artifact":
+			_, _ = w.Write(standardSkillPackage(t, "sct-reviewer"))
+		default:
+			w.WriteHeader(nethttp.StatusNotFound)
+		}
+	}))
+	defer server.Close()
+	t.Setenv("BIBLE_CLI_BASE_URL", server.URL)
+
+	var out bytes.Buffer
+	var err bytes.Buffer
+	exitCode := Run([]string{"skills", "download", "sct-reviewer", "--output", outputDir}, &out, &err)
+	if exitCode != 0 {
+		t.Fatalf("expected exit code 0, got %d, stdout=%q, stderr=%q", exitCode, out.String(), err.String())
+	}
+	response := decodeRunResponse(t, out.String())
+	if !response.OK {
+		t.Fatalf("expected ok=true response, got %q", out.String())
+	}
+	dataMap, ok := response.Data.(map[string]any)
+	if !ok {
+		t.Fatalf("expected object data payload, got %T", response.Data)
+	}
+	outputPath, _ := dataMap["output_path"].(string)
+	if filepath.Base(outputPath) != "sct-reviewer" {
+		t.Fatalf("expected sct-reviewer output directory, got %q", outputPath)
+	}
+	content, readErr := os.ReadFile(filepath.Join(outputPath, "SKILLS.md"))
+	if readErr != nil {
+		t.Fatalf("failed to read downloaded skill manifest: %v", readErr)
+	}
+	if !strings.Contains(string(content), "# sct-reviewer") {
+		t.Fatalf("unexpected skill manifest content %q", string(content))
+	}
+	if _, readErr := os.ReadFile(filepath.Join(outputPath, "api.py")); readErr != nil {
+		t.Fatalf("failed to read downloaded skill script: %v", readErr)
+	}
+}
+
+func TestRunMemoryDownloadRequiresIdentifier(t *testing.T) {
+	var out bytes.Buffer
+	var err bytes.Buffer
+	exitCode := Run([]string{"memory", "download"}, &out, &err)
+	if exitCode != 1 {
+		t.Fatalf("expected exit code 1, got %d", exitCode)
+	}
+	response := decodeRunResponse(t, out.String())
+	if response.Error == nil || response.Error.Code != "INVALID_ARGS" {
+		t.Fatalf("expected INVALID_ARGS, got %q", out.String())
+	}
+}
+
+func TestRunTaskGet(t *testing.T) {
+	server := httptest.NewServer(nethttp.HandlerFunc(func(w nethttp.ResponseWriter, r *nethttp.Request) {
+		if r.URL.Path != "/api/control/admin/tasks/task-1" {
+			w.WriteHeader(nethttp.StatusNotFound)
+			return
+		}
+		if r.Method != nethttp.MethodGet {
+			t.Fatalf("expected GET, got %s", r.Method)
+		}
+		_ = json.NewEncoder(w).Encode(map[string]any{"task_id": "task-1", "status": "completed"})
+	}))
+	defer server.Close()
+	t.Setenv("BIBLE_CLI_BASE_URL", server.URL)
+
+	var out bytes.Buffer
+	var err bytes.Buffer
+	exitCode := Run([]string{"task", "get", "task-1"}, &out, &err)
+	if exitCode != 0 {
+		t.Fatalf("expected exit code 0, got %d, stdout=%q, stderr=%q", exitCode, out.String(), err.String())
+	}
+	response := decodeRunResponse(t, out.String())
+	if !response.OK {
+		t.Fatalf("expected ok=true response, got %q", out.String())
+	}
+	dataMap, ok := response.Data.(map[string]any)
+	if !ok {
+		t.Fatalf("expected object data payload, got %T", response.Data)
+	}
+	if dataMap["status"] != "completed" {
+		t.Fatalf("expected completed task, got %v", dataMap)
+	}
+}
+
+func TestRunTaskCancel(t *testing.T) {
+	server := httptest.NewServer(nethttp.HandlerFunc(func(w nethttp.ResponseWriter, r *nethttp.Request) {
+		if r.URL.Path != "/api/control/admin/tasks/task-2" {
+			w.WriteHeader(nethttp.StatusNotFound)
+			return
+		}
+		if r.Method != nethttp.MethodDelete {
+			t.Fatalf("expected DELETE, got %s", r.Method)
+		}
+		_ = json.NewEncoder(w).Encode(map[string]any{
+			"status": "ok",
+			"result": map[string]any{"task_id": "task-2", "status": "cancelled"},
+		})
+	}))
+	defer server.Close()
+	t.Setenv("BIBLE_CLI_BASE_URL", server.URL)
+
+	var out bytes.Buffer
+	var err bytes.Buffer
+	exitCode := Run([]string{"task", "cancel", "task-2"}, &out, &err)
+	if exitCode != 0 {
+		t.Fatalf("expected exit code 0, got %d, stdout=%q, stderr=%q", exitCode, out.String(), err.String())
+	}
+	response := decodeRunResponse(t, out.String())
+	if !response.OK {
+		t.Fatalf("expected ok=true response, got %q", out.String())
+	}
+	dataMap, ok := response.Data.(map[string]any)
+	if !ok {
+		t.Fatalf("expected object data payload, got %T", response.Data)
+	}
+	if dataMap["status"] != "cancelled" {
+		t.Fatalf("expected cancelled task, got %v", dataMap)
+	}
+}
+
+func TestRunTaskRequiresID(t *testing.T) {
+	var out bytes.Buffer
+	var err bytes.Buffer
+	exitCode := Run([]string{"task", "get"}, &out, &err)
+	if exitCode != 1 {
+		t.Fatalf("expected exit code 1, got %d", exitCode)
+	}
+	response := decodeRunResponse(t, out.String())
+	if response.Error == nil || response.Error.Code != "INVALID_ARGS" {
+		t.Fatalf("expected INVALID_ARGS, got %q", out.String())
 	}
 }
 

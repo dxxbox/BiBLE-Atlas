@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from typing import BinaryIO, Protocol
 
-from bible.infrastructure.file_system.types import FileStoreResult
+from .types import FileStoreResult
 
 
 class IFileSystemGateway(Protocol):

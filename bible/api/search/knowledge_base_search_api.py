@@ -72,6 +72,10 @@ class KBSearchRequest(BaseModel):
             raise ValueError("'tag' must not be empty.")
         return v
 
+
+# ── Route ──────────────────────────────────────────────────────────────────────
+
+
 @router.post(
     "/api/search/knowledge-base",
     tags=["Search"],
@@ -83,10 +87,13 @@ async def search_knowledge_base(
     search_cfg: SearchConfig = Depends(get_search_cfg),
     svc: KnowledgeBaseSearchService = Depends(get_kb_search_service),
 ) -> JSONResponse:
+    """Execute a KNOWLEDGE_BASE search and return ranked results."""
 
+    # ── validate_request() — business rules beyond Pydantic constraints ───
     _validate_search_type(body.search_type, search_cfg)
     _validate_top_k(body.top_k, search_cfg)
 
+    # ── Call service, map exceptions via shared error contract ────────────
     try:
         result = svc.search(
             query=body.query,
@@ -103,6 +110,10 @@ async def search_knowledge_base(
         raise_search_http_exception(exc)   # raises HTTPException or re-raises
 
     return JSONResponse(status_code=200, content=result)
+
+
+# ── Validation helpers ─────────────────────────────────────────────────────────
+
 
 def _validate_search_type(search_type: str | None, cfg: SearchConfig) -> None:
     if search_type is None:

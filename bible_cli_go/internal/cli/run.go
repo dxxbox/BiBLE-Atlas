@@ -31,6 +31,8 @@ func Run(args []string, stdout io.Writer, stderr io.Writer) int {
 	var memoryOpts commands.MemoryCommandOptions
 	var skillsOpts commands.SkillsCommandOptions
 	var sessionOpts commands.SessionCommandOptions
+	var knowledgeOpts commands.KnowledgeCommandOptions
+	var taskOpts commands.TaskCommandOptions
 
 	switch command {
 	case "health":
@@ -99,6 +101,18 @@ func Run(args []string, stdout io.Writer, stderr io.Writer) int {
 		if err := parseSessionFlags(action, args[2:], &sessionOpts); err != nil {
 			return fail(stdout, stderr, protocol.WrapAsCLIError(err))
 		}
+	case "task":
+		if len(args) < 2 {
+			return fail(stdout, stderr, protocol.CLIError{Code: "INVALID_ARGS", Message: "Missing action for 'task'.", ExitCode: 1})
+		}
+		action = normalizeActionAlias(command, args[1])
+		if len(args) < 3 {
+			return fail(stdout, stderr, protocol.CLIError{Code: "INVALID_ARGS", Message: "task_id is required.", ExitCode: 1})
+		}
+		if len(args) > 3 {
+			return fail(stdout, stderr, protocol.CLIError{Code: "INVALID_ARGS", Message: "task accepts exactly one task_id argument.", ExitCode: 1})
+		}
+		taskOpts.TaskID = args[2]
 	case "system", "knowledge":
 		if len(args) < 2 {
 			return fail(stdout, stderr, protocol.CLIError{Code: "INVALID_ARGS", Message: fmt.Sprintf("Missing action for '%s'.", command), ExitCode: 1})
@@ -121,6 +135,10 @@ func Run(args []string, stdout io.Writer, stderr io.Writer) int {
 			tag = strings.TrimSpace(*tagPtr)
 			if tag == "" {
 				return fail(stdout, stderr, protocol.CLIError{Code: "INVALID_ARGS", Message: "--tag is required for knowledge search.", ExitCode: 1})
+			}
+		} else if command == "knowledge" && action == "import" {
+			if err := parseKnowledgeImportFlags(args[2:], &knowledgeOpts); err != nil {
+				return fail(stdout, stderr, protocol.WrapAsCLIError(err))
 			}
 		} else if len(args) > 2 {
 			return fail(stdout, stderr, protocol.CLIError{Code: "INVALID_ARGS", Message: "Unexpected extra arguments.", ExitCode: 1})
@@ -151,6 +169,10 @@ func Run(args []string, stdout io.Writer, stderr io.Writer) int {
 		response, err = dispatcher.SkillsExecute(action, skillsOpts)
 	case "session":
 		response, err = dispatcher.SessionExecute(action, sessionOpts)
+	case "knowledge":
+		response, err = dispatcher.KnowledgeExecute(action, query, tag, knowledgeOpts)
+	case "task":
+		response, err = dispatcher.TaskExecute(action, taskOpts)
 	default:
 		response, err = dispatcher.Handle(command, action, query, tag)
 	}
@@ -185,23 +207,28 @@ func printHelp(w io.Writer) {
 	fmt.Fprintln(w, "  bible search --query <string> [--top-k <int>] [--enable-hit] [--hit-types skill,memory] [--knowledge-tag <tag>]")
 	fmt.Fprintln(w, "  bible system status|info")
 	fmt.Fprintln(w, "  bible knowledge list|search --tag <tag> [query]")
-	fmt.Fprintln(w, "  bible memory upload <session_dir> [--kb-index <index>] [--skip-if-exists] [--wait]")
-	fmt.Fprintln(w, "  bible memory upload-all <base_dir> [--kb-index <index>] [--workers N]")
+	fmt.Fprintln(w, "  bible knowledge import --file <path> [--file <path>] --kb-index <index> --tag <tag> [--wait]")
+	fmt.Fprintln(w, "  bible memory upload <session_dir> --kb-index <index> [--skip-if-exists] [--wait]")
+	fmt.Fprintln(w, "  bible memory upload-all <base_dir> --kb-index <index> [--workers N]")
 	fmt.Fprintln(w, "  bible memory build-meta <session_dir>")
 	fmt.Fprintln(w, "  bible memory status [task_id] [--memory-id ID] [--cache-dir DIR]")
 	fmt.Fprintln(w, "  bible memory list [--limit N] [--tag TAG] [--since DATE]")
 	fmt.Fprintln(w, "  bible memory search <query> [--top-k N]")
+	fmt.Fprintln(w, "  bible memory download <memory_id> [--storage-path PATH ...] [--package-name NAME] [--output DIR]")
 	fmt.Fprintln(w, "  bible memory cache-status [base_dir]")
 	fmt.Fprintln(w, "  bible skills list [--limit N] [--tag TAG]")
 	fmt.Fprintln(w, "  bible skills search <query> [--top-k N]")
 	fmt.Fprintln(w, "  bible skills get <name_or_id> [--content]")
-	fmt.Fprintln(w, "  bible skills upload --file <path.skill> [--kb-index <index>] [--wait]")
-	fmt.Fprintln(w, "  bible skills download <name_or_id> [--storage-path PATH] [--output DIR]")
+	fmt.Fprintln(w, "  bible skills upload --file <path.skill|skill_dir> --kb-index <index> [--wait]")
+	fmt.Fprintln(w, "  bible skills download <name_or_id> [--storage-path PATH ...] [--package-name NAME] [--output DIR]")
+	fmt.Fprintln(w, "  bible task get|status|cancel <task_id>")
 	fmt.Fprintln(w, "  bible memory get --id <memory-id>")
-	fmt.Fprintln(w, `  bible memory save --input '{"title":"...","messages":[...]}' [--kb-index <index>] [--wait]`)
+	fmt.Fprintln(w, `  bible memory save --input '{"title":"...","messages":[...]}' --kb-index <index> [--wait]`)
 	fmt.Fprintln(w, "  bible session list [--limit N]       (deprecated: use 'memory list')")
 	fmt.Fprintln(w, "  bible session get --id <session-id>  (deprecated: use 'memory get')")
-	fmt.Fprintln(w, `  bible session save --input '{"title":"...","messages":[...]}' [--kb-index <index>] [--wait]  (deprecated: use 'memory save')`)
+	fmt.Fprintln(w, `  bible session save --input '{"title":"...","messages":[...]}' --kb-index <index> [--wait]  (deprecated: use 'memory save')`)
+	fmt.Fprintln(w)
+	fmt.Fprintln(w, "Note: --kb-index <index> may also be supplied by BIBLE_MEMORY_KB_INDEX or config.")
 }
 
 func parseHitTypes(raw string) ([]string, error) {
@@ -251,6 +278,7 @@ func normalizeActionAlias(command string, action string) string {
 			"list":   "list",
 			"ls":     "list",
 			"search": "search",
+			"import": "import",
 		},
 		"memory": {
 			"upload":       "upload",
@@ -262,6 +290,7 @@ func normalizeActionAlias(command string, action string) string {
 			"ls":           "list",
 			"search":       "search",
 			"cache-status": "cache-status",
+			"download":     "download",
 			"get":          "get",
 			"save":         "save",
 		},
@@ -279,6 +308,12 @@ func normalizeActionAlias(command string, action string) string {
 			"ls":   "list",
 			"get":  "get",
 			"save": "save",
+		},
+		"task": {
+			"get":    "get",
+			"status": "status",
+			"show":   "status",
+			"cancel": "cancel",
 		},
 	}
 

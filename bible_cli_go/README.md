@@ -138,6 +138,10 @@ bible knowledge list
 # 检索知识库（--tag 必填，指定要查的知识索引分类）
 bible knowledge search --tag design "周期调度"
 bible knowledge search --tag flow "RLC AM 流程"
+
+# 导入知识库文件（异步提交；--wait 等待任务完成）
+bible knowledge import --file /path/to/design.md --kb-index my-kb --tag design
+bible knowledge import --file a.md --file b.md --kb-index my-kb --tag flow --wait
 ```
 
 ### Memory 命令
@@ -165,6 +169,13 @@ bible memory list --limit 20 --tag my-tag
 # 检索记忆
 bible memory search "调度算法" --top-k 10
 
+# 下载记忆产物（单文件）
+bible memory download --output /tmp/ <memory_id>
+bible memory download --storage-path /server/path/memory.zip --output /tmp/
+
+# 批量下载记忆产物（生成 ZIP）
+bible memory download --storage-path memory/a --storage-path memory/b --package-name memories.zip --include-metadata --output /tmp/
+
 # 查看本地上传缓存状态
 bible memory cache-status /path/to/base_dir
 
@@ -183,6 +194,15 @@ bible skills search "L2PS 调度" --top-k 5
 bible skills get <name_or_id> --content
 bible skills upload --file /path/to/skill.skill --kb-index my-kb --wait
 bible skills download <name_or_id> --output /tmp/
+bible skills download --storage-path skill/a.skill --storage-path skill/b.skill --package-name skills.zip --output /tmp/
+```
+
+### Task 命令
+
+```bash
+bible task get <task_id>
+bible task status <task_id>
+bible task cancel <task_id>
 ```
 
 ### 聚合搜索
@@ -295,6 +315,100 @@ go vet ./...
 
 所有测试完全自包含，使用 `httptest.NewServer` 模拟服务端，无需启动真实服务。
 
+### 插件和服务端未就绪时如何验证
+
+当前应采用 contract-first 验证方式：先证明 CLI 的命令解析、JSON 输出契约、HTTP 请求形状、错误映射和异步流程正确，不等待 VSCode 插件和真实服务端全部完成。
+
+推荐本地门禁：
+
+```bash
+go test ./...
+go vet ./...
+go build ./...
+```
+
+用 CLI 直接代替插件调试：
+
+```bash
+go build -o ./target/bible ./cmd/bible-cli/
+
+./target/bible health
+./target/bible knowledge import --file README.md --kb-index kb_test --tag design
+./target/bible knowledge search --tag design "test"
+./target/bible memory download --storage-path memory/a --storage-path memory/b --package-name memories.zip --output /tmp
+./target/bible task get task-123
+```
+
+插件侧未来只应依赖 stdout JSON 与 exit code：
+
+```json
+{"ok":true,"data":{"task_id":"task-123","status":"queued"}}
+{"ok":false,"error":{"code":"INVALID_ARGS","message":"--tag is required for knowledge search."}}
+```
+
+服务端未完成时，新增功能应使用 `httptest.NewServer` mock 服务端，并断言：
+
+- HTTP method/path 正确。
+- JSON body 或 multipart 字段正确。
+- 失败响应映射到正确 `error.code`。
+- import/download 的 submit -> task poll -> artifact download 流程能跑通。
+
+服务端和 Worker ready 后，再跑真实 E2E 冒烟：
+
+```bash
+export BIBLE_CLI_BASE_URL=http://127.0.0.1:5555
+
+./target/bible health
+./target/bible knowledge import --file README.md --kb-index kb_test --tag design --wait
+./target/bible knowledge search --tag design "test"
+./target/bible memory upload /path/to/session --kb-index kb_test --wait
+./target/bible memory search "test"
+./target/bible skills upload --file /path/to/demo.skill --kb-index kb_test --wait
+./target/bible task get <task_id>
+```
+
+如果 import/download 一直停在 `queued`，优先检查 Celery Worker 是否启动；不要在 CLI 中加入临时假逻辑绕过服务端。
+
+### 本地 mock Atlas server
+
+仓库内提供一个轻量测试服务器，便于在真实服务端和插件未完成时验证 CLI：
+
+```bash
+cd /var/fpwork/w77wang/BiBLE/rrmBIBLE/bibleV/bible_cli_go
+
+# 终端 1：启动 mock server
+go run ./cmd/bible-mock-server --addr 127.0.0.1:5555
+
+# 终端 2：编译并指向 mock server
+go build -o ./target/bible ./cmd/bible-cli/
+export BIBLE_CLI_BASE_URL=http://127.0.0.1:5555
+
+./target/bible health
+./target/bible system status
+./target/bible knowledge list
+./target/bible knowledge import --file README.md --kb-index kb_test --tag design --wait
+./target/bible knowledge search --tag design "test"
+./target/bible search --query "test" --knowledge-tag design --enable-hit
+./target/bible memory download --storage-path memory/a --storage-path memory/b --package-name memories.zip --output /tmp
+./target/bible skills download --storage-path skill/a.skill --storage-path skill/b.skill --package-name skills.zip --output /tmp
+./target/bible task get task-123
+./target/bible task cancel task-123
+```
+
+mock server 覆盖：
+
+- `/health`
+- `/api/v1/system/status`、`/api/v1/system/info`
+- `/api/control/docs/list`
+- `/api/search/knowledge-base`、`/api/search/memory`、`/api/search/skill`
+- `/api/import/knowledge-base`、`/api/import/memory`、`/api/import/skill`
+- `/api/download/{memory|skill}/file`
+- `/api/download/{memory|skill}/batch`
+- `/api/download/{memory|skill}/artifact/{artifact_id}`
+- `/api/control/admin/tasks/{task_id}` 的 `GET` / `DELETE`
+
+注意：这个 server 只用于 CLI 契约调试，不验证真实解析、向量化、OpenSearch、Celery Worker 或文件存储行为。
+
 ---
 
 ## API 端点映射（v4）
@@ -303,12 +417,17 @@ go vet ./...
 |---|---|---|
 | `memory upload` | POST multipart | `/api/import/memory` |
 | `skills upload` | POST multipart | `/api/import/skill` |
+| `knowledge import` | POST multipart | `/api/import/knowledge-base` |
 | `memory search` / `memory get` | POST JSON | `/api/search/memory` |
 | `skills search` / `skills get` | POST JSON | `/api/search/skill` |
 | `knowledge search` | POST JSON | `/api/search/knowledge-base` |
 | `knowledge list` | GET | `/api/control/docs/list` → fallback `/api/v1/knowledge/list` |
 | `skills download` | POST JSON | `/api/download/skill/file` |
-| `memory status` / `task poll` | GET | `/api/control/admin/tasks/{id}` |
+| `skills download` / `memory download` | POST JSON | `/api/download/{domain}/file` |
+| `skills download` / `memory download` batch | POST JSON | `/api/download/{domain}/batch` |
+| `skills download` / `memory download` artifact | GET | `/api/download/{domain}/artifact/{id}` |
+| `memory status` / `task get` | GET | `/api/control/admin/tasks/{id}` |
+| `task cancel` | DELETE | `/api/control/admin/tasks/{id}` |
 | `system status` | GET | `/api/v1/system/status` → fallback `/health` |
 | `health` | GET | `/health` |
 

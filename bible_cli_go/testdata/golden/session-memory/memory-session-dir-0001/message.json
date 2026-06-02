@@ -1,0 +1,48 @@
+{
+  "schema_version": "1.0",
+  "session_id": "memory_session_dir_0001",
+  "sourceClient": {
+    "kind": "bible_cli",
+    "sessionId": "memory_session_dir_0001"
+  },
+  "requests": [
+    {
+      "requestId": "req_0001",
+      "createdAt": "2026-06-01T06:30:00Z",
+      "message": {
+        "text": "Create a standard memory fixture for v4 memory import tests.",
+        "parts": [
+          {
+            "kind": "text",
+            "text": "Create a standard memory fixture for v4 memory import tests."
+          }
+        ]
+      },
+      "response": [
+        {
+          "kind": "textPart",
+          "value": "The fixture should contain meta.json as the semantic memory record and message.json as the preserved session attachment."
+        }
+      ]
+    },
+    {
+      "requestId": "req_0002",
+      "createdAt": "2026-06-01T06:42:00Z",
+      "message": {
+        "text": "Ensure the metadata includes task, feature, domain, and component tags.",
+        "parts": [
+          {
+            "kind": "text",
+            "text": "Ensure the metadata includes task, feature, domain, and component tags."
+          }
+        ]
+      },
+      "response": [
+        {
+          "kind": "textPart",
+          "value": "The meta.json file includes task_ids, feature_tags, domain_tags, component_tags, source_client, language, and ISO8601 timestamps."
+        }
+      ]
+    }
+  ]
+}

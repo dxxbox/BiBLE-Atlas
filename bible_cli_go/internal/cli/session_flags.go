@@ -28,7 +28,7 @@ func parseSessionListFlags(args []string, opts *commands.SessionCommandOptions) 
 	limitPtr := fs.Int("limit", 10, "Number of sessions to return")
 	uidPtr := fs.String("uid", "", "Filter by user ID (reserved)")
 
-	if err := fs.Parse(args); err != nil {
+	if err := parseFlagSet(fs, args); err != nil {
 		return protocol.CLIError{Code: "INVALID_ARGS", Message: err.Error(), ExitCode: 1}
 	}
 	if fs.NArg() > 0 {
@@ -44,7 +44,7 @@ func parseSessionGetFlags(args []string, opts *commands.SessionCommandOptions) e
 	fs.SetOutput(io.Discard)
 	idPtr := fs.String("id", "", "Session ID to retrieve")
 
-	if err := fs.Parse(args); err != nil {
+	if err := parseFlagSet(fs, args); err != nil {
 		return protocol.CLIError{Code: "INVALID_ARGS", Message: err.Error(), ExitCode: 1}
 	}
 	if fs.NArg() > 0 {
@@ -61,7 +61,7 @@ func parseSessionSaveFlags(args []string, opts *commands.SessionCommandOptions) 
 	kbIndexPtr := fs.String("kb-index", "", "Knowledge base index")
 	waitPtr := fs.Bool("wait", false, "Wait for async task to complete")
 
-	if err := fs.Parse(args); err != nil {
+	if err := parseFlagSet(fs, args); err != nil {
 		return protocol.CLIError{Code: "INVALID_ARGS", Message: err.Error(), ExitCode: 1}
 	}
 	if fs.NArg() > 0 {

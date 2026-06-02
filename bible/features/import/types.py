@@ -1,6 +1,8 @@
 from __future__ import annotations
+
 from dataclasses import dataclass
 from typing import Any, Literal
+
 
 @dataclass
 class MemoryImportPayload:
@@ -12,6 +14,7 @@ class MemoryImportPayload:
     parser_script_filename: str | None = None
     session_upload_dir: str | None = None
 
+
 @dataclass
 class FileStoreResult:
     filename: str
@@ -19,9 +22,9 @@ class FileStoreResult:
     file_hash: str
     size_bytes: int
 
+
 @dataclass
 class ParseResult:
     chunks: list[dict[str, Any]]
     search_profile: dict[str, Any]
     local_file_storage_plan: dict[str, Any] | None
-    

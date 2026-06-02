@@ -26,6 +26,8 @@ func parseMemoryFlags(action string, args []string, opts *commands.MemoryCommand
 		return parseMemorySearchFlags(args, opts)
 	case "cache-status":
 		return parseMemoryCacheStatusFlags(args, opts)
+	case "download":
+		return parseMemoryDownloadFlags(args, opts)
 	default:
 		// Unknown actions pass through; MemoryExecute will return NotImplemented.
 		return nil
@@ -44,7 +46,7 @@ func parseMemoryUploadFlags(args []string, opts *commands.MemoryCommandOptions) 
 	waitPtr := fs.Bool("wait", false, "Wait for async task to complete before exiting")
 	outputPtr := fs.String("output", "json", "Output format: json|table")
 
-	if err := fs.Parse(args); err != nil {
+	if err := parseFlagSet(fs, args); err != nil {
 		return protocol.CLIError{Code: "INVALID_ARGS", Message: err.Error(), ExitCode: 1}
 	}
 	if fs.NArg() < 1 {
@@ -74,7 +76,7 @@ func parseMemoryUploadAllFlags(args []string, opts *commands.MemoryCommandOption
 	waitPtr := fs.Bool("wait", false, "Wait for each task to complete before proceeding")
 	workersPtr := fs.Int("workers", 3, "Number of concurrent upload workers")
 
-	if err := fs.Parse(args); err != nil {
+	if err := parseFlagSet(fs, args); err != nil {
 		return protocol.CLIError{Code: "INVALID_ARGS", Message: err.Error(), ExitCode: 1}
 	}
 	if fs.NArg() < 1 {
@@ -99,7 +101,7 @@ func parseMemoryBuildMetaFlags(args []string, opts *commands.MemoryCommandOption
 	featureTagsPtr := fs.String("feature-tags", "", "Comma-separated feature tags")
 	domainTagsPtr := fs.String("domain-tags", "", "Comma-separated domain tags")
 
-	if err := fs.Parse(args); err != nil {
+	if err := parseFlagSet(fs, args); err != nil {
 		return protocol.CLIError{Code: "INVALID_ARGS", Message: err.Error(), ExitCode: 1}
 	}
 	if fs.NArg() < 1 {
@@ -121,7 +123,7 @@ func parseMemoryStatusFlags(args []string, opts *commands.MemoryCommandOptions) 
 	memoryIDPtr := fs.String("memory-id", "", "Look up task_id from local cache by memory_id")
 	cacheDirPtr := fs.String("cache-dir", "", "Session directory containing .bible-memory-cache.json")
 
-	if err := fs.Parse(args); err != nil {
+	if err := parseFlagSet(fs, args); err != nil {
 		return protocol.CLIError{Code: "INVALID_ARGS", Message: err.Error(), ExitCode: 1}
 	}
 	if fs.NArg() > 1 {
@@ -143,7 +145,7 @@ func parseMemoryListFlags(args []string, opts *commands.MemoryCommandOptions) er
 	tagPtr := fs.String("tag", "", "Filter by tag")
 	sincePtr := fs.String("since", "", "Filter by date (ISO 8601)")
 
-	if err := fs.Parse(args); err != nil {
+	if err := parseFlagSet(fs, args); err != nil {
 		return protocol.CLIError{Code: "INVALID_ARGS", Message: err.Error(), ExitCode: 1}
 	}
 	if fs.NArg() > 0 {
@@ -163,7 +165,7 @@ func parseMemorySearchFlags(args []string, opts *commands.MemoryCommandOptions) 
 	thresholdPtr := fs.Float64("threshold", 0.0, "Minimum similarity score threshold")
 	searchTypePtr := fs.String("search-type", "", "Search type: keyword|title|text|vector|hybrid")
 
-	if err := fs.Parse(args); err != nil {
+	if err := parseFlagSet(fs, args); err != nil {
 		return protocol.CLIError{Code: "INVALID_ARGS", Message: err.Error(), ExitCode: 1}
 	}
 	if fs.NArg() < 1 {
@@ -183,7 +185,7 @@ func parseMemoryCacheStatusFlags(args []string, opts *commands.MemoryCommandOpti
 	fs := flag.NewFlagSet("memory cache-status", flag.ContinueOnError)
 	fs.SetOutput(io.Discard)
 
-	if err := fs.Parse(args); err != nil {
+	if err := parseFlagSet(fs, args); err != nil {
 		return protocol.CLIError{Code: "INVALID_ARGS", Message: err.Error(), ExitCode: 1}
 	}
 	if fs.NArg() > 1 {
@@ -192,6 +194,35 @@ func parseMemoryCacheStatusFlags(args []string, opts *commands.MemoryCommandOpti
 	if fs.NArg() == 1 {
 		opts.BaseDir = fs.Arg(0)
 	}
+	return nil
+}
+
+func parseMemoryDownloadFlags(args []string, opts *commands.MemoryCommandOptions) error {
+	fs := flag.NewFlagSet("memory download", flag.ContinueOnError)
+	fs.SetOutput(io.Discard)
+	var storagePaths multiStringFlag
+	fs.Var(&storagePaths, "storage-path", "Server-side storage path of the memory artifact; repeat for batch download")
+	outputDirPtr := fs.String("output", "", "Local directory to save the downloaded memory artifact (default: ~/.bible/memory/)")
+	downloadNamePtr := fs.String("download-name", "", "Optional local download filename")
+	packageNamePtr := fs.String("package-name", "", "ZIP package name for batch download")
+	includeMetadataPtr := fs.Bool("include-metadata", false, "Include metadata manifest for batch download")
+	waitPtr := fs.Bool("wait", false, "Wait for download to complete")
+
+	if err := parseFlagSet(fs, args); err != nil {
+		return protocol.CLIError{Code: "INVALID_ARGS", Message: err.Error(), ExitCode: 1}
+	}
+	if fs.NArg() > 1 {
+		return protocol.CLIError{Code: "INVALID_ARGS", Message: "memory download accepts at most one positional argument (memory_id).", ExitCode: 1}
+	}
+	if fs.NArg() == 1 {
+		opts.MemoryID = fs.Arg(0)
+	}
+	opts.StoragePaths = storagePaths
+	opts.OutputDir = *outputDirPtr
+	opts.DownloadName = *downloadNamePtr
+	opts.PackageName = *packageNamePtr
+	opts.IncludeMetadata = *includeMetadataPtr
+	opts.Wait = *waitPtr
 	return nil
 }
 

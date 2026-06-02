@@ -6,6 +6,7 @@ import sys
 
 from bible.common.errors import DomainError, ErrorCode
 
+
 class SandboxRunner:
     def __init__(self, timeout_seconds: int = 60) -> None:
         self._timeout_seconds = timeout_seconds

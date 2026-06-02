@@ -28,4 +28,3 @@ def configure_celery_app(
     if worker_concurrency > 0:
         conf["worker_concurrency"] = worker_concurrency
     celery_app.conf.update(conf)
-

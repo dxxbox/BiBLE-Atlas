@@ -79,4 +79,3 @@ def _get_task_timeout_seconds(config: Any) -> int:
     if async_task_config is not None:
         return async_task_config.task_timeout_seconds
     return getattr(config.import_memory, "task_timeout_seconds", 0)
-

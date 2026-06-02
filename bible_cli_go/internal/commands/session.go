@@ -8,8 +8,8 @@ import (
 	"strings"
 	"time"
 
-	clienthttp "bible-cli-go/internal/client/http"
 	"bible-cli-go/internal/cache"
+	clienthttp "bible-cli-go/internal/client/http"
 	"bible-cli-go/internal/config"
 	"bible-cli-go/internal/meta"
 	"bible-cli-go/internal/protocol"
@@ -50,7 +50,7 @@ func sessionList(client *clienthttp.Client, opts SessionCommandOptions) (map[str
 		limit = 10
 	}
 	req := clienthttp.MemorySearchRequest{
-		Query:      "",
+		Query:      "*",
 		TopK:       limit,
 		SearchType: "title",
 	}
@@ -79,8 +79,8 @@ func sessionSave(client *clienthttp.Client, opts SessionCommandOptions, cfg conf
 	var input meta.SessionMessages
 	if err := json.Unmarshal([]byte(inputStr), &input); err != nil {
 		return nil, protocol.CLIError{
-			Code:    "INVALID_ARGS",
-			Message: "Invalid --input JSON: " + err.Error(),
+			Code:     "INVALID_ARGS",
+			Message:  "Invalid --input JSON: " + err.Error(),
 			ExitCode: 1,
 		}
 	}
@@ -125,8 +125,8 @@ func sessionSave(client *clienthttp.Client, opts SessionCommandOptions, cfg conf
 	kbIndex := resolveKbIndex(opts.KbIndex, cfg)
 	if kbIndex == "" {
 		return nil, protocol.CLIError{
-			Code:    "INVALID_ARGS",
-			Message: "kb_index is required. Provide --kb-index flag or set BIBLE_MEMORY_KB_INDEX environment variable.",
+			Code:     "INVALID_ARGS",
+			Message:  "kb_index is required. Provide --kb-index flag or set BIBLE_MEMORY_KB_INDEX environment variable.",
 			ExitCode: 1,
 		}
 	}

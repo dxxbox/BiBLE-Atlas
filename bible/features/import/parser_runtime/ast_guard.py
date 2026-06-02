@@ -7,6 +7,7 @@ from bible.common.errors import DomainError, ErrorCode
 FORBIDDEN_MODULES = {"os", "sys", "subprocess", "socket", "shutil", "importlib", "ctypes", "builtins"}
 FORBIDDEN_CALLS = {"eval", "exec", "compile", "__import__", "open"}
 
+
 class _ASTVisitor(ast.NodeVisitor):
     def __init__(self) -> None:
         self.violations: list[str] = []
@@ -35,6 +36,7 @@ class _ASTVisitor(ast.NodeVisitor):
         if name and name in FORBIDDEN_CALLS:
             self.violations.append(f"Forbidden call: {name}() (line {node.lineno})")
         self.generic_visit(node)
+
 
 class ASTGuard:
     def validate(self, script_path: str) -> None:

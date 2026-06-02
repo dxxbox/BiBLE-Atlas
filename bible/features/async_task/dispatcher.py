@@ -32,4 +32,3 @@ class AsyncTaskDispatcher:
 
     def registered_task_types(self) -> list[str]:
         return sorted(self._handlers)
-

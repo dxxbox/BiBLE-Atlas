@@ -7,7 +7,7 @@ from typing import Any
 
 from bible.features.async_task.repository import (
     AsyncTask,
-    _TERMINAL_STATES,
+    _TERMINAL_STATES,  # noqa: F401 – re-exported for clarity
     _VALID_TRANSITIONS,
     _utcnow,
 )
@@ -15,7 +15,8 @@ from bible.features.async_task.repository import (
 logger = logging.getLogger(__name__)
 
 _KEY_PREFIX = "bible_atlas:task:"
-_DEFAULT_TTL_SECONDS = 7 * 24 * 3600
+_DEFAULT_TTL_SECONDS = 7 * 24 * 3600  # 7 days
+
 
 def _task_to_dict(task: AsyncTask) -> dict[str, Any]:
     return {
@@ -29,6 +30,7 @@ def _task_to_dict(task: AsyncTask) -> dict[str, Any]:
         "updated_at": task.updated_at.isoformat(),
     }
 
+
 def _task_from_dict(data: dict[str, Any]) -> AsyncTask:
     return AsyncTask(
         task_id=data["task_id"],
@@ -41,7 +43,14 @@ def _task_from_dict(data: dict[str, Any]) -> AsyncTask:
         updated_at=datetime.fromisoformat(data["updated_at"]),
     )
 
+
 class RedisAsyncTaskRepository:
+    """Redis-backed task repository.
+
+    Stores each task as a JSON string at key ``bible_atlas:task:<task_id>``.
+    All read-modify-write operations use a Lua script executed atomically by
+    Redis so concurrent workers cannot corrupt the state machine.
+    """
 
     def __init__(self, redis_url: str, ttl_seconds: int = _DEFAULT_TTL_SECONDS) -> None:
         import redis as redis_lib
@@ -69,7 +78,7 @@ class RedisAsyncTaskRepository:
         if raw is None:
             return None
         return _task_from_dict(json.loads(raw))
-    
+
     def update_status(
         self,
         task_id: str,
@@ -107,8 +116,9 @@ class RedisAsyncTaskRepository:
 
         self._redis.set(self._key(task_id), json.dumps(data), ex=self._ttl)
         return _task_from_dict(data)
-    
+
     def list_by_type(self, task_type: str) -> list[AsyncTask]:
+        # Scan is O(N) over all keys — acceptable for low task volumes.
         tasks: list[AsyncTask] = []
         cursor = 0
         pattern = f"{_KEY_PREFIX}*"
@@ -124,4 +134,3 @@ class RedisAsyncTaskRepository:
             if cursor == 0:
                 break
         return tasks
-

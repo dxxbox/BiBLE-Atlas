@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+
 def build_search_profile() -> dict:
     return {
         "tag": "memory",

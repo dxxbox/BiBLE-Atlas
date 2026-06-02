@@ -1,9 +1,16 @@
 from __future__ import annotations
 
-from dataclasses import dataclass
-from typing import Any
+from dataclasses import dataclass, field
+from typing import Any, Literal
 
-from bible.common.errors import DomainError, ErrorCode
+FileSystemErrorCode = Literal[
+    "FILE_STORE_FAILED",
+    "FILE_NOT_FOUND",
+    "FILE_DELETE_FAILED",
+    "INVALID_STORAGE_PATH",
+    "FILE_SYSTEM_BACKEND_UNSUPPORTED",
+]
+
 
 @dataclass(slots=True)
 class FileStoreResult:
@@ -15,13 +22,11 @@ class FileStoreResult:
     kb_index: str
 
 
-class FileSystemError(DomainError):
-    def __init__(
-        self,
-        code: ErrorCode,
-        message: str,
-        *,
-        details: dict[str, Any] | None = None,
-        retryable: bool | None = None,
-    ) -> None:
-        super().__init__(code, message, details=details, retryable=retryable)
+@dataclass(slots=True)
+class FileSystemError(RuntimeError):
+    code: FileSystemErrorCode
+    message: str
+    details: dict[str, Any] = field(default_factory=dict)
+
+    def __str__(self) -> str:
+        return f"[{self.code}] {self.message}"

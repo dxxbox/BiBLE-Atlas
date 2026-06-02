@@ -1,5 +1,49 @@
 # bible_cli_go v4 对齐实现计划
 
+> 当前状态（2026-05-20）：本文原始 Step 1-4 已完成，并在后续补齐了 `knowledge import`、`memory download` 单文件/批量下载、通用 `task get/status/cancel`、`memory list`/`skills list` 参数透传与相关测试。下方原计划保留为历史背景；继续开发应以本节和 `STATUS_AND_ROADMAP.md` 为准。
+
+## 0. 当前完成状态
+
+### 0.1 已对齐 / 已实现
+
+| 能力 | 状态 |
+|---|---|
+| `Search()` hit helpers 复用 v4 `SkillSearch()` / `MemorySearch()` | ✅ 已完成 |
+| `KnowledgeSearch()` 迁移到 `POST /api/search/knowledge-base` | ✅ 已完成 |
+| `knowledge search --tag` | ✅ 已完成 |
+| 顶层 `search --knowledge-tag` | ✅ 已完成 |
+| `KnowledgeList()` 优先 `/api/control/docs/list`，404 fallback `/api/v1/knowledge/list` | ✅ 已完成 |
+| `memory get/save` 与 `session` deprecated 兼容 | ✅ 已完成 |
+| `knowledge import` | ✅ 已完成，`POST /api/import/knowledge-base` |
+| `memory download` 单文件 | ✅ 已完成，`POST /api/download/memory/file` |
+| `memory download` 批量 | ✅ 已完成，`POST /api/download/memory/batch` |
+| `skills download` 批量 | ✅ 已完成，`POST /api/download/skill/batch` |
+| `task get/status/cancel` | ✅ 已完成，`GET/DELETE /api/control/admin/tasks/{id}` |
+| `memory list --page/--tag/--since` 请求体透传 | ✅ 已完成 |
+| `skills list --page/--tag` 请求体透传 | ✅ 已完成 |
+
+### 0.2 当前剩余事项
+
+| 项目 | 说明 |
+|---|---|
+| 真实 Atlas E2E 冒烟 | 需要实际服务端 + Worker，覆盖 import → task → search → download |
+| `Download by-search` | v4 文档标注为未来演进，当前不属于既定完成范围 |
+| `memory upload --output table` | 与统一 JSON 输出契约冲突，建议暂不实现，除非后续设计明确交互输出模式 |
+
+### 0.3 当前验证命令
+
+```bash
+go test ./...
+go vet ./...
+go build ./...
+```
+
+完整构建可执行：
+
+```bash
+./build.sh
+```
+
 ## 1. 当前状态分析
 
 ### 1.1 已对齐 v4 的端点

@@ -1,60 +1,100 @@
+"""Centralised FastAPI dependency providers for the bible API layer.
+
+All ``Depends(...)`` callables live here so that:
+  - Multiple API modules (knowledge-base / skill / memory search) can share
+    the same provider functions without duplication.
+  - Unit tests can override any provider via ``app.dependency_overrides``
+    without patching module-level globals.
+
+Lifecycle note
+--------------
+Each provider is a plain function (not a generator / context-manager), so
+FastAPI calls it once per request.  The config singleton returned by
+``get_bible_atlas_config()`` is cached at the application level, making
+repeated calls cheap.
+"""
+
 from __future__ import annotations
 
-from functools import lru_cache
-
-from bible.config.configure import BibleAtlasConfig, SearchConfig, get_bible_atlas_config
-from bible.infrastructure.database import DatabaseFactory
-from bible.infrastructure.file_system import FileSystemFactory
+from bible.config.configure import SearchConfig, get_bible_atlas_config
 
 
-def get_config() -> BibleAtlasConfig:
+def get_config():
+    """Return the application-wide BibleAtlasConfig."""
     return get_bible_atlas_config()
 
 
-def get_search_cfg(config: BibleAtlasConfig | None = None) -> SearchConfig:
-    return (config or get_config()).search
+def get_search_cfg() -> SearchConfig:
+    """Return the ``search`` section of the application config.
+
+    Falls back to default SearchConfig values when no config file is present
+    (e.g. in unit-test environments that only test the API layer).
+    """
+    try:
+        return get_bible_atlas_config().search
+    except Exception:
+        return SearchConfig()
 
 
-@lru_cache(maxsize=1)
-def _get_database_factory_cached() -> DatabaseFactory:
-    return DatabaseFactory(get_config())
+def get_database_factory():
+    """Return a DatabaseFactory wired to the current config."""
+    from bible.infrastructure.database.factory import DatabaseFactory
+
+    cfg = get_bible_atlas_config()
+    return DatabaseFactory(cfg)
 
 
-@lru_cache(maxsize=1)
-def _get_file_system_factory_cached() -> FileSystemFactory:
-    return FileSystemFactory(get_config())
+def get_vector_tool():
+    """Return a VectorTool wired to the current config paths."""
+    from bible.infrastructure.vector.vector_tool import VectorTool
 
-
-def get_database_factory() -> DatabaseFactory:
-    return _get_database_factory_cached()
-
-
-def get_file_system_factory() -> FileSystemFactory:
-    return _get_file_system_factory_cached()
-
-
-def get_file_system_gateway():
-    return get_file_system_factory().get_gateway()
-
-
-def get_kb_search_service():
-    from bible.features.search.knowledge_base_search.knowledge_base_search_service import (
-        KnowledgeBaseSearchService,
+    cfg = get_bible_atlas_config()
+    return VectorTool(
+        workspace_dir=cfg.storage.workspace_dir,
+        hf_cache_dir=cfg.vector.hf_cache_dir,
     )
-
-    return KnowledgeBaseSearchService(database_factory=get_database_factory(), search_config=get_search_cfg())
 
 
 def get_memory_search_service():
+    """Build and return a MemorySearchService for the current request."""
     from bible.features.search.memory_search.memory_search_service import MemorySearchService
+    from bible.infrastructure.database.factory import DatabaseFactory
+    from bible.infrastructure.vector.vector_tool import VectorTool
 
-    return MemorySearchService(database_factory=get_database_factory(), search_config=get_search_cfg())
+    cfg = get_bible_atlas_config()
+    db_factory = DatabaseFactory(cfg)
+    vector_tool = VectorTool(
+        workspace_dir=cfg.storage.workspace_dir,
+        hf_cache_dir=cfg.vector.hf_cache_dir,
+    )
+    return MemorySearchService(
+        db_factory=db_factory,
+        vector_tool=vector_tool,
+        search_cfg=cfg.search,
+    )
 
 
-def reset_infrastructure_dependencies() -> None:
-    if _get_database_factory_cached.cache_info().currsize:
-        _get_database_factory_cached().reset()
-    if _get_file_system_factory_cached.cache_info().currsize:
-        _get_file_system_factory_cached().reset()
-    _get_database_factory_cached.cache_clear()
-    _get_file_system_factory_cached.cache_clear()
+def get_kb_search_service():
+    """Build and return a KnowledgeBaseSearchService for the current request.
+
+    Constructs DatabaseFactory and VectorTool from live config so that
+    the service is fully wired to real infrastructure in production, but
+    can be replaced wholesale via ``app.dependency_overrides`` in tests.
+    """
+    from bible.features.search.knowledge_base_search.knowledge_base_search_service import (
+        KnowledgeBaseSearchService,
+    )
+    from bible.infrastructure.database.factory import DatabaseFactory
+    from bible.infrastructure.vector.vector_tool import VectorTool
+
+    cfg = get_bible_atlas_config()
+    db_factory = DatabaseFactory(cfg)
+    vector_tool = VectorTool(
+        workspace_dir=cfg.storage.workspace_dir,
+        hf_cache_dir=cfg.vector.hf_cache_dir,
+    )
+    return KnowledgeBaseSearchService(
+        db_factory=db_factory,
+        vector_tool=vector_tool,
+        search_cfg=cfg.search,
+    )

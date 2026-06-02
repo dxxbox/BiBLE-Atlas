@@ -9,6 +9,7 @@ from bible.features.async_task.repository import AsyncTask, AsyncTaskRepository
 
 logger = get_logger(__name__)
 
+
 class AsyncTaskService:
     def __init__(
         self,
@@ -52,18 +53,20 @@ class AsyncTaskService:
         if task is None:
             return None
         return self._task_to_dict(task)
-    
+
     def cancel(self, task_id: str) -> dict[str, Any]:
         task = self._repository.get(task_id)
         if task is None:
             raise KeyError(f"Task {task_id!r} not found")
         if task.status == "queued":
+            # Revoke the task so the worker skips it, then mark as cancelled in the repository.
             celery_app.control.revoke(task_id)
             self._repository.update_status(task_id, "cancelled")
         elif task.status == "running":
+            # Best-effort termination; the task will transition to failed via the worker.
             celery_app.control.revoke(task_id, terminate=True, signal="SIGTERM")
         task = self._repository.get(task_id)
-        return self._task_to_dict(task)
+        return self._task_to_dict(task)  # type: ignore[arg-type]
 
     @staticmethod
     def _task_to_dict(task: AsyncTask) -> dict[str, Any]:
@@ -75,4 +78,4 @@ class AsyncTaskService:
             "error": task.error,
             "created_at": task.created_at.isoformat(),
             "updated_at": task.updated_at.isoformat(),
-        }        
+        }

@@ -33,7 +33,7 @@ func parseSkillsListFlags(args []string, opts *commands.SkillsCommandOptions) er
 	limitPtr := fs.Int("limit", 20, "Number of results (maps to top_k)")
 	tagPtr := fs.String("tag", "", "Filter by tag")
 
-	if err := fs.Parse(args); err != nil {
+	if err := parseFlagSet(fs, args); err != nil {
 		return protocol.CLIError{Code: "INVALID_ARGS", Message: err.Error(), ExitCode: 1}
 	}
 	if fs.NArg() > 0 {
@@ -52,7 +52,7 @@ func parseSkillsSearchFlags(args []string, opts *commands.SkillsCommandOptions) 
 	thresholdPtr := fs.Float64("threshold", 0.0, "Minimum score threshold (client-side filter)")
 	tagPtr := fs.String("tag", "", "Filter by tag")
 
-	if err := fs.Parse(args); err != nil {
+	if err := parseFlagSet(fs, args); err != nil {
 		return protocol.CLIError{Code: "INVALID_ARGS", Message: err.Error(), ExitCode: 1}
 	}
 	if fs.NArg() < 1 {
@@ -73,7 +73,7 @@ func parseSkillsGetFlags(args []string, opts *commands.SkillsCommandOptions) err
 	fs.SetOutput(io.Discard)
 	contentPtr := fs.Bool("content", false, "Include skill body/content in response")
 
-	if err := fs.Parse(args); err != nil {
+	if err := parseFlagSet(fs, args); err != nil {
 		return protocol.CLIError{Code: "INVALID_ARGS", Message: err.Error(), ExitCode: 1}
 	}
 	if fs.NArg() < 1 {
@@ -90,12 +90,12 @@ func parseSkillsGetFlags(args []string, opts *commands.SkillsCommandOptions) err
 func parseSkillsUploadFlags(args []string, opts *commands.SkillsCommandOptions) error {
 	fs := flag.NewFlagSet("skills upload", flag.ContinueOnError)
 	fs.SetOutput(io.Discard)
-	filePtr := fs.String("file", "", "Absolute path to .skill package file")
+	filePtr := fs.String("file", "", "Path to .skill package file or skill directory")
 	kbIndexPtr := fs.String("kb-index", "", "Knowledge base index")
 	vectorModelPtr := fs.String("vector-model", "", "Vector model override")
 	waitPtr := fs.Bool("wait", false, "Wait for async task to complete")
 
-	if err := fs.Parse(args); err != nil {
+	if err := parseFlagSet(fs, args); err != nil {
 		return protocol.CLIError{Code: "INVALID_ARGS", Message: err.Error(), ExitCode: 1}
 	}
 	if fs.NArg() > 0 {
@@ -111,11 +111,14 @@ func parseSkillsUploadFlags(args []string, opts *commands.SkillsCommandOptions) 
 func parseSkillsDownloadFlags(args []string, opts *commands.SkillsCommandOptions) error {
 	fs := flag.NewFlagSet("skills download", flag.ContinueOnError)
 	fs.SetOutput(io.Discard)
-	storagePathPtr := fs.String("storage-path", "", "Server-side storage path of the skill")
+	var storagePaths multiStringFlag
+	fs.Var(&storagePaths, "storage-path", "Server-side storage path of the skill; repeat for batch download")
 	outputDirPtr := fs.String("output", "", "Local directory to save the downloaded skill (default: ~/.claude/skills/)")
+	packageNamePtr := fs.String("package-name", "", "ZIP package name for batch download")
+	includeMetadataPtr := fs.Bool("include-metadata", false, "Include metadata manifest for batch download")
 	waitPtr := fs.Bool("wait", false, "Wait for download to complete")
 
-	if err := fs.Parse(args); err != nil {
+	if err := parseFlagSet(fs, args); err != nil {
 		return protocol.CLIError{Code: "INVALID_ARGS", Message: err.Error(), ExitCode: 1}
 	}
 	if fs.NArg() > 1 {
@@ -124,8 +127,10 @@ func parseSkillsDownloadFlags(args []string, opts *commands.SkillsCommandOptions
 	if fs.NArg() == 1 {
 		opts.Name = fs.Arg(0)
 	}
-	opts.StoragePath = *storagePathPtr
+	opts.StoragePaths = storagePaths
 	opts.OutputDir = *outputDirPtr
+	opts.PackageName = *packageNamePtr
+	opts.IncludeMetadata = *includeMetadataPtr
 	opts.Wait = *waitPtr
 	return nil
 }

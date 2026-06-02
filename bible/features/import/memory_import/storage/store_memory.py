@@ -19,8 +19,10 @@ logger = get_logger(__name__)
 
 _DOMAIN = "MEMORY"
 
+
 def _sha256_of_bytes(data: bytes) -> str:
     return hashlib.sha256(data).hexdigest()
+
 
 class StoreMemory:
     def __init__(self, workspace_dir: str, config: Any = None) -> None:
@@ -50,7 +52,10 @@ class StoreMemory:
                 workspace_dir=workspace_dir,
                 hf_cache_dir=self._hf_cache_dir,
             )
-        pass
+
+    # -------------------------------------------------------------------------
+    # Public API
+    # -------------------------------------------------------------------------
 
     def stage_upload_files(self, files: list[Any], task_id: str) -> list[dict[str, Any]]:
         staged_dir = os.path.join(self._import_work_root, task_id, "staged")
@@ -142,7 +147,6 @@ class StoreMemory:
             )
         return results
 
-
     def build_parse_manifest(
         self,
         staged_files: list[dict[str, Any]],
@@ -163,7 +167,6 @@ class StoreMemory:
         with open(manifest_path, "w", encoding="utf-8") as f:
             json.dump(manifest, f, ensure_ascii=False, indent=2)
         return manifest_path
-
 
     def store(
         self,
@@ -222,7 +225,6 @@ class StoreMemory:
             shutil.rmtree(task_dir, ignore_errors=True)
             logger.debug("Cleaned up workspace for task %s", task_id)
 
-
     def sweep_expired_task_workspaces(self, ttl_hours: int = 24, limit: int = 1000) -> int:
         cutoff = time.time() - ttl_hours * 3600
         deleted = 0
@@ -240,6 +242,10 @@ class StoreMemory:
                     shutil.rmtree(entry.path, ignore_errors=True)
                     deleted += 1
         return deleted
+
+    # -------------------------------------------------------------------------
+    # Private helpers
+    # -------------------------------------------------------------------------
 
     def _read_file_obj(self, file_obj: Any, idx: int) -> tuple[str, bytes]:
         """Extract (filename, bytes) from a FastAPI UploadFile-like or dict-like object."""
@@ -344,8 +350,16 @@ class StoreMemory:
         writer = self._db_factory.get_writer(_DOMAIN)
         existing = writer.get_binding_by_domain_index(_DOMAIN, kb_index)
 
+        # If binding exists but has a null vector_model while the current import
+        # specifies one, the binding is stale (created before a model was chosen).
+        # Deactivate it and recreate with the correct vector_model so that
+        # subsequent searches use the right embedding model.
         if existing is not None:
             if existing.vector_model is None and vector_model is not None:
+                # Binding exists but was created without a vector model. Update it
+                # in-place using a Painless script rather than deactivate + re-create:
+                # deactivate only marks is_active=false without deleting the document,
+                # so a subsequent create with op_type="create" would raise ConflictError.
                 logger.info(
                     "Binding for kb_index=%s has vector_model=null; "
                     "upgrading to vector_model=%s",
@@ -365,6 +379,7 @@ class StoreMemory:
                     created_at=existing.created_at,
                 )
             return existing
+
         now = datetime.now(timezone.utc).isoformat()
         search_profile_json = json.dumps(search_profile, ensure_ascii=False, sort_keys=True)
         search_profile_sha256 = hashlib.sha256(search_profile_json.encode()).hexdigest()
@@ -391,7 +406,7 @@ class StoreMemory:
             search_profile_sha256=search_profile_sha256,
             created_at=now,
         )
-    
+
     def _vectorize_if_needed(
         self,
         chunks: list[dict[str, Any]],

@@ -1,3 +1,15 @@
+"""MEMORY Search API — POST /api/search/memory.
+
+PUML responsibilities (memory_search_flow, steps 48-69):
+  1. Parse JSON body.
+  2. Read search.default_top_k / search.max_top_k from config.
+  3. validate_request(): query non-empty, search_type in allowed,
+     1 <= top_k <= max_top_k, 0 <= vector_weight <= 1.
+  4. Validate tag == "memory" (case-sensitive) → TAG_INVALID.
+  5. Delegate to MemorySearchService.search().
+  6. Map Service-layer exceptions to HTTP status codes (via search errors module).
+"""
+
 from __future__ import annotations
 
 import logging
@@ -16,6 +28,10 @@ logger = logging.getLogger(__name__)
 router = APIRouter()
 
 _REQUIRED_TAG = "memory"
+
+
+# ── Request model ──────────────────────────────────────────────────────────────
+
 
 class MemorySearchRequest(BaseModel):
     """Request body for POST /api/search/memory."""
@@ -57,6 +73,8 @@ class MemorySearchRequest(BaseModel):
         return v
 
 
+# ── Route ──────────────────────────────────────────────────────────────────────
+
 
 @router.post(
     "/api/search/memory",
@@ -69,11 +87,14 @@ async def search_memory(
     search_cfg: SearchConfig = Depends(get_search_cfg),
     svc: MemorySearchService = Depends(get_memory_search_service),
 ) -> JSONResponse:
+    """Execute a MEMORY search and return ranked results."""
 
+    # ── validate_request() — business rules beyond Pydantic constraints ───
     _validate_search_type(body.search_type, search_cfg)
     _validate_top_k(body.top_k, search_cfg)
     _validate_tag(body.tag)
 
+    # ── Call service, map exceptions via shared error contract ────────────
     try:
         result = svc.search(
             query=body.query,
@@ -91,6 +112,10 @@ async def search_memory(
 
     return JSONResponse(status_code=200, content=result)
 
+
+# ── Validation helpers ─────────────────────────────────────────────────────────
+
+
 def _validate_search_type(search_type: str | None, cfg: SearchConfig) -> None:
     if search_type is None:
         return
@@ -106,6 +131,7 @@ def _validate_search_type(search_type: str | None, cfg: SearchConfig) -> None:
             },
         )
 
+
 def _validate_top_k(top_k: int | None, cfg: SearchConfig) -> None:
     if top_k is None:
         return
@@ -117,6 +143,7 @@ def _validate_top_k(top_k: int | None, cfg: SearchConfig) -> None:
                 "message": f"top_k={top_k} exceeds max_top_k={cfg.max_top_k}.",
             },
         )
+
 
 def _validate_tag(tag: str) -> None:
     """Enforce that tag == 'memory' (case-sensitive)."""

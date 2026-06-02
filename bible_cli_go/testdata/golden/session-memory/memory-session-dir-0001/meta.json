@@ -1,0 +1,9 @@
+{
+  "memory_id": "mem_memory_session_dir_0001",
+  "title": "Create a standard memory fixture for v4 memory import tests.",
+  "abstract": "Create a standard memory fixture for v4 memory import tests.",
+  "created_at": "2026-06-01T06:30:00Z",
+  "updated_at": "2026-06-01T07:08:58Z",
+  "source_client": "bible_cli",
+  "language": "zh"
+}

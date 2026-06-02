@@ -1,3 +1,8 @@
+"""QueryProfileCompiler — translates a search_profile dict + runtime params into OpenSearch DSL.
+
+Supported search_type values: keyword | title | text | vector | hybrid
+"""
+
 from __future__ import annotations
 
 from typing import Any
@@ -13,8 +18,13 @@ class SearchProfileInvalidError(ValueError):
         super().__init__(reason)
         self.reason = reason
 
+
 class QueryProfileCompiler:
     """Stateless compiler: call :meth:`compile` for each request."""
+
+    # ------------------------------------------------------------------ #
+    # Public interface                                                     #
+    # ------------------------------------------------------------------ #
 
     def compile(
         self,
@@ -26,6 +36,39 @@ class QueryProfileCompiler:
         vector_weight: float | None = None,
         query_vector: list[float] | None = None,
     ) -> tuple[dict[str, Any], list[str]]:
+        """Compile *search_profile* + runtime params into ``(dsl, response_fields)``.
+
+        Parameters
+        ----------
+        search_type:
+            One of ``keyword``, ``title``, ``text``, ``vector``, ``hybrid``.
+        query:
+            Raw user query string.
+        top_k:
+            Maximum number of hits to return.
+        search_profile:
+            Binding-level profile dict.  The top-level key
+            ``search_type_profile`` is the canonical wrapper; a flat profile
+            (keys directly present at the top level) is also accepted for
+            backwards compatibility.
+        vector_weight:
+            BM25 vs. kNN balance for ``hybrid`` (0 < w ≤ 1; higher means more
+            kNN).  Falls back to ``default_vector_weight`` from the profile.
+        query_vector:
+            Pre-computed dense vector for ``vector`` / ``hybrid`` searches.
+            Must be provided when ``search_type`` is ``vector`` or ``hybrid``.
+
+        Returns
+        -------
+        tuple[dict[str, Any], list[str]]
+            ``(opensearch_dsl, response_fields)``
+
+        Raises
+        ------
+        SearchProfileInvalidError
+            When the profile cannot be compiled (e.g. missing fields, missing
+            ``query_vector`` for vector/hybrid, disabled search type).
+        """
         stp = self._extract_type_profile(search_type, search_profile)
         response_fields: list[str] = search_profile.get("response_fields", [])
 
@@ -46,6 +89,10 @@ class QueryProfileCompiler:
             )
 
         return dsl, response_fields
+
+    # ------------------------------------------------------------------ #
+    # Per-type compilers                                                   #
+    # ------------------------------------------------------------------ #
 
     def _compile_keyword(
         self, query: str, top_k: int, profile: dict[str, Any]
@@ -69,8 +116,7 @@ class QueryProfileCompiler:
         query_clause = (
             {"bool": {"should": clauses}} if len(clauses) > 1 else clauses[0]
         )
-        return {"size": top_k, "query": query_clause}   
-
+        return {"size": top_k, "query": query_clause}
 
     def _compile_title(
         self, query: str, top_k: int, profile: dict[str, Any]
@@ -172,6 +218,9 @@ class QueryProfileCompiler:
         )
         text_weight = round(1.0 - vw, 6)
 
+        # Resolve the sub-profiles used for text and vector arms.
+        # For hybrid we fall back to reasonable defaults when the explicit
+        # keyword/text/vector profiles are absent.
         vector_field: str | None = profile.get("vector_field")
         if not vector_field:
             raise SearchProfileInvalidError(
@@ -233,10 +282,19 @@ class QueryProfileCompiler:
                 }
             },
         }
-    
+
+    # ------------------------------------------------------------------ #
+    # Helpers                                                              #
+    # ------------------------------------------------------------------ #
+
     def _extract_type_profile(
         self, search_type: str, search_profile: dict[str, Any]
     ) -> dict[str, Any]:
+        """Return the sub-profile dict for *search_type*.
+
+        Supports both the canonical ``search_type_profile`` wrapper and the
+        flat (legacy) form where type keys live at the top level.
+        """
         wrapper = search_profile.get("search_type_profile")
         if wrapper is not None:
             # Canonical wrapped form
@@ -253,4 +311,3 @@ class QueryProfileCompiler:
 
         # Flat form: the top-level profile IS the type-specific dict
         return search_profile
-

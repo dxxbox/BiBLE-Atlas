@@ -1,3 +1,37 @@
+"""MemorySearcher — executes a single MEMORY domain search request.
+
+Orchestration order (per PUML memory_search_flow, steps 94-135):
+  1. (vector / hybrid only) ensure_model_ready → embed_query   (VectorTool)
+  2. compile DSL                                                (QueryProfileCompiler)
+  3. search_content_docs                                        (IDatabaseWriter)
+  4. map_hits → return result dict
+
+MEMORY-specific field conventions
+----------------------------------
+* ``keyword`` search targets **multiple** term fields:
+  ``memory_id.keyword``, ``task_ids.keyword``, ``feature_tags.keyword``,
+  ``domain_tags.keyword``, ``component_tags.keyword``.
+  The :class:`QueryProfileCompiler` produces a ``bool.should + term``
+  clause when ``term_fields`` contains more than one entry.
+
+* ``text`` search spans four fields: ``title``, ``abstract``, ``overview``,
+  ``content``.
+
+* ``vector`` / ``hybrid`` embed the query and use ``content_vector``.
+
+* Hit mapping (dot-path resolution, exclusions, score sourcing) is handled
+  by :func:`bible.features.search.common.hit_mapper.map_hits`.
+
+Important — hybrid profile completeness
+----------------------------------------
+The MEMORY binding's ``search_profile_json["search_type_profile"]["hybrid"]``
+**must** include ``vector_field`` (e.g. ``"content_vector"``),
+``num_candidates_min``, ``num_candidates_multiplier``, and ``fields``.
+The :class:`QueryProfileCompiler` raises :class:`SearchProfileInvalidError`
+if ``vector_field`` is absent.  See memory_search_v4_tasks.md §2 for the
+recommended complete profile.
+"""
+
 from __future__ import annotations
 
 import logging
@@ -9,6 +43,8 @@ from bible.features.search.common.query_profile_compiler import (
     SearchProfileInvalidError,
 )
 
+# SearchInternalError is shared across all search domains.
+# Reuse the definition from the KB searcher module (see task-doc §4).
 from bible.features.search.knowledge_base_search.searcher.search_knowledge_base import (
     SearchInternalError,
 )
@@ -46,7 +82,10 @@ class MemorySearcher:
         self._db_writer = db_writer
         self._vector_tool = vector_tool
         self._compiler = compiler or QueryProfileCompiler()
-        pass
+
+    # ------------------------------------------------------------------ #
+    # Public interface                                                     #
+    # ------------------------------------------------------------------ #
 
     def search(
         self,
@@ -97,7 +136,7 @@ class MemorySearcher:
             Wraps database or embedding failures.
             Maps to HTTP 500 at the API layer.
         """
-
+        # ── Step 1: vector embedding (vector / hybrid only) ───────────────
         query_vector: list[float] | None = None
         if search_type in _VECTOR_TYPES:
             if not vector_model:
@@ -118,6 +157,8 @@ class MemorySearcher:
                     "Vector embedding failed: %s" % exc
                 ) from exc
 
+        # ── Step 2: compile DSL ───────────────────────────────────────────
+        # SearchProfileInvalidError propagates to the API layer → HTTP 422.
         dsl, response_fields = self._compiler.compile(
             search_type=search_type,
             query=query,
@@ -127,6 +168,7 @@ class MemorySearcher:
             query_vector=query_vector,
         )
 
+        # ── Step 3: execute search ────────────────────────────────────────
         try:
             raw = self._db_writer.search_content_docs(index=kb_index, dsl=dsl)
         except Exception as exc:
@@ -139,9 +181,10 @@ class MemorySearcher:
                 "Database search failed: %s" % exc
             ) from exc
 
+        # ── Step 4: map hits ──────────────────────────────────────────────
         items = _map_hits_fn(raw.get("hits", []), response_fields)
         return {
             "kb_index": kb_index,
             "total": raw.get("total", len(items)),
             "items": items,
-        }                
+        }

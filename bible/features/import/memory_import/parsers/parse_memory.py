@@ -1,18 +1,15 @@
 #!/usr/bin/env python3
-"""
-Memory import parser entry point.
+"""parse_memory.py — MEMORY import parser entry point.
 
-Invocation by SandboxRunner
+Invocation (by SandboxRunner):
+    python parse_memory.py --manifest <manifest_path> [--context <json_string>]
 
-python parser_memory.py --manifest <manifest_path> [--context <json_string>]
+Prints a single JSON object to stdout:
+    { "chunks": [...], "search_profile": {...}, "local_file_storage_plan": {...} }
 
-Prints a single JSON object to stdout, such as:
-{"chunks":[...], "search_profile":{...}, "local_file_storage_plan":{...}}
-
-Exit Code:
-0 Success
-1 validation or runtime error (error message on stderr)
-
+Exit codes:
+    0  success
+    1  validation or runtime error (error message on stderr)
 """
 from __future__ import annotations
 
@@ -21,11 +18,13 @@ import json
 import os
 import sys
 
+
 def _setup_path() -> None:
     """Add this script's directory to sys.path so the memory_parser package is importable."""
     script_dir = os.path.dirname(os.path.abspath(__file__))
     if script_dir not in sys.path:
         sys.path.insert(0, script_dir)
+
 
 def main() -> None:
     _setup_path()
@@ -51,6 +50,7 @@ def main() -> None:
         sys.exit(1)
 
     print(json.dumps(result, ensure_ascii=False))
+
 
 if __name__ == "__main__":
     main()

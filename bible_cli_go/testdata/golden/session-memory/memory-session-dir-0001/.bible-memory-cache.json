@@ -1,0 +1,9 @@
+{
+  "memory_id": "mem_memory_session_dir_0001",
+  "kb_index": "8148-A",
+  "meta_hash": "sha256:9b02c50f1051665c3069b1804dbb60eb0b1fc9aa48f9c2d47f7ee806784bceb8",
+  "task_id": "import_memory_builtin",
+  "upload_status": "completed",
+  "uploaded_at": "2026-06-01T07:01:47Z",
+  "server_url": "http://127.0.0.1:5555"
+}

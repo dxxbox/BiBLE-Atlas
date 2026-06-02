@@ -221,6 +221,9 @@ func BuildMessageJSONFromMessages(sessionID string, msgs []Message) ([]byte, err
 		}
 	}
 
+	// "bible_cli" 是协议层的来源工具标识符（对应服务端 source_client 字段），
+	// 与实现语言无关，Python CLI 和 Go CLI 均使用此标识以保持历史数据连续性。
+	// 不应随目录重命名而修改，否则会导致 OpenSearch 中新旧 memory 的 source_client 分裂。
 	doc := map[string]any{
 		"schema_version": "1.0",
 		"session_id":     sessionID,

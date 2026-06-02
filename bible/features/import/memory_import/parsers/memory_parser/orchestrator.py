@@ -1,8 +1,9 @@
 from __future__ import annotations
+
 from typing import Any
 
 from .chunk_builder import build_single_memory_chunk
-from .file_classifer import split_meta_and_attachments
+from .file_classifier import split_meta_and_attachments
 from .manifest_loader import load_manifest
 from .meta_parser import parse_meta
 from .search_profile_builder import build_search_profile

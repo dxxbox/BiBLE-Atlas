@@ -1,4 +1,15 @@
-from __future__ import annotations
+"""MemorySearchService — business-logic layer for MEMORY search.
+
+Implements the flow described in memory_search_implementation.md §6
+and memory_search_flow.puml steps 69-139:
+
+  1. Get IDatabaseWriter from DatabaseFactory (domain=MEMORY).
+  2. Look up binding by (MEMORY, tag).
+  3. Normalise search_type / top_k / vector_weight.
+  4. Check vector_model consistency.
+  5. Delegate to MemorySearcher.
+  6. Build and return the unified response structure.
+"""
 
 from __future__ import annotations
 
@@ -12,6 +23,13 @@ from bible.infrastructure.vector.vector_tool import VectorTool
 
 logger = logging.getLogger(__name__)
 
+# ── Domain constant ────────────────────────────────────────────────────────────
+_DOMAIN = "MEMORY"
+_DEFAULT_SEARCH_TYPE = "text"
+
+# ── Service-level error classes ────────────────────────────────────────────────
+
+
 class IndexNotBoundError(LookupError):
     """Raised when no active MEMORY binding is found for the given tag.
 
@@ -23,6 +41,7 @@ class IndexNotBoundError(LookupError):
             f"No active MEMORY binding found for tag='{tag}'."
         )
         self.tag = tag
+
 
 class VectorModelConflictError(ValueError):
     """Raised when the caller's vector_model differs from the binding's model.
@@ -37,6 +56,9 @@ class VectorModelConflictError(ValueError):
         )
         self.requested = requested
         self.bound = bound
+
+
+# ── Service ───────────────────────────────────────────────────────────────────
 
 
 class MemorySearchService:
@@ -68,7 +90,10 @@ class MemorySearchService:
         self._vector_tool = vector_tool
         self._search_cfg = search_cfg or SearchConfig()
         self._searcher = searcher
-        pass
+
+    # ------------------------------------------------------------------ #
+    # Public interface                                                     #
+    # ------------------------------------------------------------------ #
 
     def search(
         self,
@@ -123,7 +148,6 @@ class MemorySearchService:
         SearchInternalError
             Database or embedding failure (propagated from Searcher).
         """
-
         # ── 1. Obtain DB writer ───────────────────────────────────────────
         db_writer = self._db_factory.get_writer(domain=_DOMAIN)  # type: ignore[arg-type]
 
@@ -169,6 +193,15 @@ class MemorySearchService:
             items=search_result["items"],
         )
 
+    # ------------------------------------------------------------------ #
+    # Private helpers                                                      #
+    # ------------------------------------------------------------------ #
+
+    def _normalise_top_k(self, top_k: int | None) -> int:
+        cfg = self._search_cfg
+        effective = top_k if top_k is not None else cfg.default_top_k
+        return min(effective, cfg.max_top_k)
+
     @staticmethod
     def _normalise_vector_weight(
         vector_weight: float | None,
@@ -191,6 +224,15 @@ class MemorySearchService:
         hybrid_cfg = stp.get("hybrid", search_profile)
         return hybrid_cfg.get("default_vector_weight", 0.6)
 
+    def _get_searcher(self, db_writer: Any) -> MemorySearcher:
+        """Return the injected searcher or create one from the current writer."""
+        if self._searcher is not None:
+            return self._searcher
+        return MemorySearcher(
+            db_writer=db_writer,
+            vector_tool=self._vector_tool,
+        )
+
     @staticmethod
     def _build_response(
         tag: str,
@@ -206,17 +248,3 @@ class MemorySearchService:
             "total": total,
             "results": {"memory": items},
         }
-
-    def _get_searcher(self, db_writer: Any) -> MemorySearcher:
-        """Return the injected searcher or create one from the current writer."""
-        if self._searcher is not None:
-            return self._searcher
-        return MemorySearcher(
-            db_writer=db_writer,
-            vector_tool=self._vector_tool,
-        )
-
-    def _normalise_top_k(self, top_k: int | None) -> int:
-        cfg = self._search_cfg
-        effective = top_k if top_k is not None else cfg.default_top_k
-        return min(effective, cfg.max_top_k)
