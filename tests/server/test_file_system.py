@@ -704,15 +704,33 @@ class TestFileSystemFactory:
 
     # ---- unsupported / unknown backend ----
 
-    def test_minio_backend_raises_when_package_missing(self, tmp_path):
+    def test_minio_backend_raises_when_package_missing(self, tmp_path, monkeypatch):
         """minio package not installed → FILE_SYSTEM_BACKEND_UNSUPPORTED."""
+        import builtins
+        _orig_import = builtins.__import__
+
+        def _block_minio(name, *args, **kwargs):  # noqa: ANN002, ANN003, ANN202
+            if name == "minio" or name.startswith("minio."):
+                raise ImportError(f"No module named {name!r}")
+            return _orig_import(name, *args, **kwargs)
+
+        monkeypatch.setattr(builtins, "__import__", _block_minio)
         with pytest.raises(FileSystemError) as exc:
             FileSystemFactory(_local_cfg(tmp_path, "minio")).get_gateway()
         assert exc.value.code == "FILE_SYSTEM_BACKEND_UNSUPPORTED"
         assert "minio" in exc.value.message.lower() or "MinIO" in exc.value.message
 
-    def test_s3_backend_raises_when_package_missing(self, tmp_path):
+    def test_s3_backend_raises_when_package_missing(self, tmp_path, monkeypatch):
         """boto3 package not installed → FILE_SYSTEM_BACKEND_UNSUPPORTED."""
+        import builtins
+        _orig_import = builtins.__import__
+
+        def _block_boto3(name, *args, **kwargs):  # noqa: ANN002, ANN003, ANN202
+            if name == "boto3" or name.startswith("boto3."):
+                raise ImportError(f"No module named {name!r}")
+            return _orig_import(name, *args, **kwargs)
+
+        monkeypatch.setattr(builtins, "__import__", _block_boto3)
         with pytest.raises(FileSystemError) as exc:
             FileSystemFactory(_local_cfg(tmp_path, "s3")).get_gateway()
         assert exc.value.code == "FILE_SYSTEM_BACKEND_UNSUPPORTED"

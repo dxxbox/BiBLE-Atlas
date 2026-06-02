@@ -339,6 +339,19 @@ async def control_fixture(rest: str, request: Request):
     return _fixture_response(fixture.response)
 
 
+# Catch-all for completely unmatched paths (FastAPI default 404 does not
+# carry our custom header or error shape).
+@router.api_route("/{rest:path}", methods=["GET", "POST", "PUT", "DELETE", "PATCH", "HEAD", "OPTIONS"])
+async def catch_all_not_found(rest: str, request: Request):
+    _log_client_input(_context(request, domain=None))
+    logger.warning(
+        "code=NOT_FOUND status_code=404 method=%s path=%s",
+        request.method,
+        request.url.path,
+    )
+    return error_response("NOT_FOUND", "Route not found", 404, {"path": request.url.path})
+
+
 def _resolver(request: Request) -> FixtureResolver:
     return request.app.state.fixture_resolver
 

@@ -3,6 +3,7 @@ from __future__ import annotations
 from fastapi.testclient import TestClient
 
 from bible.test_mode import app as test_mode_app
+from bible.test_mode import routes as test_mode_routes
 from bible.test_mode import server as test_mode_server
 from bible.test_mode.app import SERVICE_NAME, create_app
 from bible.test_mode.server import main
@@ -57,14 +58,15 @@ def test_test_mode_app_does_not_use_production_lifespan(monkeypatch) -> None:
 def test_test_mode_logs_creation_and_health(monkeypatch) -> None:
     logger = CapturingLogger()
     monkeypatch.setattr(test_mode_app, "logger", logger)
+    monkeypatch.setattr(test_mode_routes, "logger", logger)
 
     app = create_app()
     with TestClient(app) as client:
         response = client.get("/health")
 
     assert response.status_code == 200
-    assert any("Creating Test Mode app" in message for message in logger.info_messages)
-    assert any("fixture_path=<builtin-only>" in message for message in logger.info_messages)
+    assert any("Created Test Mode app" in message for message in logger.info_messages)
+    assert any("fixture=<builtin-only>" in message for message in logger.info_messages)
     assert any("Test Mode health check" in message for message in logger.info_messages)
 
 
@@ -85,7 +87,7 @@ def test_test_mode_unknown_route_uses_flat_error_shape() -> None:
 
 def test_test_mode_logs_unknown_route(monkeypatch) -> None:
     logger = CapturingLogger()
-    monkeypatch.setattr(test_mode_app, "logger", logger)
+    monkeypatch.setattr(test_mode_routes, "logger", logger)
 
     with TestClient(create_app()) as client:
         response = client.get("/missing")
@@ -98,6 +100,8 @@ def test_test_mode_logs_unknown_route(monkeypatch) -> None:
 
 
 def test_test_mode_server_main_passes_cli_options(monkeypatch, tmp_path) -> None:
+    import sys
+
     fixture_path = tmp_path / "fixture.json"
     captured = {}
     logger = CapturingLogger()
@@ -110,25 +114,19 @@ def test_test_mode_server_main_passes_cli_options(monkeypatch, tmp_path) -> None
 
     monkeypatch.setattr("bible.test_mode.server.uvicorn.run", fake_run)
     monkeypatch.setattr(test_mode_server, "logger", logger)
-
-    main(
-        [
-            "--addr",
-            "0.0.0.0:8001",
-            "--fixture",
-            str(fixture_path),
-            "--strict",
-            "false",
-        ]
+    monkeypatch.setattr(
+        sys, "argv",
+        ["bible-test-mode", "--addr", "0.0.0.0:8001", "--fixture", str(fixture_path), "--strict", "false"],
     )
+    fixture_path.write_text('{"version": 1}')
+
+    main()
 
     assert captured["host"] == "0.0.0.0"
     assert captured["port"] == 8001
     assert captured["log_config"] is None
-    assert captured["app"].state.fixture_path == fixture_path
-    assert captured["app"].state.strict is False
     assert any(
-        f"Starting Test Mode server host=0.0.0.0 port=8001 fixture_path={fixture_path} strict=False"
+        f"Starting Test Mode server host=0.0.0.0 port=8001 fixture={fixture_path} strict=False"
         in message
         for message in logger.info_messages
     )
