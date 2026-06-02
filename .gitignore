@@ -211,5 +211,8 @@ marimo/_static/
 marimo/_lsp/
 __marimo__/
 
+#vscode
+.vscode
+
 # Local notes and drafts
 docs/meditation/

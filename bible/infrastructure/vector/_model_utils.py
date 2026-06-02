@@ -1,0 +1,50 @@
+from __future__ import annotations
+
+import glob
+import os
+
+def get_local_model_path(
+    model_name: str,
+    hf_cache_dir: str,
+    required_metadata: list[str] | None = None,
+) -> str | None:
+    if required_metadata is None:
+        required_metadata = ["config.json", "modules.json"]
+
+    hub_cache = os.path.join(hf_cache_dir, "hub")
+
+    if "/" in model_name:
+        model_dir_name = "models--" + model_name.replace("/","--")
+    else:
+        model_dir_name = f"models--sentence--transformers-{model_name}"
+
+    snapshots_dir = os.path.join(hub_cache, model_dir_name, "snapshots")
+    if not os.path.exists(snapshots_dir):
+        return None
+    
+    snapshots = glob.glob(os.path.join(snapshots_dir,"*"))
+    if not snapshots:
+        return None
+    
+    weights_candidates = ["model.safetensors", "pytorch_model.bin"]
+    valid_snapshots = [
+        s for s in snapshots
+        if all(os.path.exists(os.path.join(s, f)) for f in required_metadata)
+        and any(os.path.exists(os.path.join(s, w)) for w in weights_candidates)
+    ]
+    if not valid_snapshots:
+        return None
+
+    return max(valid_snapshots, key=os.path.getmtime)
+
+def download_lock_path(model_name: str, hf_cache_dir: str) -> str:
+    """Return the per-model cross-process download lock-file path (creates dirs).
+
+    The lock file is used with ``fcntl.LOCK_EX`` to guarantee that at most one
+    process ever downloads a given model, even when the FastAPI server and the
+    Celery worker start up simultaneously.
+    """
+    safe_name = model_name.replace("/", "--")
+    locks_dir = os.path.join(hf_cache_dir, "hub", ".locks", "download-once")
+    os.makedirs(locks_dir, exist_ok=True)
+    return os.path.join(locks_dir, f"{safe_name}.lock")    

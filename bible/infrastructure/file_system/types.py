@@ -5,7 +5,6 @@ from typing import Any
 
 from bible.common.errors import DomainError, ErrorCode
 
-
 @dataclass(slots=True)
 class FileStoreResult:
     storage_path: str

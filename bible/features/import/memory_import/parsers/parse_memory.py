@@ -1,5 +1,19 @@
 #!/usr/bin/env python3
+"""
+Memory import parser entry point.
 
+Invocation by SandboxRunner
+
+python parser_memory.py --manifest <manifest_path> [--context <json_string>]
+
+Prints a single JSON object to stdout, such as:
+{"chunks":[...], "search_profile":{...}, "local_file_storage_plan":{...}}
+
+Exit Code:
+0 Success
+1 validation or runtime error (error message on stderr)
+
+"""
 from __future__ import annotations
 
 import argparse
