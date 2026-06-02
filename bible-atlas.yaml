@@ -3,6 +3,88 @@
 # 修改后自动生效，或调用 reload_config() 手动刷新
 # ============================================================
 
+log:
+  level: DEBUG    # DEBUG | INFO | WARNING | ERROR | CRITICAL
+  format: "[%(asctime)s] [%(processName)s/%(threadName)s] %(levelname)s %(filename)s:%(lineno)s: %(message)s"
+  ouktput: file
+  log_dir: ./workspace/log
+
+storage:
+  workspace_dir: ./workspace/memory   #root folder for data persist, files/import_work are all created within.
+
+file_system:
+  backend: local    #backend type: local | minio | s3
+  local:
+    root_dir: ./workspace/memory/files
+    hash_algo: sha256
+    chunk_size: 1048576
+    use_atomic_rename: true
+
+#------ MinIO configure while minio enabled
+#
+#minio:
+#  endpoint: localhost:9000
+#  access_key: minioadmin
+#  secret_key: minioadmin
+#  bucket: bible-atlas
+#  prefix: ""
+#  secure: false
+#  region: ""
+#  hash_algo: sha256
+#  chunk_size: 1048576
+
+
+#--------- AWS S3 configure while S3 enabled
+#
+#s3:
+#  bucket: bible-atlas
+#  prefix: ""
+#  region: us-east-1
+#  endpoint_url: ""
+#  access_key: ""
+#  secret_key: ""
+#  hash_algo: sha256
+#  chunk_size: 1048576
+
+#----------database configure
+database:
+  backend: opensearch     # can be switch to : opensearch | elasticsearch | postgres
+
+  # --------- opensearch configure
+  opensearch:
+    hosts:
+      - "localhost:9201"
+    timeout_seconds: 30
+    use_ssl: false
+    verify_certs: true
+    username: opensearch-xo
+    password: MyStr0ng!Pass#2024
+    binding_index: v4_index_binding
+    async_task_index: v4_async_tasks
+    refresh_policy: "false"
+    bulk_chunk_size: 500
+    request_timeout_seconds: 60
+
+  # --------- elasiticsearch configure
+
+  # --------- postgres configure
+
+celery:
+  broker_url: "redis://localhost: 6379/0"
+  result_backend: "redis://localhost:6379/1"
+  worker_concurrency: 4                     # worker sub-process, 0 means CPU core num.
+
+# --------------- Import configure
+import_memory:
+  parsers_dir:              ./bible/features/import/memory_import/parsers     # 预注册脚本目录，客户端上传的脚本存在任务工作区
+  import_work_dir:          ./workspace/memory/import_work                    # 任务工作区
+  keep_failed_workspace:    true
+  task_timeout_seconds:     300                                               # 单个 import 任务整体超时
+  sandbox_timeout_seconds:  60                                                # 解析脚本子进程超时（秒）
+  workspace_ttl_hours:      24                                                # 工作区保留时长，0 表示不自动清理
+  sweep_interval_seconds:   3600                                              # TTL 扫描周期
+
+
 # ==================== 库配置 ====================
 # 测试库列表（包含所有可用库）
 test_libraries:
@@ -76,6 +158,8 @@ default_coding_language: cpp
 # 单个文件最大大小（字节）
 max_file_size: 10485760  # 10MB
 
+max_total_size: 209715200
+
 # 单次上传最大文件数
 max_file_count: 2000
 
@@ -83,6 +167,8 @@ max_file_count: 2000
 allowed_extensions:
   - .md
   - .json
+  - .pdf
+  - .py
 
 # ==================== 检索配置 ====================
 # 默认检索结果数量
@@ -165,6 +251,48 @@ copilot_config:
   # 默认模型（API请求未指定时使用）
   default_model: "gpt-5-mini"
   workspace_root: "/var/fpwork2/fenghxu/cprt_ai_context/elastic_operator/website_9220/"  # 工作空间绝对路径
+
+# ==================== Vector configure
+vector:
+  preload_on_startup: true                  # 启动预加载
+  hf_cache_dir:       ./workspace/hf_cache  # HuggingFace 缓存目录
+  batch_size:         32                    # 向量编码大小，与 embedding 对齐
+
+  available_models:
+    - id: 'mini'
+      name: 'paraphrase-multilingual-MiniLM-L12-v2'
+      description: "Lighting, Multi-languages"
+      params: '118M'
+      dims: 384
+      languages: ['多语言']
+    
+    - id: 'bge-large'
+      name: 'BAAI/bge-large-zh-v1.5'
+      description: 'CN prio, high accuracy'
+      params: '326M'
+      dims: 1024
+      languages: ['中文', '英文']
+
+    - id: 'mpnet'
+      name: 'paraphrase-multilingual-mpnet-base-v2'
+      description: 'Balance, multi-language'
+      params: '278M'
+      dims: 768
+      languages: ['多语言']
+
+    - id: 'bge-m3'
+      name: 'BAAI/bge-m3'
+      description: 'Multi-Language, long-context'
+      params: '568M'
+      dims: 1024
+      languages: ['100+ 语言']
+    
+    - id: 'e5-large'
+      name: 'intfloat/multilingual-e5-large'
+      description: 'Multi-Language, High Perform'
+      params: '560M'
+      dims: 1024
+      languages: ['多语言']
 
 # ==================== Rerank（重排序）配置 ====================
 # 是否启用 Rerank（默认false，用于对比评估效果）
