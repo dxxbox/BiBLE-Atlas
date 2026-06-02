@@ -19,7 +19,7 @@ const DOMAIN_BOOST: Record<RecallDomain, number> = { memory: 0.08, skill: 0.04, 
 const DOMAIN_PRIORITY: Record<RecallDomain, number> = { memory: 3, skill: 2, knowledge: 1 };
 
 export function normalizeHits(domain: RecallDomain, payload: Record<string, unknown>, tag?: string): RecallHit[] {
-  const rawHits = pickHits(payload);
+  const rawHits = extractHits(domain, payload, tag);
   return rawHits.map((raw, index) => normalizeHit(domain, raw, index, tag)).filter((hit): hit is RecallHit => Boolean(hit));
 }
 
@@ -65,14 +65,14 @@ function normalizeHit(domain: RecallDomain, raw: Record<string, unknown>, index:
   };
 }
 
-function pickHits(payload: Record<string, unknown>): Record<string, unknown>[] {
-  for (const key of ["hits", "items", "results", "documents", "memories", "skills"]) {
-    const value = payload[key];
-    if (Array.isArray(value)) return value.filter(isRecord);
-  }
-  if (Array.isArray(payload.result)) return payload.result.filter(isRecord);
-  return [];
-}
+// function pickHits(payload: Record<string, unknown>): Record<string, unknown>[] {
+//   for (const key of ["hits", "items", "results", "documents", "memories", "skills"]) {
+//     const value = payload[key];
+//     if (Array.isArray(value)) return value.filter(isRecord);
+//   }
+//   if (Array.isArray(payload.result)) return payload.result.filter(isRecord);
+//   return [];
+// }
 
 function extractHits(domain: RecallDomain, payload: Record<string, unknown>, tag?: string): Record<string, unknown> [] {
   const results = payload.results;
