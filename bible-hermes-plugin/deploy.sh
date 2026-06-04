@@ -5,6 +5,7 @@
 # 用法:
 #   ./deploy.sh              # 部署（不重启 hermes）
 #   ./deploy.sh --restart     # 部署后重启 hermes server
+#   ./deploy.sh --watch       # 部署后 tail -f 插件日志
 #   ./deploy.sh --help        # 显示帮助
 #
 # 前提:
@@ -36,12 +37,14 @@ info() { echo -e "${CYAN}[deploy]${NC} $*"; }
 
 # ── 参数 ──────────────────────────────────────────────────────────────────────
 RESTART=false
+WATCH=false
 
 usage() {
-  echo "用法: $0 [--restart] [--help]"
+  echo "用法: $0 [--restart] [--watch] [--help]"
   echo ""
   echo "  (无参数)      仅同步 + 安装，不重启 Hermes"
   echo "  --restart     部署后自动重启 Hermes server"
+  echo "  --watch       部署后 tail -f 插件日志"
   echo "  --help        显示本帮助"
   exit 0
 }
@@ -49,6 +52,7 @@ usage() {
 for arg in "$@"; do
   case "$arg" in
     --restart) RESTART=true ;;
+    --watch)   WATCH=true ;;
     --help)    usage ;;
     *)         err "未知参数: $arg"; usage ;;
   esac
@@ -121,6 +125,18 @@ if $RESTART; then
     hermes server restart 2>/dev/null || warn "hermes server restart 失败，请手动重启"
   else
     warn "hermes CLI 不在 PATH 中，请手动重启 Hermes"
+  fi
+fi
+
+# ── Step 5 (可选): tail -f 插件日志 ─────────────────────────────────────────
+if $WATCH; then
+  LOG_FILE="$HERMES_HOME/logs/bible-hermes-plugin.log"
+  if [[ -f "$LOG_FILE" ]]; then
+    log "监控日志: $LOG_FILE (Ctrl+C 退出)"
+    exec tail -f "$LOG_FILE"
+  else
+    warn "日志文件尚未生成: $LOG_FILE"
+    info "插件首次运行后日志会自动创建，届时可手动: tail -f $LOG_FILE"
   fi
 fi
 

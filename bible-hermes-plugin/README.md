@@ -26,6 +26,8 @@ BiBLE Atlas plugin for [Hermes Agent](https://hermes-agent.nousresearch.com) —
 ```bash
 # Clone or copy this directory to your Hermes plugins folder
 # while at bible folder.
+cd ~/.hermes
+source .venv/bin/activate
 cp -r bible-hermes-plugin ~/.hermes/plugins/
 
 # Install the plugin into Hermes Agent's Python environment.

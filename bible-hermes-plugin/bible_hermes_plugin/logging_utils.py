@@ -2,18 +2,21 @@
 
 Mirrors src/logging.ts from the OpenClaw plugin.
 
-Logging output goes to stderr by default (for ``hermes logs -f`` compatibility).
-A StreamHandler is attached to the plugin's logger at module import time if no
+Logging output goes to $HERMES_HOME/logs/bible-hermes-plugin.log (for
+``hermes logs -f`` compatibility when the session itself is the tail target,
+and for ``tail -f`` on the dedicated file otherwise).
+A FileHandler is attached to the plugin's logger at module import time if no
 handler is already present, with the level inherited from the root logger
-(defaulting to INFO when the root logger is unconfigured).
+(defaulting to DEBUG when the root logger is unconfigured).
 """
 
 from __future__ import annotations
 
 import json
 import logging
-import sys
+import os
 import time
+from pathlib import Path
 from typing import Any
 
 _PLUGIN_ID = "bible-hermes-plugin"
@@ -21,14 +24,18 @@ _SECRET_PATTERN = frozenset(["token", "authorization", "api_key", "apikey", "api
 
 logger = logging.getLogger(__name__)
 
-# ── ensure stderr output for hermes logs -f ───────────────────────────────────
+# ── ensure file-based log output ───────────────────────────────────────────────
 
-def _ensure_stderr_handler() -> None:
-    """Attach a stderr StreamHandler if the plugin logger has no handlers.
+def _ensure_log_handler() -> None:
+    """Attach a FileHandler writing to $HERMES_HOME/logs/bible-hermes-plugin.log.
 
     The handler inherits the root logger's effective level. If the root logger
     is completely unconfigured (no handlers), we default to DEBUG so that all
     bible-hermes-plugin log messages are visible during development/debugging.
+
+    Logs go to a dedicated file so they never pollute the Hermes session window.
+    Use ``tail -f $HERMES_HOME/logs/bible-hermes-plugin.log`` or
+    ``hermes logs -f`` to watch them.
     """
     if logger.handlers:
         return
@@ -45,10 +52,15 @@ def _ensure_stderr_handler() -> None:
         effective_level = min(level for level in levels) if levels else logging.DEBUG
     else:
         # Root logger is unconfigured — default to DEBUG so plugin messages
-        # are visible during development / hermes logs -f debugging.
+        # are visible during development / log-file debugging.
         effective_level = logging.DEBUG
 
-    handler = logging.StreamHandler(sys.stderr)
+    hermes_home = os.environ.get("HERMES_HOME", str(Path.home() / ".hermes"))
+    logs_dir = Path(hermes_home) / "logs"
+    logs_dir.mkdir(parents=True, exist_ok=True)
+
+    log_file = logs_dir / "bible-hermes-plugin.log"
+    handler = logging.FileHandler(str(log_file))
     handler.setLevel(effective_level)
     handler.setFormatter(logging.Formatter(
         "[%(asctime)s] [%(levelname)s] [%(name)s] %(message)s",
@@ -57,7 +69,7 @@ def _ensure_stderr_handler() -> None:
     logger.addHandler(handler)
     logger.propagate = False  # avoid duplicate output when root has handlers too
 
-_ensure_stderr_handler()
+_ensure_log_handler()
 
 
 # ── public interface ──────────────────────────────────────────────────────────
