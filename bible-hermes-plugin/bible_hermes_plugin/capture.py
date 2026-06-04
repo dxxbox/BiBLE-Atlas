@@ -137,6 +137,7 @@ class SessionCaptureStore:
             or (turn.tool_calls and len(turn.tool_calls) > 0)
         )
         if not has_content:
+            log("debug", "capture.turn skipped (empty)", {"session_id": session_id})
             return
 
         should_flush = False
@@ -149,6 +150,14 @@ class SessionCaptureStore:
                 len(state.pending_turns) >= self._config.capture_commit_threshold_turns
                 or state.buffered_chars >= self._config.capture_commit_threshold_chars
             )
+
+        log("debug", "capture.turn buffered", {
+            "session_id": session_id,
+            "turn_count": state.turn_count,
+            "pending_turns": len(state.pending_turns),
+            "buffered_chars": state.buffered_chars,
+            "should_flush": should_flush,
+        })
 
         if should_flush:
             log("info", "capture.threshold reached", {
@@ -283,9 +292,19 @@ class SessionCaptureStore:
     def _enforce_hard_cap(self, state: _SessionState) -> None:
         """Drop oldest turns when buffer exceeds hard cap (must hold state._state_lock)."""
         hard_cap = self._config.capture_commit_threshold_chars * 4
+        dropped_count = 0
         while state.buffered_chars > hard_cap and len(state.pending_turns) > 1:
             dropped = state.pending_turns.pop(0)
             state.buffered_chars -= _turn_size(dropped)
+            dropped_count += 1
+        if dropped_count > 0:
+            log("warn", "capture.hard_cap dropped turns", {
+                "session_id": state.session_id,
+                "dropped": dropped_count,
+                "remaining_turns": len(state.pending_turns),
+                "remaining_chars": state.buffered_chars,
+                "hard_cap": hard_cap,
+            })
 
 
 # ── helpers ───────────────────────────────────────────────────────────────────

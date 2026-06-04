@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import re
 
+from .logging_utils import log
 from .ranking import RecallHit
 
 
@@ -23,6 +24,7 @@ def render_relevant_memories(hits: list[RecallHit], budget_tokens: int) -> str:
     Returns an empty string if nothing fits or there are no hits.
     """
     if not hits or budget_tokens <= 0:
+        log("debug", "injection.render skipped", {"hits": len(hits), "budget_tokens": budget_tokens})
         return ""
 
     budget_chars = max(256, budget_tokens * 4)
@@ -55,12 +57,19 @@ def render_relevant_memories(hits: list[RecallHit], budget_tokens: int) -> str:
         lines.extend(parts)
 
     if len(lines) <= 3:
+        log("debug", "injection.render empty", {"hits": len(hits), "budget_tokens": budget_tokens, "lines": len(lines)})
         return ""
 
     lines.append("</relevant-memories>")
     rendered = "\n".join(lines)
     if len(rendered) > budget_chars:
         rendered = rendered[:budget_chars - 24] + "\n</relevant-memories>"
+    log("debug", "injection.render done", {
+        "hits_input": len(hits),
+        "budget_tokens": budget_tokens,
+        "rendered_chars": len(rendered),
+        "memory_tags": len(re.findall(r"<memory ", rendered)),
+    })
     return rendered
 
 

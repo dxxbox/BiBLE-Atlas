@@ -18,7 +18,7 @@ provides_hooks:
   - on_session_reset
 requires_env:
   - name: BIBLE_ATLAS_BASE_URL
-    description: "BiBLE Atlas HTTP service base URL (e.g. http://localhost:8080)"
+    description: "BiBLE Atlas HTTP service base URL (e.g. http://localhost:5555)"
     secret: false
   - name: BIBLE_ATLAS_TOKEN
     description: "Optional bearer token for authenticated BiBLE Atlas deployments"

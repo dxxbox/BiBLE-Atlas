@@ -29,10 +29,8 @@ cp -r bible-hermes-plugin ~/.hermes/plugins/
 
 # Install the Python dependency (httpx) into your environment
 cd ~/.hermes/plugins/bible-hermes-plugin
+uv venv
 uv pip install .
-
-# Configure
-hermes bible setup --base-url http://localhost:8080 --write
 
 # Enable
 hermes plugins enable bible-hermes-plugin

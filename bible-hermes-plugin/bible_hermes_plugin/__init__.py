@@ -93,9 +93,17 @@ def register(ctx) -> None:
         platform: str = "",
         **kwargs,
     ) -> dict | None:
+        log("debug", "hook.pre_llm_call enter", {
+            "session_id": session_id,
+            "user_msg_len": len(user_message),
+            "history_turns": len(conversation_history or []),
+            "is_first_turn": is_first_turn,
+        })
         if is_bypassed_session(session_id, config.compiled_bypass_patterns):
+            log("debug", "hook.pre_llm_call skipped (bypassed)", {"session_id": session_id})
             return None
         if not user_message:
+            log("debug", "hook.pre_llm_call skipped (empty message)", {"session_id": session_id})
             return None
 
         try:
@@ -109,7 +117,12 @@ def register(ctx) -> None:
                 for w in warnings:
                     logger.debug("[%s] recall warning: %s", _PLUGIN_NAME, w)
             if rendered:
+                log("debug", "hook.pre_llm_call done (context injected)", {
+                    "session_id": session_id,
+                    "rendered_chars": len(rendered),
+                })
                 return {"context": rendered}
+            log("debug", "hook.pre_llm_call done (no results)", {"session_id": session_id})
         except Exception as exc:
             logger.warning("[%s] pre_llm_call recall failed (non-fatal): %s", _PLUGIN_NAME, exc)
 
@@ -128,15 +141,26 @@ def register(ctx) -> None:
         platform: str = "",
         **kwargs,
     ) -> None:
+        log("debug", "hook.post_llm_call enter", {
+            "session_id": session_id,
+            "user_msg_len": len(user_message),
+            "assistant_msg_len": len(assistant_response),
+            "capture_enabled": config.capture_enabled,
+        })
         if not config.capture_enabled:
             return
         if is_bypassed_session(session_id, config.compiled_bypass_patterns):
+            log("debug", "hook.post_llm_call skipped (bypassed)", {"session_id": session_id})
             return
 
         try:
             # Extract tool call messages from conversation_history (role == "tool"
             # or entries with a "function_call" / "tool_calls" field).
             tool_calls = _extract_tool_calls(conversation_history or [])
+            log("debug", "hook.post_llm_call tool_calls extracted", {
+                "session_id": session_id,
+                "tool_call_count": len(tool_calls or []),
+            })
             capture_store.capture_turn(
                 session_id=session_id,
                 user_message=user_message,

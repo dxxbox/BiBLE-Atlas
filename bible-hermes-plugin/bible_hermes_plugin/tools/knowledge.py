@@ -7,6 +7,7 @@ Mirrors src/tools/knowledge.ts from the OpenClaw plugin.
 from __future__ import annotations
 
 from ..http_client import BibleAtlasClient
+from ..logging_utils import log
 from .helpers import (
     as_object,
     extract_hits,
@@ -62,8 +63,10 @@ def make_knowledge_search_handler(client: BibleAtlasClient):
             tag = require_string(args, "tag")
             top_k = optional_int(args, "top_k", 8, 1, 50)
             search_type = optional_search_type(args)
+            log("info", "tool.knowledge_search start", {"query_len": len(query), "tag": tag, "top_k": top_k})
             payload = client.search_knowledge(query, tag, top_k, search_type=search_type)
             hits = extract_hits(tag, payload, aliases=("knowledge_base", "knowledge"))
+            log("info", "tool.knowledge_search done", {"tag": tag, "hits": len(hits)})
             summary = _summarize(tag, hits)
             return ok(summary, trim_details({"hits": hits, "raw": payload}))
         except Exception as exc:
@@ -84,7 +87,9 @@ def _summarize(tag: str, hits: list[dict]) -> str:
 def make_knowledge_list_handler(client: BibleAtlasClient):
     def handler(args: dict, **kwargs) -> str:
         try:
+            log("info", "tool.knowledge_list start", {})
             payload = client.list_knowledge()
+            log("info", "tool.knowledge_list done", {})
             return ok("Loaded BiBLE knowledge list.", trim_details({"knowledge": payload}))
         except Exception as exc:
             return fail(exc)

@@ -7,6 +7,7 @@ Mirrors src/tools/memory.ts from the OpenClaw plugin.
 from __future__ import annotations
 
 from ..http_client import BibleAtlasClient
+from ..logging_utils import log
 from .helpers import (
     as_object,
     extract_hits,
@@ -99,8 +100,10 @@ def make_memory_search_handler(client: BibleAtlasClient):
             top_k = optional_int(args, "top_k", 8, 1, 50)
             min_score = args.get("min_score")
             search_type = optional_search_type(args)
+            log("info", "tool.memory_search start", {"query_len": len(query), "top_k": top_k, "search_type": search_type})
             payload = client.search_memory(query, top_k, min_score, search_type)
             hits = extract_hits("memory", payload)
+            log("info", "tool.memory_search done", {"hits": len(hits)})
             return ok(summarize_hits("memory", payload), trim_details({"hits": hits, "raw": payload}))
         except Exception as exc:
             return fail(exc)
@@ -115,6 +118,7 @@ def make_memory_save_handler(client: BibleAtlasClient):
             if not isinstance(raw_messages, list):
                 raise ValueError("messages is required.")
             messages = [_normalize_message(m) for m in raw_messages]
+            log("info", "tool.memory_save start", {"message_count": len(messages), "wait": args.get("wait")})
             payload = client.save_memory(
                 messages=messages,
                 title=args.get("title") if isinstance(args.get("title"), str) else None,
@@ -128,6 +132,7 @@ def make_memory_save_handler(client: BibleAtlasClient):
                 metadata=args.get("metadata") if isinstance(args.get("metadata"), dict) else None,
                 wait=args.get("wait") is True,
             )
+            log("info", "tool.memory_save done", {"memory_id": payload.get("memory_id") or payload.get("memoryId")})
             return ok("Saved BiBLE memory request.", trim_details({"result": payload}))
         except Exception as exc:
             return fail(exc)
@@ -139,8 +144,10 @@ def make_memory_get_handler(client: BibleAtlasClient):
         try:
             args = as_object(args)
             memory_id = require_string(args, "memory_id")
+            log("info", "tool.memory_get start", {"memory_id": memory_id})
             payload = client.get_memory(memory_id)
             title = payload.get("title") or memory_id
+            log("info", "tool.memory_get done", {"memory_id": memory_id, "title": title})
             return ok(f"Loaded BiBLE memory: {title}.", trim_details({"memory": payload}))
         except Exception as exc:
             return fail(exc)

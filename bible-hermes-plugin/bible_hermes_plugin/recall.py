@@ -91,7 +91,14 @@ def _build_recall_query(user_message: str, conversation_history: list[dict]) -> 
         if _text_from_message(m)
     )
     raw = "\n".join(filter(None, [recent_text, user_message]))
-    return _clean_for_query(raw)[:2000].strip()
+    query = _clean_for_query(raw)[:2000].strip()
+    log("debug", "recall.query built", {
+        "user_msg_len": len(user_message),
+        "history_turns": len(conversation_history),
+        "recent_text_len": len(recent_text),
+        "final_query_len": len(query),
+    })
+    return query
 
 
 def _run_parallel_searches(

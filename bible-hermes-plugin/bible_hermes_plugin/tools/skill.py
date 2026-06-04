@@ -7,6 +7,7 @@ Mirrors src/tools/skill.ts from the OpenClaw plugin.
 from __future__ import annotations
 
 from ..http_client import BibleAtlasClient
+from ..logging_utils import log
 from .helpers import (
     as_object,
     extract_hits,
@@ -64,8 +65,10 @@ def make_skill_search_handler(client: BibleAtlasClient):
             query = require_string(args, "query")
             top_k = optional_int(args, "top_k", 8, 1, 50)
             search_type = optional_search_type(args)
+            log("info", "tool.skill_search start", {"query_len": len(query), "top_k": top_k, "search_type": search_type})
             payload = client.search_skill(query, top_k, search_type=search_type)
             hits = extract_hits("skill", payload)
+            log("info", "tool.skill_search done", {"hits": len(hits)})
             return ok(summarize_hits("skill", payload), trim_details({"hits": hits, "raw": payload}))
         except Exception as exc:
             return fail(exc)
@@ -80,8 +83,10 @@ def make_skill_get_handler(client: BibleAtlasClient):
             name = args.get("name") if isinstance(args.get("name"), str) else None
             if not skill_id and not name:
                 raise ValueError("skill_id or name is required.")
+            log("info", "tool.skill_get start", {"skill_id": skill_id, "name": name})
             payload = client.get_skill(skill_id, name)
             label = payload.get("name") or skill_id or name or "?"
+            log("info", "tool.skill_get done", {"label": label})
             return ok(f"Loaded BiBLE skill: {label}.", trim_details({"skill": payload}))
         except Exception as exc:
             return fail(exc)

@@ -9,6 +9,8 @@ from dataclasses import dataclass, field
 import re
 from typing import Literal
 
+from .logging_utils import log
+
 RecallDomain = Literal["memory", "skill", "knowledge"]
 
 _DOMAIN_BOOST: dict[str, float] = {"memory": 0.08, "skill": 0.04, "knowledge": 0.0}
@@ -34,11 +36,13 @@ class RecallHit:
 def normalize_hits(domain: str, payload: dict, tag: str | None = None) -> list[RecallHit]:
     """Extract and normalise raw API hits into RecallHit objects."""
     raw_hits = _extract_hits(domain, payload, tag)
+    log("debug", "ranking.normalize_hits start", {"domain": domain, "tag": tag, "raw_count": len(raw_hits)})
     hits: list[RecallHit] = []
     for idx, raw in enumerate(raw_hits):
         hit = _normalize_hit(domain, raw, idx, tag)
         if hit is not None:
             hits.append(hit)
+    log("debug", "ranking.normalize_hits done", {"domain": domain, "tag": tag, "normalized_count": len(hits)})
     return hits
 
 
@@ -49,6 +53,7 @@ def filter_rank_and_trim(
     top_k: int,
 ) -> list[RecallHit]:
     """Deduplicate, filter by min_score, score, sort, and slice to top_k."""
+    log("debug", "ranking.filter_rank start", {"input_count": len(hits), "min_score": min_score, "top_k": top_k})
     deduped = _dedupe_hits(hits)
     filtered = [
         h for h in deduped
@@ -60,7 +65,14 @@ def filter_rank_and_trim(
         h.final_score = _compute_final_score(h, query)
         result.append(h)
     result.sort(key=lambda h: h.final_score or 0.0, reverse=True)
-    return result[:top_k]
+    trimmed = result[:top_k]
+    log("debug", "ranking.filter_rank done", {
+        "input_count": len(hits),
+        "after_dedup": len(deduped),
+        "after_filter": len(filtered),
+        "final_count": len(trimmed),
+    })
+    return trimmed
 
 
 # ── internal ──────────────────────────────────────────────────────────────────

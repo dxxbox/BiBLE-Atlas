@@ -9,6 +9,7 @@ import json
 from typing import Any
 
 from ..http_client import error_details
+from ..logging_utils import log
 
 # ── result builders ───────────────────────────────────────────────────────────
 
@@ -20,6 +21,7 @@ def ok(content: str, details: dict | None = None) -> str:
 def fail(exc: Exception) -> str:
     """Return an error tool result as a JSON string."""
     d = error_details(exc)
+    log("warn", "tool.fail", {"code": d.get("code"), "message": d.get("message")})
     return json.dumps({"ok": False, "error": True, "content": f"{d['code']}: {d['message']}", **d})
 
 
