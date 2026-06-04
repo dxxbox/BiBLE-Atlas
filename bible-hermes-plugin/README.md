@@ -25,16 +25,27 @@ BiBLE Atlas plugin for [Hermes Agent](https://hermes-agent.nousresearch.com) —
 
 ```bash
 # Clone or copy this directory to your Hermes plugins folder
+# while at bible folder.
 cp -r bible-hermes-plugin ~/.hermes/plugins/
 
-# Install the Python dependency (httpx) into your environment
+# Install the plugin into Hermes Agent's Python environment.
+# ⚠️  Do NOT create a .venv inside the plugin directory — Hermes runs from
+# its own venv at ~/.hermes/hermes-agent/venv/, so packages installed in a
+# local .venv are invisible to it.
+
 cd ~/.hermes/plugins/bible-hermes-plugin
-uv venv
 uv pip install .
+
+uv pip install --python ~/.hermes/hermes-agent/venv/bin/python \
+  ~/.hermes/plugins/bible-hermes-plugin/
 
 # Enable
 hermes plugins enable bible-hermes-plugin
 ```
+
+> **Note:** `hermes plugins enable` only toggles the plugin on in config.
+> It does NOT install the Python package. The `uv pip install` step above
+> is required for Hermes to find the `bible_hermes_plugin` module.
 
 ### Pip / entry-point plugin (recommended for team distribution)
 
@@ -66,7 +77,7 @@ Example `~/.hermes/config.yaml`:
 
 ```yaml
 bible:
-  base_url: "http://localhost:8080"
+  base_url: "http://localhost:5555"
   enable_memory_recall: true
   enable_skill_recall: true
   recall_top_k: 10
@@ -83,3 +94,25 @@ cd bible-hermes-plugin
 uv sync          # install deps into .venv
 uv run python -c "from bible_hermes_plugin import register; print('OK')"
 ```
+
+## Troubleshooting
+
+### `No module named 'bible_hermes_plugin'`
+
+Hermes logs:
+```
+WARNING hermes_cli.plugins: Failed to load plugin 'bible-hermes-plugin': No module named 'bible_hermes_plugin'
+```
+
+**Root cause:** The plugin's Python package is not installed into Hermes Agent's
+venv (`~/.hermes/hermes-agent/venv/`). A `.venv` inside the plugin directory
+itself is invisible to the Hermes process — Hermes runs from its own
+interpreter, not the plugin's.
+
+**Fix:**
+```bash
+uv pip install --python ~/.hermes/hermes-agent/venv/bin/python \
+  ~/.hermes/plugins/bible-hermes-plugin/
+```
+
+Then restart Hermes (`/reset` in session, or relaunch the CLI).

@@ -15,7 +15,7 @@ from typing import Any
 
 import httpx
 
-from .logging_utils import action_logger
+from .logging_utils import action_logger, log
 
 logger = logging.getLogger(__name__)
 
@@ -139,13 +139,22 @@ class BibleAtlasClient:
         return h
 
     def _get(self, path: str, *, envelope: bool = False) -> dict:
+        url = self._base_url + path
+        log("debug", "http.get request", {"method": "GET", "url": url})
         try:
             response = httpx.get(
-                self._base_url + path,
+                url,
                 headers=self._headers(),
                 timeout=self._timeout,
             )
             payload = _parse_json(response)
+            log("debug", "http.get response", {
+                "method": "GET",
+                "url": url,
+                "status": response.status_code,
+                "body_len": len(response.text),
+                "body_preview": _truncate_body_for_log(payload),
+            })
             if not response.is_success:
                 raise _error_from_payload(response.status_code, payload)
             return _unwrap_envelope(payload, response.status_code) if envelope else payload
@@ -155,14 +164,29 @@ class BibleAtlasClient:
             raise _to_bible_error(exc) from exc
 
     def _post(self, path: str, body: dict, *, envelope: bool = True) -> dict:
+        url = self._base_url + path
+        body_str = json.dumps(_prune_none(body))
+        log("debug", "http.post request", {
+            "method": "POST",
+            "url": url,
+            "body_len": len(body_str),
+            "body_preview": _truncate_str_for_log(body_str),
+        })
         try:
             response = httpx.post(
-                self._base_url + path,
+                url,
                 headers={**self._headers(), "Content-Type": "application/json"},
-                content=json.dumps(_prune_none(body)),
+                content=body_str,
                 timeout=self._timeout,
             )
             payload = _parse_json(response)
+            log("debug", "http.post response", {
+                "method": "POST",
+                "url": url,
+                "status": response.status_code,
+                "body_len": len(response.text),
+                "body_preview": _truncate_body_for_log(payload),
+            })
             if not response.is_success:
                 raise _error_from_payload(response.status_code, payload)
             return _unwrap_envelope(payload, response.status_code) if envelope else payload
@@ -172,15 +196,29 @@ class BibleAtlasClient:
             raise _to_bible_error(exc) from exc
 
     def _post_multipart(self, path: str, files: list[tuple], data: dict) -> dict:
+        url = self._base_url + path
+        log("debug", "http.post_multipart request", {
+            "method": "POST",
+            "url": url,
+            "file_count": len(files),
+            "data_keys": list(data.keys()),
+        })
         try:
             response = httpx.post(
-                self._base_url + path,
+                url,
                 headers=self._headers(),
                 files=files,
                 data=data,
                 timeout=self._timeout,
             )
             payload = _parse_json(response)
+            log("debug", "http.post_multipart response", {
+                "method": "POST",
+                "url": url,
+                "status": response.status_code,
+                "body_len": len(response.text),
+                "body_preview": _truncate_body_for_log(payload),
+            })
             if not response.is_success:
                 raise _error_from_payload(response.status_code, payload)
             return payload
@@ -456,6 +494,24 @@ def _derive_overview(messages: list[dict]) -> str:
 def _iso_now() -> str:
     from datetime import datetime, timezone
     return datetime.now(timezone.utc).isoformat()
+
+
+def _truncate_str_for_log(s: str, max_len: int = 500) -> str:
+    """Truncate a string for safe debug logging."""
+    if len(s) <= max_len:
+        return s
+    return s[:max_len] + f"...[truncated, total={len(s)}]"
+
+
+def _truncate_body_for_log(body: Any, max_len: int = 500) -> str:
+    """JSON-serialize and truncate a response body for debug logging, redacting secrets."""
+    if body is None:
+        return "null"
+    try:
+        s = json.dumps(body, default=str)
+    except (TypeError, ValueError):
+        s = str(body)
+    return _truncate_str_for_log(s, max_len)
 
 
 # ── error details helper (used by tools) ──────────────────────────────────────

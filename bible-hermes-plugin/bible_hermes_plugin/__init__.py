@@ -17,6 +17,7 @@ the user runs `hermes bible setup --base-url <url> --write`.
 from __future__ import annotations
 
 import logging
+from copy import copy
 
 from .bypass import is_bypassed_session
 from .capture import SessionCaptureStore
@@ -98,6 +99,7 @@ def register(ctx) -> None:
             "user_msg_len": len(user_message),
             "history_turns": len(conversation_history or []),
             "is_first_turn": is_first_turn,
+            "force_injection": config.force_injection,
         })
         if is_bypassed_session(session_id, config.compiled_bypass_patterns):
             log("debug", "hook.pre_llm_call skipped (bypassed)", {"session_id": session_id})
@@ -107,10 +109,19 @@ def register(ctx) -> None:
             return None
 
         try:
+            # When force_injection is True, temporarily enable all recall domains
+            recall_config = config
+            if config.force_injection:
+                log("info", "hook.pre_llm_call force_injection enabled", {"session_id": session_id})
+                recall_config = copy(config)
+                recall_config.enable_memory_recall = True
+                recall_config.enable_skill_recall = True
+                recall_config.enable_knowledge_recall = True
+
             rendered, warnings = run_recall_pipeline(
                 user_message=user_message,
                 conversation_history=conversation_history or [],
-                config=config,
+                config=recall_config,
                 client=client,
             )
             if warnings:
@@ -146,8 +157,10 @@ def register(ctx) -> None:
             "user_msg_len": len(user_message),
             "assistant_msg_len": len(assistant_response),
             "capture_enabled": config.capture_enabled,
+            "force_capture": config.force_capture,
         })
         if not config.capture_enabled:
+            log("debug", "hook.post_llm_call skipped (capture disabled)", {"session_id": session_id})
             return
         if is_bypassed_session(session_id, config.compiled_bypass_patterns):
             log("debug", "hook.post_llm_call skipped (bypassed)", {"session_id": session_id})
@@ -166,6 +179,7 @@ def register(ctx) -> None:
                 user_message=user_message,
                 assistant_response=assistant_response,
                 tool_calls=tool_calls,
+                force_flush=config.force_capture,
             )
         except Exception as exc:
             logger.warning("[%s] post_llm_call capture failed (non-fatal): %s", _PLUGIN_NAME, exc)
@@ -265,12 +279,16 @@ def _extract_tool_calls(history: list) -> list[dict] | None:
     return calls or None
 
 
-def _get_hermes_config(ctx) -> dict:
-    """Extract the Hermes config dict from the plugin context, if available."""
+def _get_hermes_config(_ctx=None) -> dict:
+    """Load the Hermes config dict via hermes_cli.config.load_config().
+
+    PluginContext does not expose a ``.config`` attribute; the canonical
+    way for plugins to read user config is through the public load_config()
+    API which reads ~/.hermes/config.yaml (profile-aware, cached).
+    """
     try:
-        raw = getattr(ctx, "config", None)
-        if isinstance(raw, dict):
-            return raw
+        from hermes_cli.config import load_config
+
+        return load_config()
     except Exception:
-        pass
-    return {}
+        return {}

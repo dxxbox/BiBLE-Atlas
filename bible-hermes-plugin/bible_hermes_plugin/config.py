@@ -39,6 +39,8 @@ class BibleHermesConfig:
     capture_enabled: bool = True
     capture_commit_threshold_turns: int = 8
     capture_commit_threshold_chars: int = 16_000
+    force_injection: bool = False
+    force_capture: bool = False
     bypass_session_patterns: list[str] = field(default_factory=list)
     compiled_bypass_patterns: list[re.Pattern[str]] = field(default_factory=list, repr=False)
 
@@ -92,6 +94,8 @@ def resolve_config(hermes_cfg: Any = None) -> BibleHermesConfig:
         capture_enabled=_bool(section, "capture_enabled", True),
         capture_commit_threshold_turns=_int(section, "capture_commit_threshold_turns", 1, None, 8),
         capture_commit_threshold_chars=_int(section, "capture_commit_threshold_chars", 1_000, None, 16_000),
+        force_injection=_bool(section, "force_injection", False),
+        force_capture=_bool(section, "force_capture", False),
         bypass_session_patterns=_str_list(section, "bypass_session_patterns"),
     )
     cfg.compiled_bypass_patterns = _compile_bypass_patterns(cfg.bypass_session_patterns)

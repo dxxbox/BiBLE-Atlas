@@ -113,8 +113,9 @@ class SessionCaptureStore:
         tool_calls: list[dict] | None = None,
         turn_id: str | None = None,
         run_id: str | None = None,
+        force_flush: bool = False,
     ) -> None:
-        """Buffer a completed turn. Triggers async flush at threshold."""
+        """Buffer a completed turn. Triggers async flush at threshold, or immediately if force_flush=True."""
         if not self._config.capture_enabled:
             return
 
@@ -147,27 +148,30 @@ class SessionCaptureStore:
             state.buffered_chars += _turn_size(turn)
             self._enforce_hard_cap(state)
             should_flush = (
-                len(state.pending_turns) >= self._config.capture_commit_threshold_turns
+                force_flush
+                or len(state.pending_turns) >= self._config.capture_commit_threshold_turns
                 or state.buffered_chars >= self._config.capture_commit_threshold_chars
             )
 
+        flush_reason = "force" if force_flush else "threshold"
         log("debug", "capture.turn buffered", {
             "session_id": session_id,
             "turn_count": state.turn_count,
             "pending_turns": len(state.pending_turns),
             "buffered_chars": state.buffered_chars,
             "should_flush": should_flush,
+            "force_flush": force_flush,
         })
 
         if should_flush:
-            log("info", "capture.threshold reached", {
+            log("info", f"capture.{flush_reason} triggered", {
                 "session_id": session_id,
                 "pending_turns": len(state.pending_turns),
                 "buffered_chars": state.buffered_chars,
             })
             t = threading.Thread(
                 target=self._flush,
-                args=(state, "threshold"),
+                args=(state, flush_reason),
                 kwargs={"blocking": False},
                 daemon=True,
                 name=f"bible-flush-{session_id[:8]}",
@@ -298,7 +302,7 @@ class SessionCaptureStore:
             state.buffered_chars -= _turn_size(dropped)
             dropped_count += 1
         if dropped_count > 0:
-            log("warn", "capture.hard_cap dropped turns", {
+            log("warning", "capture.hard_cap dropped turns", {
                 "session_id": state.session_id,
                 "dropped": dropped_count,
                 "remaining_turns": len(state.pending_turns),

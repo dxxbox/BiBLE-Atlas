@@ -92,6 +92,14 @@ config_schema:
       type: integer
       minimum: 1000
       default: 16000
+    force_injection:
+      type: boolean
+      default: false
+      description: "When true, run BiBLE Atlas recall pipeline on every user message before LLM processing, regardless of enable_*_recall flags."
+    force_capture:
+      type: boolean
+      default: false
+      description: "When true, immediately async-flush every captured turn to BiBLE Atlas instead of waiting for threshold-based batching. capture_enabled must still be true."
     bypass_session_patterns:
       type: array
       items:

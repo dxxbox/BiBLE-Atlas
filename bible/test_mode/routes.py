@@ -451,7 +451,7 @@ def _empty_search_payload(domain: str, body: dict[str, Any]) -> dict[str, Any]:
     default_kb_index = {
         "KNOWLEDGE_BASE": "kb_design_test",
         "SKILL": "kb_skill_test",
-        "MEMORY": "kb_memory_test",
+        "MEMORY": "kb_memory_main",
     }[domain]
     kb_index = body.get("kb_index")
     return {

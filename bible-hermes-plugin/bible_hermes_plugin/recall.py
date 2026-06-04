@@ -127,7 +127,7 @@ def _run_parallel_searches(
         except Exception as exc:
             msg = f"{domain} recall failed: {exc}"
             warnings.append(msg)
-            log("warn", f"recall.domain warning: {msg}", {"domain": domain, "tag": tag})
+            log("warning", f"recall.domain warning: {msg}", {"domain": domain, "tag": tag})
             al.done({"failed": True, "hits": 0})
             return []
 
