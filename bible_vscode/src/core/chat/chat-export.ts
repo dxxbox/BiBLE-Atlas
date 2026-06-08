@@ -20,7 +20,9 @@ export interface ChatExportResult {
   messages: ChatTurn[];
   /** 原始 VSCode JSON，仅供内部使用和本地调试留存，不传给 server。 */
   raw: Record<string, unknown>;
-  strategy: 'exportSession' | 'workbench';
+  strategy: 'exportSession' | 'workbench' | 'manualFile';
+  /** 仅 `manualFile`：用户在文件选择器里选中的原始 JSON 路径（与下方生成的 source.json 不同属正常）。 */
+  originPath?: string;
 }
 
 /**
@@ -41,14 +43,31 @@ export function rawJson(result: ChatExportResult): string {
   return JSON.stringify(result.raw, null, 2);
 }
 
+/** Cursor（及同类宿主）不注册 Copilot Chat 导出命令，直接走「不可用」错误以便上层弹出选文件。 */
+function isCursorLikeHost(): boolean {
+  return (vscode.env.appName ?? '').toLowerCase().includes('cursor');
+}
+
+function chatExportCommandsUnavailableError(): Error {
+  return new Error(
+    'Save current chat needs VS Code Copilot Chat export APIs (chat.exportSession or workbench.action.chat.export). Cursor and some VS Code builds do not register these commands — you will be asked to pick a chat export .json file (e.g. exported from VS Code), or use VS Code with Copilot Chat for one-click save.',
+  );
+}
+
 /**
  * 双策略导出当前 Copilot Chat：
  * 1. `chat.exportSession`（直接返数据，部分 VSCode 版本不存在）
  * 2. `workbench.action.chat.export` 写临时文件 → 读 → 清理（fallback）
  *
+ * **Cursor** 等环境通常两种命令都不存在（内置聊天非 Copilot Chat），此时会抛出明确说明。
+ *
  * 见 framework v4 §14.3。
  */
 export async function exportCurrentChat(output: OutputChannel): Promise<ChatExportResult> {
+  if (isCursorLikeHost()) {
+    throw chatExportCommandsUnavailableError();
+  }
+
   // Strategy 1
   try {
     const result = await vscode.commands.executeCommand<unknown>('chat.exportSession');
@@ -62,7 +81,7 @@ export async function exportCurrentChat(output: OutputChannel): Promise<ChatExpo
     if (!/not found|command/i.test(msg)) {
       throw new Error(`chat.exportSession failed: ${msg}`);
     }
-    output.debug('chat.export.strategy1.unavailable', { reason: msg });
+    // 常见：未装 Copilot Chat 或命令名变更 — 静默进入策略 2，避免误导性 DEBUG
   }
 
   // Strategy 2
@@ -71,7 +90,15 @@ export async function exportCurrentChat(output: OutputChannel): Promise<ChatExpo
   const tmpFile = path.join(tmpDir, `chat-export-${Date.now()}-${crypto.randomBytes(4).toString('hex')}.json`);
 
   try {
-    await vscode.commands.executeCommand('workbench.action.chat.export', vscode.Uri.file(tmpFile));
+    try {
+      await vscode.commands.executeCommand('workbench.action.chat.export', vscode.Uri.file(tmpFile));
+    } catch (err2) {
+      const msg2 = (err2 as Error).message ?? String(err2);
+      if (/not found|command/i.test(msg2)) {
+        throw chatExportCommandsUnavailableError();
+      }
+      throw err2;
+    }
     await delay(200);
     if (!fs.existsSync(tmpFile)) {
       throw new Error('Chat export did not produce a file. Make sure a Copilot Chat session is open.');
@@ -86,6 +113,32 @@ export async function exportCurrentChat(output: OutputChannel): Promise<ChatExpo
       /* ignore */
     }
   }
+}
+
+/**
+ * 从用户选择的 JSON 文件解析 Copilot Chat 导出（与 workbench 导出格式相同：`requests` 数组等）。
+ * 用于自动导出不可用（如 Cursor）时由 `importCurrentChat` 触发文件选择后的路径。
+ */
+export async function parseChatExportJsonFile(filePath: string, output: OutputChannel): Promise<ChatExportResult> {
+  let text: string;
+  try {
+    text = await fs.promises.readFile(filePath, 'utf-8');
+  } catch (e) {
+    throw new Error(`Cannot read file: ${(e as Error).message}`);
+  }
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(text);
+  } catch (e) {
+    throw new Error(`Invalid JSON: ${(e as Error).message}`);
+  }
+  if (parsed === null || typeof parsed !== 'object' || Array.isArray(parsed)) {
+    throw new Error('Chat export JSON must be a single object (e.g. VS Code Copilot chat export).');
+  }
+  const raw = parsed as Record<string, unknown>;
+  const result = buildResult(raw, 'manualFile');
+  output.info('chat.export.strategy', { strategy: 'manualFile', path: filePath, turns: result.messages.length });
+  return { ...result, originPath: filePath };
 }
 
 /** 把任意 messages[] / chat raw 转成 ChatExportResult 的通用方法（供 LM Tool 入参路径复用）。 */

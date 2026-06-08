@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import importlib
 import json
 import shutil
 import tempfile
@@ -12,8 +11,9 @@ from starlette.datastructures import UploadFile
 
 from bible.common.errors import DomainError
 from bible.common.logger import get_logger
-from bible.test_mode.resolver import FixtureConflictError, FixtureResolver
+from bible.features.upload.preflight import UploadFileRef, run_upload_preflight
 from bible.test_mode.constants import SERVICE_NAME
+from bible.test_mode.resolver import FixtureConflictError, FixtureResolver
 from bible.test_mode.responses import binary_response, error_response, json_response
 from bible.test_mode.schemas import RequestContext, ResponseFixture, TaskFixture
 from bible.test_mode.task_store import InMemoryTaskStore
@@ -26,9 +26,6 @@ from bible.test_mode.validators import (
 
 router = APIRouter()
 logger = get_logger(__name__)
-_preflight_module = importlib.import_module("bible.features.import.preflight")
-ImportFileRef = _preflight_module.ImportFileRef
-run_import_preflight = _preflight_module.run_import_preflight
 
 
 @router.get("/health")
@@ -124,7 +121,7 @@ async def _import_domain(
             parser_context=parser_context,
         )
         refs, parser_script_path = await _persist_uploads(tmp_dir, files, parser_script)
-        preflight = run_import_preflight(
+        preflight = run_upload_preflight(
             domain=domain,
             files=refs,
             parser_script_path=parser_script_path,
@@ -339,19 +336,6 @@ async def control_fixture(rest: str, request: Request):
     return _fixture_response(fixture.response)
 
 
-# Catch-all for completely unmatched paths (FastAPI default 404 does not
-# carry our custom header or error shape).
-@router.api_route("/{rest:path}", methods=["GET", "POST", "PUT", "DELETE", "PATCH", "HEAD", "OPTIONS"])
-async def catch_all_not_found(rest: str, request: Request):
-    _log_client_input(_context(request, domain=None))
-    logger.warning(
-        "code=NOT_FOUND status_code=404 method=%s path=%s",
-        request.method,
-        request.url.path,
-    )
-    return error_response("NOT_FOUND", "Route not found", 404, {"path": request.url.path})
-
-
 def _resolver(request: Request) -> FixtureResolver:
     return request.app.state.fixture_resolver
 
@@ -451,7 +435,7 @@ def _empty_search_payload(domain: str, body: dict[str, Any]) -> dict[str, Any]:
     default_kb_index = {
         "KNOWLEDGE_BASE": "kb_design_test",
         "SKILL": "kb_skill_test",
-        "MEMORY": "kb_memory_main",
+        "MEMORY": "kb_memory_test",
     }[domain]
     kb_index = body.get("kb_index")
     return {
@@ -545,15 +529,15 @@ async def _persist_uploads(
     tmp_dir: Path,
     files: list[UploadFile],
     parser_script: UploadFile | None,
-) -> tuple[list[ImportFileRef], str | None]:
-    refs: list[ImportFileRef] = []
+) -> tuple[list[UploadFileRef], str | None]:
+    refs: list[UploadFileRef] = []
     for index, upload in enumerate(files, start=1):
         filename = upload.filename or f"upload_{index}"
         path = tmp_dir / filename
         with path.open("wb") as fh:
             shutil.copyfileobj(upload.file, fh)
         refs.append(
-            ImportFileRef(
+            UploadFileRef(
                 filename=filename,
                 path=str(path),
                 content_type=upload.content_type,

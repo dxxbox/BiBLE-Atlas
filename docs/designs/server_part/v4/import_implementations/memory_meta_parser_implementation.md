@@ -14,8 +14,8 @@
 ### 1.1 高层时序
 
 1. API 收到 `files[]`
-2. `MemoryImportService` 将上传文件先临时落地到任务目录
-3. `MemoryImportService` 生成 `memory_request_manifest.json`
+2. `MemoryUploadService` 将上传文件先临时落地到任务目录
+3. `MemoryUploadService` 生成 `memory_request_manifest.json`
 4. `SandboxRunner.run_parse(..., file_path=<manifest_path>, ...)`
 5. `parse_memory.py` 解析 manifest，内部区分 `meta.json` 与附件，返回：
    - `chunks`
@@ -41,14 +41,14 @@
     {
       "file_ref": "f_0001",
       "filename": "meta.json",
-      "abs_path": "/tmp/memory_import/import_20260424_001/staged/meta.json",
+      "abs_path": "/tmp/memory_upload/import_20260424_001/staged/meta.json",
       "size_bytes": 1321,
       "content_type": "application/json"
     },
     {
       "file_ref": "f_0002",
       "filename": "message.json",
-      "abs_path": "/tmp/memory_import/import_20260424_001/staged/message.json",
+      "abs_path": "/tmp/memory_upload/import_20260424_001/staged/message.json",
       "size_bytes": 18234,
       "content_type": "application/json"
     }
@@ -59,7 +59,7 @@
 ### 2.1 `file_ref` 是什么？怎么产生？有什么作用？
 
 - **定义**：文件在本次请求内的稳定引用 ID（如 `f_0001` / `f_0002`）
-- **生成方**：`MemoryImportService` 或 `StoreMemory.stage_upload_files(...)` 在遍历 `files[]` 时生成
+- **生成方**：`MemoryUploadService` 或 `StoreMemory.stage_upload_files(...)` 在遍历 `files[]` 时生成
 - **推荐生成规则**：
   - `request_scope_file_ref = f"{task_id}#{index:04d}"`
   - 示例：`import_20260424_001#0002`
@@ -123,7 +123,7 @@
       {
         "file_ref": "f_0002",
         "filename": "message.json",
-        "source_path": "/tmp/memory_import/import_20260424_001/staged/message.json",
+        "source_path": "/tmp/memory_upload/import_20260424_001/staged/message.json",
         "must_store_local": true,
         "storage_role": "memory_attachment"
       }
@@ -143,7 +143,7 @@
 ## 4. 代码职责拆分建议
 
 ```text
-app/features/import/memory_import/parsers/
+app/features/upload/memory_upload/parsers/
 ├── parse_memory.py                           # 入口，仅编排
 └── memory_parser/
     ├── schemas.py                            # 类型定义

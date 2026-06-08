@@ -32,21 +32,27 @@ def sanitize_filename(filename: str) -> str:
 
 
 def build_storage_path(
-    domain: str,
-    kb_index: str,
+    domain: str | None,
+    kb_index: str | None,
     filename: str,
     task_id: str | None = None,
 ) -> str:
-    """Build the relative storage path: domain/kb_index/YYYYMMDD/task_id/filename.
+    """Build the relative storage path.
 
-    This path is backend-agnostic and never includes the bucket name or prefix.
+    With domain and kb_index:    domain/kb_index/YYYYMMDD/task_id/filename
+    With domain, no kb_index:    domain/YYYYMMDD/task_id/filename
+    Without domain, with kb_index: kb_index/YYYYMMDD/task_id/filename
+    Without domain or kb_index:  YYYYMMDD/task_id/filename
     """
-    safe_domain = sanitize_segment(domain, fallback="UNKNOWN")
-    safe_kb_index = sanitize_segment(kb_index, fallback="default")
     safe_task_id = sanitize_segment(task_id or "default", fallback="default")
     safe_filename = sanitize_filename(filename)
     date_part = datetime.now(UTC).strftime("%Y%m%d")
-    return f"{safe_domain}/{safe_kb_index}/{date_part}/{safe_task_id}/{safe_filename}"
+
+    safe_domain = sanitize_segment(domain, fallback="") if domain else ""
+    safe_kb_index = sanitize_segment(kb_index, fallback="") if kb_index else ""
+
+    parts = [p for p in [safe_domain, safe_kb_index, date_part, safe_task_id, safe_filename] if p]
+    return "/".join(parts)
 
 
 def to_object_key(storage_path: str, prefix: str) -> str:

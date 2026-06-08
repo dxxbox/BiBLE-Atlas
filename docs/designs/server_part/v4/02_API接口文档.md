@@ -11,7 +11,7 @@ v4 不是 v3 的“参数兼容版”，而是按 `KNOWLEDGE_BASE/SKILL/MEMORY` 
 
 - 不使用 `app/api/v1/`
 - 路由目录固定为：
-  - `app/api/import/`
+  - `app/api/upload/`
   - `app/api/search/`
   - `app/api/download/`
   - `app/api/control/`
@@ -29,9 +29,9 @@ v4 不是 v3 的“参数兼容版”，而是按 `KNOWLEDGE_BASE/SKILL/MEMORY` 
 
 | 文件 | 方法 | 路径 | 说明 |
 |---|---|---|---|
-| `app/api/import/knowledge_base_import_api.py` | `POST` | `/api/import/knowledge-base` | KNOWLEDGE_BASE 导入 |
-| `app/api/import/skill_import_api.py` | `POST` | `/api/import/skill` | SKILL 导入 |
-| `app/api/import/memory_import_api.py` | `POST` | `/api/import/memory` | MEMORY 导入 |
+| `app/api/upload/knowledge_base_upload_api.py` | `POST` | `/api/import/knowledge-base` | KNOWLEDGE_BASE 导入 |
+| `app/api/upload/skill_upload_api.py` | `POST` | `/api/import/skill` | SKILL 导入 |
+| `app/api/upload/memory_upload_api.py` | `POST` | `/api/import/memory` | MEMORY 导入 |
 
 ### 2.2 Search APIs
 
@@ -67,7 +67,7 @@ v4 不是 v3 的“参数兼容版”，而是按 `KNOWLEDGE_BASE/SKILL/MEMORY` 
 
 ## 3. 统一字段定义
 
-- `kb_index`：知识库索引（必须）。一个 `kb_index` 绑定一个解析脚本、一个 `search_profile`、一个向量模型。
+- `kb_index`：知识库索引。Import 请求中必填；Search 请求中可选。一个 `kb_index` 绑定一个解析脚本、一个 `search_profile`、一个向量模型。
 - `tag`：自定义知识库索引标识（逻辑标签）。
   - KNOWLEDGE_BASE：由调用方提供（如 `design`、`flow`、`alg`）
   - SKILL：固定 `skill`
@@ -108,8 +108,8 @@ v4 不是 v3 的“参数兼容版”，而是按 `KNOWLEDGE_BASE/SKILL/MEMORY` 
 **请求处理规则**
 
 1. 选择最终解析脚本：
-   - 若请求包含 `parser_script`：优先使用上传脚本
-   - 否则在对应域的 `parsers/` 目录查找 `parse_{tag}.py`（`SKILL/MEMORY` 分别固定为 `parse_skill.py` / `parse_memory.py`）
+   - 若请求包含 `parser_script`：优先使用上传脚本（KB 既有策略会保存为 `parsers/parse_{tag}.py`）
+   - 否则在 KNOWLEDGE_BASE 的 `parsers/` 目录查找 `parse_{tag}.py`
    - 若仍未找到：使用默认解析脚本 `parse_default.py`
 2. 索引绑定规则：
    - 索引首次创建时，绑定 `kb_index -> parser_script -> search_profile -> vector_model`
@@ -155,10 +155,12 @@ v4 不是 v3 的“参数兼容版”，而是按 `KNOWLEDGE_BASE/SKILL/MEMORY` 
 
 - `tag` 必须为 `skill`
 - `files[]` 中 `.skill` 包必须且仅有一个（ZIP 改后缀）
-- 允许携带其他文件类型；这些文件在 `parse_skill.py` 中统一分类处理，语义解析以 `.skill`/`SKILL.md` 为主
-- `.skill` 解压后必须存在固定文件 `SKILL.md`
-- `parse_skill.py` 是 SKILL 唯一解析总入口：`.skill` 个数校验、非 `.skill` 分类与 `SKILL.md` 解析均在脚本内完成
-- 脚本选择规则与 KNOWLEDGE_BASE 相同（先上传，再 `parse_skill.py`，最后默认脚本）
+- `.skill` 解压后必须且只能包含一个顶层目录 `<skill-name>/`
+- 顶层目录下必须存在固定清单文件 `<skill-name>/SKILLS.md`
+- 脚本和附件必须位于同一个 `<skill-name>/` 顶层目录内，便于多个 skill 解压到 `.skills/` 后共存
+- 允许携带其他文件类型；这些文件在 `parse_skill.py` 中统一分类处理，语义解析以 `.skill`/`<skill-name>/SKILLS.md` 为主
+- `parse_skill.py` 是 SKILL 唯一解析总入口：`.skill` 个数校验、顶层目录校验、非 `.skill` 分类与 `SKILLS.md` 解析均在脚本内完成
+- 脚本选择规则：上传脚本先在任务临时目录执行，导入成功后才原子覆盖保存到 `custom_parsers_dir/parse_skill.py`；未上传时优先使用 custom parser，再回退到 `parsers_dir/parse_skill.py` 和 `parsers_dir/parse_default.py`
 - 若请求携带 `vector_model`，同样走 `infrastructure/vector/vector_tool.py` 的“本地检查 -> 缺失下载 -> 向量化”流程
 
 ### 4.3 MEMORY Import
@@ -180,7 +182,7 @@ v4 不是 v3 的“参数兼容版”，而是按 `KNOWLEDGE_BASE/SKILL/MEMORY` 
 **规则差异**
 
 - `tag` 必须为 `memory`
-- 脚本选择规则与 KNOWLEDGE_BASE 相同（先上传，再 `parse_memory.py`，最后默认脚本）
+- 脚本选择规则：上传脚本先在任务临时目录执行，导入成功后才原子覆盖保存到 `custom_parsers_dir/parse_memory.py`；未上传时优先使用 custom parser，再回退到 `parsers_dir/parse_memory.py` 和 `parsers_dir/parse_default.py`
 - 若请求携带 `vector_model`，同样走 `infrastructure/vector/vector_tool.py` 的“本地检查 -> 缺失下载 -> 向量化”流程
 
 ---
@@ -196,12 +198,19 @@ v4 不是 v3 的“参数兼容版”，而是按 `KNOWLEDGE_BASE/SKILL/MEMORY` 
 |---|---|---|---|
 | `query` | string | 是 | 查询文本 |
 | `tag` | string | 是 | 检索标签，决定选用哪个索引和 `search_profile` |
+| `kb_index` | string | 否 | 精确指定要检索的知识库索引；提供时优先按 `domain + kb_index` 查找绑定 |
 | `search_type` | string | 否 | `keyword/title/text/vector/hybrid` |
 | `top_k` | int | 否 | 返回数量 |
 | `vector_model` | string | 否 | 向量模型（若提供，必须与索引绑定模型一致） |
 | `vector_weight` | float | 否 | 混合检索向量权重 |
 
 > 不使用 `filters` 字段。
+
+绑定选择规则：
+
+1. 若请求体包含非空 `kb_index`，服务端按 `domain + kb_index` 精确查找绑定。
+2. 若请求体未包含 `kb_index`，服务端按 `domain + tag` 查找 active binding，保持旧客户端兼容。
+3. 当同一 `domain + tag` 下存在多个 active binding 时，按 `tag` 查询存在歧义；需要精确检索某次导入的数据时，调用方应传入 `kb_index`。
 
 ### 5.2 KNOWLEDGE_BASE Search
 
@@ -212,7 +221,7 @@ v4 不是 v3 的“参数兼容版”，而是按 `KNOWLEDGE_BASE/SKILL/MEMORY` 
 
 - `query` 与 `tag` 必填
 - `tag` 指向 KNOWLEDGE_BASE 某个自定义知识索引
-- 服务端按 `tag` 加载绑定的 `kb_index` 和 `search_profile`，据此构造检索语句
+- 若请求携带 `kb_index`，服务端按 `kb_index` 精确加载绑定；否则按 `tag` 加载绑定的 `kb_index` 和 `search_profile`
 
 ### 5.3 SKILL Search
 
@@ -223,8 +232,8 @@ v4 不是 v3 的“参数兼容版”，而是按 `KNOWLEDGE_BASE/SKILL/MEMORY` 
 
 - `query` 与 `tag` 必填
 - `tag` 必须为 `skill`
-- 服务端按 `skill` 绑定关系加载 `kb_index` 与 `search_profile`
-- `SKILL.md` 的 `name/description/正文` 都参与检索：
+- 若请求携带 `kb_index`，服务端按 `kb_index` 精确加载绑定；否则按 `skill` 绑定关系加载 `kb_index` 与 `search_profile`
+- `SKILLS.md` 的 `name/description/正文` 都参与检索：
   - `search_type=keyword`：主要匹配 `name`
   - `search_type=text`：匹配 `name/description/正文`
   - `search_type=vector`：向量源为 `name/description/正文`
@@ -239,12 +248,12 @@ v4 不是 v3 的“参数兼容版”，而是按 `KNOWLEDGE_BASE/SKILL/MEMORY` 
 
 - `query` 与 `tag` 必填
 - `tag` 必须为 `memory`
-- 服务端按 `memory` 绑定关系加载 `kb_index` 与 `search_profile`
+- 若请求携带 `kb_index`，服务端按 `kb_index` 精确加载绑定；否则按 `memory` 绑定关系加载 `kb_index` 与 `search_profile`
 
 ### 5.5 检索处理流程
 
 1. 根据路由确定域（KNOWLEDGE_BASE/SKILL/MEMORY）
-2. 根据 `tag` 查找绑定记录：`kb_index + search_profile + vector_model`
+2. 查找绑定记录：若传入 `kb_index` 则按 `domain + kb_index` 精确查找，否则按 `domain + tag` 查找 active binding；绑定记录包含 `kb_index + search_profile + vector_model`
 3. 基于 `search_profile` 编译检索 DSL
 4. 执行检索并返回结果
 

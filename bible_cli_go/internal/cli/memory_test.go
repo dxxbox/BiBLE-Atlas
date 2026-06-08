@@ -203,11 +203,11 @@ func TestRunMemoryUploadAccepted(t *testing.T) {
 		if r.URL.Path == "/api/import/memory" && r.Method == nethttp.MethodPost {
 			w.WriteHeader(nethttp.StatusAccepted)
 			_ = json.NewEncoder(w).Encode(map[string]any{
-				"task_id":      "task-test-123",
-				"memory_id":    "mem_test-session-upload-accepted",
-				"domain":       "MEMORY",
-				"status":       "queued",
-				"message":      "Memory import accepted.",
+				"task_id":   "task-test-123",
+				"memory_id": "mem_test-session-upload-accepted",
+				"domain":    "MEMORY",
+				"status":    "queued",
+				"message":   "Memory import accepted.",
 			})
 			return
 		}
@@ -339,5 +339,89 @@ func TestRunMemoryBuildMeta(t *testing.T) {
 	}
 	if dataMap["memory_id"] != "mem_build-meta-test" {
 		t.Fatalf("expected memory_id=mem_build-meta-test, got %v", dataMap["memory_id"])
+	}
+}
+
+func TestRunMemoryUploadTestFlagNoHTTP(t *testing.T) {
+	dir := t.TempDir()
+	msg := map[string]any{
+		"schema_version": "1.0",
+		"session_id":     "test-session-upload-test-flag",
+		"requests":       []any{},
+	}
+	data, _ := json.Marshal(msg)
+	if err := os.WriteFile(filepath.Join(dir, "message.json"), data, 0o644); err != nil {
+		t.Fatal(err)
+	}
+	metaContent := map[string]any{
+		"memory_id": "mem_test-session-upload-test-flag",
+		"title":     "upload-test-flag",
+		"abstract":  "abstract for test",
+	}
+	metaData, _ := json.Marshal(metaContent)
+	if err := os.WriteFile(filepath.Join(dir, "meta.json"), metaData, 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	t.Setenv("BIBLE_CLI_BASE_URL", "http://127.0.0.1:1")
+	t.Setenv("BIBLE_MEMORY_KB_INDEX", "memory_main")
+
+	var out, errBuf bytes.Buffer
+	exitCode := Run([]string{"memory", "upload", dir, "--kb-index", "memory_main", "--test"}, &out, &errBuf)
+	if exitCode != 0 {
+		t.Fatalf("expected exit 0, got %d stderr=%q stdout=%q", exitCode, errBuf.String(), out.String())
+	}
+	resp := decodeRunResponse(t, out.String())
+	if !resp.OK {
+		t.Fatalf("expected ok, got %q", out.String())
+	}
+	dm, ok := resp.Data.(map[string]any)
+	if !ok {
+		t.Fatalf("expected object data")
+	}
+	if _, has := dm["stub"]; has {
+		t.Fatalf("--test upload must not add stub markers")
+	}
+	if dm["status"] != "accepted" {
+		t.Fatalf("status: %v", dm["status"])
+	}
+	if dm["memory_id"] != "mem_test-session-upload-test-flag" {
+		t.Fatalf("memory_id: %v", dm["memory_id"])
+	}
+	if _, ok := dm["task_id"].(string); !ok || dm["task_id"] == "" {
+		t.Fatalf("task_id: %v", dm["task_id"])
+	}
+}
+
+func TestRunMemorySearchTestFlagNoHTTP(t *testing.T) {
+	t.Setenv("BIBLE_CLI_BASE_URL", "http://127.0.0.1:1")
+	var out, errBuf bytes.Buffer
+	exitCode := Run([]string{"memory", "search", "hello", "--top-k", "10", "--test"}, &out, &errBuf)
+	if exitCode != 0 {
+		t.Fatalf("expected exit 0, got %d stderr=%q stdout=%q", exitCode, errBuf.String(), out.String())
+	}
+	resp := decodeRunResponse(t, out.String())
+	if !resp.OK {
+		t.Fatalf("expected ok, got %q", out.String())
+	}
+	data, ok := resp.Data.(map[string]any)
+	if !ok {
+		t.Fatalf("expected data object")
+	}
+	if _, has := data["test_mode"]; has {
+		t.Fatalf("plugin-facing data must not include test_mode; use logs for fixture path")
+	}
+	if _, has := data["stub"]; has {
+		t.Fatalf("fixture path must not include stub markers")
+	}
+	if data["kb_index"] != "memory_main" {
+		t.Fatalf("kb_index: %v", data["kb_index"])
+	}
+	results, ok := data["results"].([]any)
+	if !ok || len(results) == 0 {
+		t.Fatalf("expected non-empty results, got %v", data["results"])
+	}
+	if len(results) != 2 {
+		t.Fatalf("expected 2 canned rows with top_k=10, got %d", len(results))
 	}
 }

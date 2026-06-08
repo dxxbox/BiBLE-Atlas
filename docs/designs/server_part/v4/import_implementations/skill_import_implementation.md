@@ -12,7 +12,7 @@
   - 启动阶段向量模型预加载
   - 导入阶段脚本解析
   - `.skill` 包上传约束与解压安全校验
-  - `SKILL.md` 结构化解析（`name/description/正文` 等）
+  - `SKILLS.md` 结构化解析（`name/description/正文` 等）
   - 原始文件落盘
   - 绑定写入
   - 可选向量化 + 内容入库
@@ -26,14 +26,14 @@
 2. `app/config/config_manager.py`（`ConfigManager`）
 3. `app/infrastructure/vector/model_preloader.py`（`VectorModelPreloader`）
 4. `app/infrastructure/vector/vector_tool.py`（`VectorTool`）
-5. `app/api/import/skill_import_api.py`（`SkillImportAPI`）
+5. `app/api/upload/skill_upload_api.py`（`SkillUploadAPI`）
 6. `app/features/async_task/service.py`（`AsyncTaskService`）
 7. `app/features/async_task/tasks/dispatch_task.py`（`dispatch_task`）
-8. `app/features/import/import_task_executor.py`（`ImportTaskExecutor`）
-9. `app/features/import/skill_import/skill_import_service.py`（`SkillImportService`）
-10. `app/features/import/parser_runtime/ast_guard.py`（`ASTGuard`）
-11. `app/features/import/parser_runtime/sandbox_runner.py`（`SandboxRunner`）
-12. `app/features/import/skill_import/storage/store_skill.py`（`StoreSkill`）
+8. `app/features/upload/upload_task_executor.py`（`UploadTaskExecutor`）
+9. `app/features/upload/skill_upload/skill_upload_service.py`（`SkillUploadService`）
+10. `app/features/upload/parser_runtime/ast_guard.py`（`ASTGuard`）
+11. `app/features/upload/parser_runtime/sandbox_runner.py`（`SandboxRunner`）
+12. `app/features/upload/skill_upload/storage/store_skill.py`（`StoreSkill`）
 13. `app/infrastructure/file_system/factory.py`（`FileSystemFactory`）
 14. `app/infrastructure/file_system/base.py`（`IFileSystemGateway`）
 15. `app/infrastructure/file_system/local.py`（`LocalFileSystemGateway`）
@@ -49,8 +49,6 @@
 from dataclasses import dataclass
 from typing import Any, Literal
 
-ParserScriptSource = Literal["upload", "dir_discovery", "default"]
-
 @dataclass
 class FileStoreResult:
     filename: str
@@ -59,11 +57,14 @@ class FileStoreResult:
     size_bytes: int
 
 @dataclass
-class SkillImportPayload:
+class SkillUploadPayload:
     kb_index: str
     tag: Literal["skill"]
     vector_model: str | None
     parser_context: dict[str, Any] | None
+    parser_script_path: str | None = None
+    parser_script_filename: str | None = None
+    session_upload_dir: str | None = None
 
 @dataclass
 class ParseResult:
@@ -75,6 +76,8 @@ class ParseResult:
 注意点：
 - SKILL 的 `tag` 必须固定为 `skill`。
 - `parse_skill.py` 是 SKILL 的唯一解析总入口；服务层不应先按文件类型分流再解析。
+- `import_skill.parsers_dir` 是预注册脚本目录，`import_skill.custom_parsers_dir` 是上传脚本通过校验并导入成功后的持久化目录。
+- `parser_script` 上传文件不直接写入 `custom_parsers_dir`；它先进入任务临时目录，当前任务成功后才覆盖保存为 `custom_parsers_dir/parse_skill.py`。
 
 ---
 
@@ -111,7 +114,7 @@ def download_from_huggingface(self, model_name: str) -> str: ...
 
 ## 5. API 层实现
 
-文件：`app/api/import/skill_import_api.py`
+文件：`app/api/upload/skill_upload_api.py`
 
 建议接口：
 
@@ -145,7 +148,7 @@ async def import_skill(
 
 - `app/features/async_task/service.py`
 - `app/features/async_task/tasks/dispatch_task.py`
-- `app/features/import/import_task_executor.py`
+- `app/features/upload/upload_task_executor.py`
 
 建议接口：
 
@@ -155,24 +158,23 @@ def submit(self, task_type: str, payload: dict[str, Any], idempotency_key: str |
 def get(self, task_id: str) -> dict[str, Any] | None: ...
 def cancel(self, task_id: str) -> dict[str, Any]: ...
 
-# app/features/import/import_task_executor.py
+# app/features/upload/upload_task_executor.py
 def execute(self, task_id: str, task_type: str, payload: dict[str, Any]) -> dict[str, Any]: ...
 ```
 
 调度关系：
 
 1. API 提交 `task_type=import.skill` 到 `AsyncTaskService`。
-2. `dispatch_task` 在 Celery Worker 进程中消费并分发给 `ImportTaskExecutor`。
-3. `ImportTaskExecutor` 调用 `SkillImportService.execute_task(...)` 完成导入。
+2. `dispatch_task` 在 Celery Worker 进程中消费并分发给 `UploadTaskExecutor`。
+3. `UploadTaskExecutor` 调用 `SkillUploadService.execute_task(...)` 完成导入。
 4. 任务状态由通用异步层统一维护（`queued/running/completed/failed/cancelled`）。
 
-### 6.2 `SkillImportService`
+### 6.2 `SkillUploadService`
 
 建议接口：
 
 ```python
-def execute_task(self, task_id: str, payload: SkillImportPayload, files: list[Any]) -> None: ...
-def save_uploaded_parser(self, parser_script: Any, parsers_dir: str, target_name: str = "parse_skill.py") -> str: ...
+def execute_task(self, task_id: str, payload: SkillUploadPayload, files: list[Any]) -> None: ...
 def validate_parse_result_schema(self, result: ParseResult) -> None: ...
 def merge_chunks_and_check_profile_consistency(self, all_results: list[ParseResult]) -> ParseResult: ...
 def cleanup_staged_workspace(self, task_id: str, keep_failed_workspace: bool) -> None: ...
@@ -180,10 +182,12 @@ def cleanup_staged_workspace(self, task_id: str, keep_failed_workspace: bool) ->
 
 内部逻辑：
 1. 脚本选择链路：
-   - 上传脚本 -> `parsers/parse_skill.py`
-   - 否则查 `parsers/parse_skill.py`
-   - 否则 `parsers/parse_default.py`
-2. `ASTGuard.validate(...)`
+   - 本次请求携带 `parser_script`：API 先保存到任务 session 临时目录；本任务只使用该临时脚本执行。
+   - 本次请求不携带 `parser_script`：先查 `custom_parsers_dir/parse_skill.py`
+   - custom 目录未命中：查 `parsers_dir/parse_skill.py`
+   - 仍未命中：回退 `parsers_dir/parse_default.py`
+   - 均无 -> `PARSER_SCRIPT_NOT_FOUND`
+2. 对上传脚本和 custom parser 执行 `ASTGuard.validate(...)`；预注册 `parsers_dir` 脚本视为可信脚本
 3. 调用 `StoreSkill.stage_upload_files(...)`（仅临时落地，不做类型分流）
 4. 调用 `StoreSkill.build_parse_manifest(...)`
 5. 调用 `SandboxRunner.run_parse(...)`（单次，输入 manifest_path）
@@ -191,30 +195,36 @@ def cleanup_staged_workspace(self, task_id: str, keep_failed_workspace: bool) ->
    - 读取 manifest 的全部上传文件
    - 校验 `.skill` 文件必须且仅有一个（允许其他类型文件共存）
    - 对 `.skill` 执行标准 ZIP 解压（防 Zip Slip、解压炸弹、软链接穿越）
-   - 定位并解析固定文件名 `SKILL.md`（提取 `name/description/正文`）
+   - 校验解压后必须且只能包含一个顶层目录 `<skill-name>/`
+   - 定位并解析固定文件 `<skill-name>/SKILLS.md`（提取 `name/description/正文`）
    - 构建 `chunks/search_profile/local_file_storage_plan`
 7. 调用 `validate_parse_result_schema(...)`（校验 `chunks/search_profile/local_file_storage_plan`）
 8. 调用 `StoreSkill.store(...)`（执行本地存储计划、回填存储位置、绑定/向量化/写库/文件注册）
-9. 在 `finally` 调用 `cleanup_staged_workspace(...)`（内部委托 `StoreSkill.cleanup_task_workspace(...)`）
+9. 若本次请求携带上传脚本且导入成功，则原子覆盖保存到 `custom_parsers_dir/parse_skill.py`
+10. 在 `finally` 调用 `cleanup_staged_workspace(...)`（内部委托 `StoreSkill.cleanup_task_workspace(...)`）
 
 注意点：
 - SKILL 文件落盘失败应直接终止任务，不继续解析。
 - 解析输入建议统一使用 manifest（全量上传文件），避免在服务层提前做 `.skill` / 非 `.skill` 分流。
 - `.skill` 是业务包扩展名，本质 ZIP；实现上应按 ZIP 标准解析，不建议自研解压格式。
-- `SKILL.md` 为必需文件；缺失、重复或不可解析都应作为明确业务错误返回。
+- `<skill-name>/SKILLS.md` 为必需文件；缺失、重复或不可解析都应作为明确业务错误返回。
+- root-level `SKILLS.md` 与多个顶层目录均视为非法包结构，避免多个 skill 解压到 `.skills/` 时发生覆盖。
 - 非 `.skill` 文件也由 `parse_skill.py` 统一处理与分类；它们不生成语义 chunk，但应进入 `local_file_storage_plan`。
+- 上传脚本 ASTGuard 失败、Sandbox 失败、ParseResult schema 校验失败或后续 store 失败时，不得覆盖已有 custom parser。
+- custom parser 保存目标固定为 `custom_parsers_dir/parse_skill.py`，不保留上传文件原名；覆盖应使用原子替换。
+- binding 中 `parser_script_source` 建议记录为 `parse_skill.py`，`parser_script_sha256` 记录本次实际执行脚本内容摘要。
 - `execute_task(...)` 必须使用 `try/except/finally`，所有失败分支都需进入 `finally` 执行临时目录清理。
 - 清理目标建议为 `<import_work_root>/<task_id>/`（如包含 `staged/`、中间清单文件，也应一并删除）。
 - 默认成功/失败都清理；支持 `import.skill.staging.keep_failed_workspace=true` 保留失败现场用于排障。
 - 需要配置 TTL 兜底清理任务，定期删除超期遗留任务目录（例如 24h）。
-- `.skill`/`SKILL.md` 的全量解析实现建议见：
+- `.skill`/`<skill-name>/SKILLS.md` 的全量解析实现建议见：
   - `doc/new_framework_python/v4/import_implementations/skill_package_parser_implementation.md`
 
 ---
 
 ## 7. 存储层实现（SKILL）
 
-文件：`app/features/import/skill_import/storage/store_skill.py`
+文件：`app/features/upload/skill_upload/storage/store_skill.py`
 
 建议接口：
 
@@ -267,7 +277,7 @@ def sweep_expired_task_workspaces(self, ttl_hours: int, limit: int = 1000) -> in
 补充约束：
 - `local_file_storage_plan` 应覆盖全部上传文件（包含非 `.skill` 文件）。
 - `bulk_upsert_file_registry(...)` 应记录 `storage_path` 等存储位置信息。
-- 语义内容只来自 `.skill` -> `SKILL.md`，非 `.skill` 文件不生成语义 chunk，但其 `storage_path` 需可回填到语义文档（`metadata.related_storage_paths`）。
+- 语义内容只来自 `.skill` -> `SKILLS.md`，非 `.skill` 文件不生成语义 chunk，但其 `storage_path` 需可回填到语义文档（`metadata.related_storage_paths`）。
 - `chunks` 建议保留 `name/description/body` 三字段，并同步 `title=name`、`content=name+description+body` 便于兼容展示与检索。
 - `search_profile` 建议固定规则：
   - `keyword`：匹配 `name`
@@ -329,8 +339,8 @@ def sweep_expired_task_workspaces(self, ttl_hours: int, limit: int = 1000) -> in
 6. 脚本三段选择链路（upload/dir_discovery/default）
 7. 原始文件落盘成功并可用于后续解析
 8. `.skill` 解压安全校验（路径穿越/解压炸弹）有效
-9. 解压后缺少 `SKILL.md` 时失败
-10. `SKILL.md` 解析出 `name/description/正文` 并生成有效 `chunks/search_profile`
+9. 解压后缺少 `SKILLS.md` 时失败
+10. `SKILLS.md` 解析出 `name/description/正文` 并生成有效 `chunks/search_profile`
 11. `keyword` 检索命中 `name`
 12. `text` 检索命中 `name/description/正文`
 13. `vector` 检索使用 `name/description/正文` 向量

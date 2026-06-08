@@ -14,9 +14,9 @@ and knowledge_base_search_flow.puml steps 72-139:
 
 from __future__ import annotations
 
-import logging
 from typing import Any
 
+from bible.common.logger import get_logger
 from bible.config.configure import SearchConfig
 from bible.features.search.knowledge_base_search.searcher.search_knowledge_base import (
     KnowledgeBaseSearcher,
@@ -25,7 +25,7 @@ from bible.features.search.knowledge_base_search.searcher.search_knowledge_base 
 from bible.infrastructure.database.factory import DatabaseFactory
 from bible.infrastructure.vector.vector_tool import VectorTool
 
-logger = logging.getLogger(__name__)
+logger = get_logger(__name__)
 
 # ── Domain constant ────────────────────────────────────────────────────────────
 _DOMAIN = "KNOWLEDGE_BASE"
@@ -40,11 +40,13 @@ class IndexNotBoundError(LookupError):
     Maps to INDEX_NOT_BOUND / HTTP 404 at the API layer.
     """
 
-    def __init__(self, tag: str) -> None:
+    def __init__(self, value: str, *, selector: str = "tag") -> None:
         super().__init__(
-            f"No active KNOWLEDGE_BASE binding found for tag='{tag}'."
+            f"No active KNOWLEDGE_BASE binding found for {selector}='{value}'."
         )
-        self.tag = tag
+        self.tag = value
+        self.selector = selector
+        self.value = value
 
 
 class VectorModelConflictError(ValueError):
@@ -107,6 +109,7 @@ class KnowledgeBaseSearchService:
         top_k: int | None,
         vector_model: str | None,
         vector_weight: float | None,
+        kb_index: str | None = None,
     ) -> dict[str, Any]:
         """Execute a KNOWLEDGE_BASE search and return a structured response.
 
@@ -153,13 +156,45 @@ class KnowledgeBaseSearchService:
         SearchInternalError
             Database or embedding failure (propagated from Searcher).
         """
+        logger.info(
+            "KNOWLEDGE_BASE search started tag=%s kb_index=%s query_len=%d requested_search_type=%s requested_top_k=%s vector_model=%s",
+            tag,
+            kb_index or "<by-tag>",
+            len(query),
+            search_type or "<default>",
+            top_k if top_k is not None else "<default>",
+            vector_model or "<binding>",
+        )
+
         # ── 1. Obtain DB writer ───────────────────────────────────────────
         db_writer = self._db_factory.get_writer(domain=_DOMAIN)  # type: ignore[arg-type]
+        logger.debug("KNOWLEDGE_BASE search DB writer acquired backend_domain=%s", _DOMAIN)
 
         # ── 2. Look up binding ────────────────────────────────────────────
-        binding = db_writer.get_binding_by_domain_tag(_DOMAIN, tag)  # type: ignore[arg-type]
+        if kb_index:
+            binding = db_writer.get_binding_by_domain_index(_DOMAIN, kb_index)  # type: ignore[arg-type]
+            binding_selector = "kb_index"
+            binding_selector_value = kb_index
+        else:
+            binding = db_writer.get_binding_by_domain_tag(_DOMAIN, tag)  # type: ignore[arg-type]
+            binding_selector = "tag"
+            binding_selector_value = tag
         if binding is None:
-            raise IndexNotBoundError(tag)
+            logger.warning(
+                "KNOWLEDGE_BASE search binding not found selector=%s value=%s",
+                binding_selector,
+                binding_selector_value,
+            )
+            raise IndexNotBoundError(binding_selector_value, selector=binding_selector)
+        logger.info(
+            "KNOWLEDGE_BASE search binding selected selector=%s value=%s tag=%s kb_index=%s active=%s vector_model=%s",
+            binding_selector,
+            binding_selector_value,
+            binding.tag,
+            binding.kb_index,
+            binding.is_active,
+            binding.vector_model or "<none>",
+        )
 
         # ── 3. Normalise parameters ───────────────────────────────────────
         effective_search_type = search_type or _DEFAULT_SEARCH_TYPE
@@ -167,10 +202,23 @@ class KnowledgeBaseSearchService:
         effective_vector_weight = self._normalise_vector_weight(
             vector_weight, effective_search_type, binding.search_profile_json
         )
+        logger.info(
+            "KNOWLEDGE_BASE search parameters normalised kb_index=%s search_type=%s top_k=%d vector_weight=%s",
+            binding.kb_index,
+            effective_search_type,
+            effective_top_k,
+            effective_vector_weight if effective_vector_weight is not None else "<none>",
+        )
 
         # ── 4. Vector-model consistency check ─────────────────────────────
         bound_model: str | None = binding.vector_model
         if vector_model and bound_model and vector_model != bound_model:
+            logger.warning(
+                "KNOWLEDGE_BASE search vector model conflict requested=%s bound=%s kb_index=%s",
+                vector_model,
+                bound_model,
+                binding.kb_index,
+            )
             raise VectorModelConflictError(
                 requested=vector_model, bound=bound_model
             )
@@ -180,6 +228,7 @@ class KnowledgeBaseSearchService:
 
         # ── 5. Delegate to Searcher ───────────────────────────────────────
         searcher = self._get_searcher(db_writer)
+        logger.info("KNOWLEDGE_BASE search dispatching to searcher kb_index=%s", binding.kb_index)
         search_result = searcher.search(
             kb_index=binding.kb_index,
             query=query,
@@ -188,6 +237,12 @@ class KnowledgeBaseSearchService:
             search_profile=binding.search_profile_json,
             vector_model=effective_vector_model,
             vector_weight=effective_vector_weight,
+        )
+        logger.info(
+            "KNOWLEDGE_BASE search completed kb_index=%s total=%s items=%d",
+            binding.kb_index,
+            search_result.get("total"),
+            len(search_result.get("items", [])),
         )
 
         # ── 6. Build response ─────────────────────────────────────────────

@@ -90,7 +90,7 @@ export class DefaultTaskTracker implements TaskTracker {
 
   async cancel(taskId: string): Promise<void> {
     try {
-      await this.deps.cli.run({ args: ['task', 'cancel', '--id', taskId] });
+      await this.deps.cli.run({ args: ['task', 'cancel', taskId] });
     } catch (err) {
       // 即便 CLI 报错（例如服务端已结束），本地仍标记取消
       this.deps.output.warn('task.cancel.cli_error', { taskId, err: (err as Error).message });
@@ -193,7 +193,7 @@ export class DefaultTaskTracker implements TaskTracker {
 
       try {
         const resp = await this.deps.cli.run<TaskGetResponse>({
-          args: ['task', 'get', '--id', current.taskId],
+          args: ['task', 'get', current.taskId],
         });
         consecutiveUnavailable = 0;
         backoffMs = pollMs;

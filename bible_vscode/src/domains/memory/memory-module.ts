@@ -10,6 +10,7 @@ import { registerSearchMemoryCommand } from './commands/search-memory.command';
 import { registerSaveChatCommand } from './commands/save-chat.command';
 import { registerShowLastImportFilesCommand } from './commands/show-last-import-files.command';
 import { registerMemoryParticipant } from './participant/memory-participant';
+import { CMD_COPY_LOAD_CMD, disposeLoadedContextBar } from './commands/_memory-actions';
 
 export class MemoryModule implements DomainModule {
   readonly id = 'memory' as const;
@@ -20,9 +21,9 @@ export class MemoryModule implements DomainModule {
         { command: ['memory', 'search'] },
       ],
       optional: [
-        { command: ['memory', 'import'],          featureFlag: 'memory.write' },
-        { command: ['memory', 'download', 'file'], featureFlag: 'memory.download' },
-        { command: ['memory', 'artifact', 'fetch'], featureFlag: 'memory.artifact' },
+        { command: ['memory', 'upload'],    featureFlag: 'memory.write' },
+        { command: ['memory', 'download'],  featureFlag: 'memory.download' },
+        { command: ['task', 'get'],         featureFlag: 'memory.taskPoll' },
       ],
     };
   }
@@ -34,7 +35,6 @@ export class MemoryModule implements DomainModule {
       config: deps.config,
       output: deps.output,
       builder,
-      tasks: deps.tasks,
     });
 
     const disposables: vscode.Disposable[] = [];
@@ -66,7 +66,6 @@ export class MemoryModule implements DomainModule {
         'bible_memory_download',
         new MemoryDownloadTool({
           service,
-          tasks: deps.tasks,
           notify: deps.notify,
           output: deps.output,
           config: deps.config,
@@ -79,6 +78,18 @@ export class MemoryModule implements DomainModule {
     disposables.push(registerSaveChatCommand(deps, service));
     // Hidden debug command (代码注册但 package.json 不暴露到命令面板；通过 keybinding/programmatic 调用)
     disposables.push(registerShowLastImportFilesCommand(deps));
+
+    // 状态栏复制命令：点击状态栏 "Memory: xxx" 条目时触发
+    disposables.push(
+      vscode.commands.registerCommand(CMD_COPY_LOAD_CMD, async () => {
+        const LOAD_CMD = '@bible-memory /load';
+        await vscode.env.clipboard.writeText(LOAD_CMD);
+        void deps.notify.info(`Copied: ${LOAD_CMD}  — paste in Chat, add your question, then send.`);
+      }),
+    );
+
+    // 状态栏 item 生命周期（扩展停用时回收）
+    disposables.push({ dispose: disposeLoadedContextBar });
 
     // Chat Participant
     disposables.push(registerMemoryParticipant(ctx, deps, service));

@@ -21,17 +21,25 @@ export async function activate(ctx: vscode.ExtensionContext): Promise<void> {
   const notify = new VsCodeNotifications();
 
   const dryRun = config.debugDryRun();
+  const testMode = config.cliTestMode();
   const cli: CliRunner = dryRun
     ? new DryRunCliRunner({ output, config })
     : new ExecFileCliRunner({
         cliPath: config.cliPath(),
         defaultTimeoutMs: config.cliTimeoutMs(),
+        testMode,
         output,
       });
 
   if (dryRun) {
     output.warn('extension.dryRun.enabled', {
-      hint: 'CLI calls will NOT be executed; payloads will be dumped to this channel. Disable with `bible.debug.dryRun=false` or the "Bible: Toggle Debug Dry-Run" command.',
+      hint: 'CLI calls will NOT be executed; payloads will be dumped to this channel. Disable with `bible.debug.dryRun=false`.',
+    });
+    output.show(true);
+  }
+  if (testMode && !dryRun) {
+    output.warn('extension.testMode.enabled', {
+      hint: 'All CLI calls will include --test flag. The Go CLI returns mock data without contacting the server. Disable with `bible.cli.testMode=false`.',
     });
     output.show(true);
   }
@@ -72,6 +80,7 @@ export async function activate(ctx: vscode.ExtensionContext): Promise<void> {
       if (
         e.affectsConfiguration('bible.cliPath') ||
         e.affectsConfiguration('bible.cli.timeoutMs') ||
+        e.affectsConfiguration('bible.cli.testMode') ||
         e.affectsConfiguration('bible.debug.dryRun')
       ) {
         void notify.info('Bible CLI / debug settings changed; reload window for changes to take effect.', 'Reload Window').then((pick) => {
@@ -84,6 +93,7 @@ export async function activate(ctx: vscode.ExtensionContext): Promise<void> {
   output.info('extension.activated', {
     cliPath: dryRun ? '(dry-run, no CLI)' : config.cliPath(),
     dryRun,
+    testMode: testMode && !dryRun,
     tools: toolRegistry.active(),
     commands: commandRegistry.active(),
   });

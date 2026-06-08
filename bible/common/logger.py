@@ -1,7 +1,7 @@
 import logging
 import sys
 from datetime import datetime
-from logging.handlers import TimedRotatingFileHandler
+from logging.handlers import TimedRotatingFileHandler, WatchedFileHandler
 from pathlib import Path
 from typing import Any, Optional, Tuple
 
@@ -33,7 +33,7 @@ def _load_log_config() -> Tuple[str, str, str, Optional[Any]]:
             if config.log.log_dir:
                 log_dir = Path(config.log.log_dir).resolve()
             else:
-                log_dir = Path(config.storage.workspace_dir).resolve() / "log"
+                log_dir = Path(config.workspace.root).resolve() / "log"
             log_dir.mkdir(parents=True, exist_ok=True)
             log_output = str(log_dir / "bible-atlas.log")
     except Exception:
@@ -75,11 +75,11 @@ def _create_log_handler(log_output: str, config: Optional[Any]) -> logging.Handl
                         encoding="utf-8",
                     )
                 else:
-                    return logging.FileHandler(log_output, encoding="utf-8")
+                    return WatchedFileHandler(log_output, encoding="utf-8")
             except Exception:
-                return logging.FileHandler(log_output, encoding="utf-8")
+                return WatchedFileHandler(log_output, encoding="utf-8")
         else:
-            return logging.FileHandler(log_output, encoding="utf-8")
+            return WatchedFileHandler(log_output, encoding="utf-8")
 
 def get_logger(
     name: str = "bible-atlas",

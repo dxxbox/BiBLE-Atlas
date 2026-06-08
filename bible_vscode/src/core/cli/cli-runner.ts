@@ -27,6 +27,12 @@ export interface CliRunnerOptions {
   output: OutputChannel;
   /** 大入参字节阈值，超过则改走 stdin（避免命令行长度上限）。 */
   stdinThresholdBytes?: number;
+  /**
+   * Test mode：向每次 CLI 调用**末尾**追加 `--test` 全局标志。
+   * Go CLI 在收到该标志后直接返回 mock 数据，不联系服务端，
+   * 用于客户端与 CLI 联调阶段（无需运行 Server）。
+   */
+  testMode?: boolean;
 }
 
 const DEFAULT_STDIN_THRESHOLD = 16 * 1024;
@@ -49,18 +55,20 @@ export class ExecFileCliRunner implements CliRunner {
     const startedAt = Date.now();
     const cliPath = this.opts.cliPath;
     const timeoutMs = call.timeoutMs ?? this.opts.defaultTimeoutMs;
-    this.opts.output.debug('cli.invoke', { args: call.args, timeoutMs });
+    // Test mode: append --test so the Go CLI skips the server and returns mock data.
+    const args = this.opts.testMode ? [...call.args, '--test'] : call.args;
+    this.opts.output.debug('cli.invoke', { args, timeoutMs, testMode: this.opts.testMode ?? false });
 
     try {
-      const stdout = await this.execFilePromise(cliPath, call.args, call.stdinPayload, timeoutMs);
+      const stdout = await this.execFilePromise(cliPath, args, call.stdinPayload, timeoutMs);
       const env = this.parseEnvelope<T>(stdout);
       const elapsedMs = Date.now() - startedAt;
-      this.opts.output.debug('cli.done', { args: call.args, elapsedMs, ok: env.ok });
+      this.opts.output.debug('cli.done', { args, elapsedMs, ok: env.ok });
       return env;
     } catch (err) {
       const elapsedMs = Date.now() - startedAt;
-      const mapped = this.mapExecError(err, call);
-      this.opts.output.error('cli.failed', { args: call.args, elapsedMs, code: mapped.code, message: mapped.message });
+      const mapped = this.mapExecError(err, { ...call, args });
+      this.opts.output.error('cli.failed', { args, elapsedMs, code: mapped.code, message: mapped.message });
       throw mapped;
     }
   }
@@ -107,10 +115,11 @@ export class ExecFileCliRunner implements CliRunner {
     }
   }
 
-  private mapExecError(err: unknown, call: CliInvocation): BibleCliError {
+  private mapExecError(err: unknown, call: CliInvocation & { args: string[] }): BibleCliError {
     if (err instanceof BibleCliError) return err;
 
     const e = err as ExecFileException & { code?: string | number; stdout?: string; stderr?: string };
+    const argsStr = call.args.join(' ');
 
     if (e?.code === 'ENOENT') {
       return new BibleCliError(
@@ -121,7 +130,7 @@ export class ExecFileCliRunner implements CliRunner {
       );
     }
     if (e?.signal === 'SIGTERM' || e?.killed) {
-      return new BibleCliError('TIMEOUT', `CLI call timed out: bible ${call.args.join(' ')}`, undefined, e);
+      return new BibleCliError('TIMEOUT', `CLI call timed out: bible ${argsStr}`, undefined, e);
     }
 
     // exit=3 is reserved for CLI_NOT_IMPLEMENTED in cli-contract-v1.
@@ -132,9 +141,7 @@ export class ExecFileCliRunner implements CliRunner {
       try {
         const env = JSON.parse(e.stdout.trim()) as CliEnvelope;
         if (env?.error) {
-          const mapped = BibleCliError.fromEnvelope(env.error, exit, env);
-          // Convert exit=3 + no envelope code to CLI_NOT_IMPLEMENTED (safety net).
-          return mapped;
+          return BibleCliError.fromEnvelope(env.error, exit, env);
         }
       } catch {
         // fall through
@@ -142,12 +149,12 @@ export class ExecFileCliRunner implements CliRunner {
     }
 
     if (exit === 3) {
-      return new BibleCliError('CLI_NOT_IMPLEMENTED', `CLI sub-command not implemented: bible ${call.args.join(' ')}`, exit, e);
+      return new BibleCliError('CLI_NOT_IMPLEMENTED', `CLI sub-command not implemented: bible ${argsStr}`, exit, e);
     }
 
     return new BibleCliError(
       'CLI_ERROR',
-      e?.message ?? `CLI failed: bible ${call.args.join(' ')}`,
+      e?.message ?? `CLI failed: bible ${argsStr}`,
       exit,
       e,
     );

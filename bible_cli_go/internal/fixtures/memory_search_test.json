@@ -1,0 +1,23 @@
+{
+  "results": [
+    {
+      "session_id": "test-session-cli-plugin-001",
+      "storage_path": "test/memory/plugin-integration.json",
+      "abstract": "[TEST MODE] Canned memory search hit. Edit internal/fixtures/memory_search_test.json to change.",
+      "score": 0.95,
+      "snippet": "No HTTP request is made when the CLI is invoked with --test.",
+      "hit_field": "abstract"
+    },
+    {
+      "session_id": "test-session-cli-plugin-002",
+      "storage_path": "test/memory/plugin-integration-2.json",
+      "abstract": "[TEST MODE] Second row for pagination / top-k behaviour tests.",
+      "score": 0.72,
+      "snippet": "Second stub row.",
+      "hit_field": "abstract"
+    }
+  ],
+  "total": 2,
+  "kb_index": "memory_main",
+  "tag": "memory"
+}

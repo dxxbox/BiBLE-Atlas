@@ -7,6 +7,7 @@ import * as vscode from 'vscode';
 export interface ExtensionConfig {
   cliPath(): string;
   cliTimeoutMs(): number;
+  cliTestMode(): boolean;
 
   taskPollIntervalMs(): number;
   taskMaxWaitMs(): number;
@@ -43,6 +44,7 @@ function get<T>(key: string, defaultValue: T): T {
 export class VsCodeExtensionConfig implements ExtensionConfig {
   cliPath(): string { return get<string>('cliPath', 'bible'); }
   cliTimeoutMs(): number { return get<number>('cli.timeoutMs', 30000); }
+  cliTestMode(): boolean { return get<boolean>('cli.testMode', false); }
 
   taskPollIntervalMs(): number { return get<number>('task.pollIntervalMs', 2000); }
   taskMaxWaitMs(): number { return get<number>('task.maxWaitMs', 600000); }

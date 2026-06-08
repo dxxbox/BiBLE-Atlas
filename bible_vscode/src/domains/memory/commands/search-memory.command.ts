@@ -114,8 +114,8 @@ async function runInteractivePicker(
           action: 'load',
           label: '$(rocket) Load to @bible-memory',
           description: cached
-            ? 'Inject cached source into Copilot Chat'
-            : 'Download full source and inject into Copilot Chat',
+            ? 'Open conversation in editor, then type @bible-memory /load in Chat'
+            : 'Download message.json, open in editor, then type @bible-memory /load in Chat',
         },
       ];
       qp.items = items;

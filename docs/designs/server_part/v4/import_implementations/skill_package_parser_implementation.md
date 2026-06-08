@@ -1,6 +1,6 @@
-# SKILL `.skill` 包与 `SKILL.md` 解析实现（v4）
+# SKILL `.skill` 包与 `<skill-name>/SKILLS.md` 解析实现（v4）
 
-本文档给出 SKILL 导入的专项方案，聚焦 `.skill` 包（ZIP 改后缀）与 `SKILL.md` 解析链路。  
+本文档给出 SKILL 导入的专项方案，聚焦 `.skill` 包（ZIP 改后缀）与 `<skill-name>/SKILLS.md` 解析链路。  
 目标是在现有 v4 通用导入框架下，将 SKILL 业务语义落成可直接编码的实现设计。
 
 ---
@@ -9,23 +9,23 @@
 
 1. 上传输入可包含多文件，`parse_skill.py` 作为唯一总入口处理全部文件，且 `.skill` 业务包必须且仅有一个。
 2. `.skill` 按标准 ZIP 算法解压，且具备安全防护（路径穿越、解压炸弹等）。
-3. 解压目录中必须存在固定文件名 `SKILL.md`，并作为语义主数据来源。
+3. `.skill` 解压后必须且只能包含一个顶层目录 `<skill-name>/`，目录内必须存在固定文件 `<skill-name>/SKILLS.md`，并作为语义主数据来源。
 4. `parse_skill.py` 输出符合通用 `ParseResult` 契约（`chunks/search_profile`）。
-5. 与现有 `SkillImportService` / `StoreSkill` 编排兼容，支持绑定校验、可选向量化、内容写库和文件注册。
+5. 与现有 `SkillUploadService` / `StoreSkill` 编排兼容，支持绑定校验、可选向量化、内容写库和文件注册。
 
 ---
 
 ## 2. 高层流程（SKILL 专项）
 
 1. API 校验 `tag == "skill"` 并创建任务（不在 API/Service 层按后缀分流）。
-2. `SkillImportService` 完成脚本选择与 `ASTGuard.validate(...)`。
+2. `SkillUploadService` 完成脚本选择与 `ASTGuard.validate(...)`。
 3. 调用 `StoreSkill.stage_upload_files(...)` 临时落地全部上传文件。
 4. 调用 `StoreSkill.build_parse_manifest(...)` 生成 `skill_request_manifest.json`。
 5. `SandboxRunner.run_parse(parser_script_path, file_path=<manifest_path>, parser_context)`（单次）。
 6. `parse_skill.py` 内部作为唯一总入口执行：
    - 读取 manifest 的全部上传文件
    - 校验 `.skill` 文件必须且仅有一个（允许其他类型文件）
-   - 对 `.skill` 做安全解压并解析 `SKILL.md`
+   - 对 `.skill` 做安全解压，校验单一顶层目录，并解析 `<skill-name>/SKILLS.md`
    - 为全部文件构建 `local_file_storage_plan`
    - 生成 `chunks/search_profile/local_file_storage_plan`
 7. 服务层校验 `ParseResult`，调用 `StoreSkill.store(...)` 执行本地存储、位置回填、绑定/向量化/写库。
@@ -82,7 +82,7 @@ def parse_skill(file_path: str, parser_context: dict[str, Any]) -> dict[str, Any
       "body": "## Usage\\n\\nrun --namespace kube-system ...",
       "content": "k8s-log-cleaner\\nClean stale k8s logs safely.\\n\\n## Usage\\n\\nrun --namespace kube-system ...",
       "metadata": {
-        "source_file": "SKILL.md",
+        "source_file": "k8s-log-cleaner/SKILLS.md",
         "skill_name": "k8s-log-cleaner",
         "related_file_refs": ["f_0002", "f_0003"],
         "related_storage_paths": [],
@@ -97,14 +97,14 @@ def parse_skill(file_path: str, parser_context: dict[str, Any]) -> dict[str, Any
       {
         "file_ref": "f_0001",
         "filename": "k8s-log-cleaner.skill",
-        "source_path": "/tmp/skill_import/import_20260505_001/staged/k8s-log-cleaner.skill",
+        "source_path": "/tmp/skill_upload/import_20260505_001/staged/k8s-log-cleaner.skill",
         "must_store_local": true,
         "storage_role": "skill_package"
       },
       {
         "file_ref": "f_0002",
         "filename": "demo.png",
-        "source_path": "/tmp/skill_import/import_20260505_001/staged/demo.png",
+        "source_path": "/tmp/skill_upload/import_20260505_001/staged/demo.png",
         "must_store_local": true,
         "storage_role": "skill_attachment"
       }
@@ -137,7 +137,7 @@ def parse_skill(file_path: str, parser_context: dict[str, Any]) -> dict[str, Any
 
 说明：
 
-- `chunks` 由 `SKILL.md` 语义内容生成，建议显式保留 `name/description/body` 字段。
+- `chunks` 由 `<skill-name>/SKILLS.md` 语义内容生成，建议显式保留 `name/description/body` 字段。
 - `search_profile` 需保持可哈希、可稳定比较（用于绑定一致性校验）。
 - `local_file_storage_plan` 覆盖全部上传文件（包括 `.skill` 与非 `.skill`），由存储层执行后回填 `metadata.related_storage_paths`。
 - 若未来需要把包内附件回填为检索元数据，可扩展 `metadata` 字段，不破坏主契约。
@@ -148,15 +148,15 @@ def parse_skill(file_path: str, parser_context: dict[str, Any]) -> dict[str, Any
 ## 5. 代码职责拆分建议
 
 ```text
-app/features/import/skill_import/parsers/
+app/features/upload/skill_upload/parsers/
 ├── parse_skill.py                          # 入口，仅编排
 └── skill_parser/
     ├── manifest_loader.py                  # 读取与校验 manifest
     ├── file_classifier.py                  # 识别 .skill 与其他文件
     ├── package_validator.py                # .skill 包格式校验
     ├── zip_safe_extractor.py               # 安全解压
-    ├── skill_md_locator.py                 # 定位 SKILL.md
-    ├── skill_md_parser.py                  # 解析标准 SKILL.md
+    ├── skills_md_locator.py                 # 定位 <skill-name>/SKILLS.md
+    ├── skills_md_parser.py                  # 解析标准 SKILLS.md
     ├── chunk_builder.py                    # 组装 chunks
     ├── storage_plan_builder.py             # 组装 local_file_storage_plan
     ├── search_profile_builder.py           # 组装 search_profile
@@ -167,7 +167,7 @@ app/features/import/skill_import/parsers/
 
 - `parse_skill.py` 不做业务细节，只负责装配模块；并作为唯一解析总入口。
 - `manifest_loader.py` 负责读取全部上传文件信息，服务层不应重复判断 `.skill` 个数。
-- `skill_md_parser.py` 只做 `SKILL.md` 语义提取，不处理 ZIP 安全逻辑。
+- `skills_md_parser.py` 只做 `<skill-name>/SKILLS.md` 语义提取，不处理 ZIP 安全逻辑。
 - `zip_safe_extractor.py` 只负责解压安全，不负责业务字段校验。
 
 ---
@@ -191,6 +191,8 @@ app/features/import/skill_import/parsers/
 2. 每个 entry 解压目标路径必须位于工作目录内（防 Zip Slip）。
 3. 限制 entry 数量与总解压体积（防解压炸弹）。
 4. 拒绝可疑链接类型（软链接/硬链接）与绝对路径 entry。
+5. 解压后必须且只能有一个顶层目录 `<skill-name>/`；根目录文件或多个顶层目录均失败。
+6. 顶层目录名应与包名 `<skill-name>.skill` 保持一致，或至少满足同一命名规范校验。
 
 建议参数：
 
@@ -198,15 +200,16 @@ app/features/import/skill_import/parsers/
 - `max_total_uncompressed_bytes`: 512MB
 - `max_single_entry_bytes`: 64MB
 
-## 6.2 `SKILL.md` 定位规则
+## 6.2 `SKILLS.md` 定位规则
 
-- 文件名必须大小写严格匹配 `SKILL.md`。
+- 文件名必须大小写严格匹配 `SKILLS.md`。
+- 必须位于唯一顶层目录下，即 `<skill-name>/SKILLS.md`。
 - 要求唯一；0 个或 >1 个都失败。
-- 推荐优先根目录；若需兼容子目录，建议只允许一层深度并保持唯一。
+- 不支持 root-level `SKILLS.md`，避免多个 skill 解压到同一个 `.skills/` 目录时互相覆盖。
 
-## 6.3 `SKILL.md` 解析规则
+## 6.3 `SKILLS.md` 解析规则
 
-- 解析逻辑遵循“标准 SKILL.md 规范”（`name/description/正文` 等）。
+- 解析逻辑遵循“标准 SKILLS.md 规范”（`name/description/正文` 等）。
 - 强校验关键字段非空（至少 `name`、`description`、正文语义内容）。
 - 正文过长可在 `chunk_builder.py` 做受控切分；若不切分，需保证单 chunk 大小在可接受范围。
 - 字段映射建议：
@@ -252,8 +255,8 @@ def parse_skill_manifest(manifest_path: str, parser_context: dict[str, Any]) -> 
 
     package = validate_skill_package(skill_package.abs_path)
     extracted_dir = safe_extract_skill_package(package.path)
-    skill_md_path = locate_skill_md(extracted_dir)
-    skill_doc = parse_standard_skill_md(skill_md_path)
+    skills_md_path = locate_skills_md(extracted_dir)
+    skill_doc = parse_standard_skills_md(skills_md_path)
 
     chunks = build_chunks(skill_doc=skill_doc, package=package, parser_context=parser_context)
     search_profile = build_search_profile(skill_doc=skill_doc)
@@ -270,7 +273,7 @@ def parse_skill_manifest(manifest_path: str, parser_context: dict[str, Any]) -> 
 
 ## 8. 与服务层/存储层的集成约束
 
-`SkillImportService.execute_task(...)` 建议顺序：
+`SkillUploadService.execute_task(...)` 建议顺序：
 
 1. 脚本选择 + `ASTGuard.validate(...)`
 2. `StoreSkill.stage_upload_files(...)`
@@ -296,9 +299,9 @@ def parse_skill_manifest(manifest_path: str, parser_context: dict[str, Any]) -> 
 - `SKILL_PACKAGE_INVALID_FORMAT`：不是有效 ZIP 包
 - `SKILL_PACKAGE_UNSAFE_PATH`：解压路径穿越或非法 entry
 - `SKILL_PACKAGE_TOO_LARGE`：解压体积超限
-- `SKILL_MD_NOT_FOUND`：包内缺少 `SKILL.md`
-- `SKILL_MD_MULTIPLE`：包内存在多个 `SKILL.md`
-- `SKILL_MD_PARSE_INVALID`：`SKILL.md` 不符合标准格式
+- `SKILL_MD_NOT_FOUND`：包内缺少 `SKILLS.md`
+- `SKILL_MD_MULTIPLE`：包内存在多个 `SKILLS.md`
+- `SKILL_MD_PARSE_INVALID`：`SKILLS.md` 不符合标准格式
 - `SKILL_MD_REQUIRED_FIELD_MISSING`：关键字段缺失
 
 与通用运行时错误码的关系：
@@ -311,16 +314,16 @@ def parse_skill_manifest(manifest_path: str, parser_context: dict[str, Any]) -> 
 
 ## 10. 测试清单（建议）
 
-1. 正常 `.skill` 包（含单一 `SKILL.md`）成功导入
+1. 正常 `.skill` 包（含单一 `SKILLS.md`）成功导入
 2. 上传中存在一个 `.skill` + 多个非 `.skill` 文件时，`parse_skill.py` 成功分类并产出完整 `local_file_storage_plan`
 3. 缺少 `.skill` 文件拒绝
 4. 多 `.skill` 文件拒绝
 5. `.skill` 非法 ZIP 格式拒绝
 6. 路径穿越 entry（`../`）被拦截
 7. 解压总量超过阈值被拦截
-8. 缺少 `SKILL.md` 失败
-9. 多个 `SKILL.md` 失败
-10. `SKILL.md` 缺少必填字段失败
+8. 缺少 `SKILLS.md` 失败
+9. 多个 `SKILLS.md` 失败
+10. `SKILLS.md` 缺少必填字段失败
 11. `keyword` 检索命中 `name`
 12. `text` 检索命中 `name/description/body`
 13. `vector` 检索基于 `name/description/body` 向量命中

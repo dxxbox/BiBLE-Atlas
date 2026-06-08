@@ -19,14 +19,14 @@
 2. `app/config/config_manager.py`（`ConfigManager`）
 3. `app/infrastructure/vector/model_preloader.py`（`VectorModelPreloader`）
 4. `app/infrastructure/vector/vector_tool.py`（`VectorTool`）
-5. `app/api/import/knowledge_base_import_api.py`（`KnowledgeBaseImportAPI`）
+5. `app/api/upload/knowledge_base_upload_api.py`（`KnowledgeBaseUploadAPI`）
 6. `app/features/async_task/service.py`（`AsyncTaskService`）
 7. `app/features/async_task/tasks/dispatch_task.py`（`dispatch_task`）
-8. `app/features/import/import_task_executor.py`（`ImportTaskExecutor`）
-9. `app/features/import/knowledge_base_import/knowledge_base_import_service.py`（`KnowledgeBaseImportService`）
-10. `app/features/import/parser_runtime/ast_guard.py`（`ASTGuard`）
-11. `app/features/import/parser_runtime/sandbox_runner.py`（`SandboxRunner`）
-12. `app/features/import/knowledge_base_import/storage/store_knowledge_base.py`（`StoreKnowledgeBase`）
+8. `app/features/upload/upload_task_executor.py`（`UploadTaskExecutor`）
+9. `app/features/upload/knowledge_base_upload/knowledge_base_upload_service.py`（`KnowledgeBaseUploadService`）
+10. `app/features/upload/parser_runtime/ast_guard.py`（`ASTGuard`）
+11. `app/features/upload/parser_runtime/sandbox_runner.py`（`SandboxRunner`）
+12. `app/features/upload/knowledge_base_upload/storage/store_knowledge_base.py`（`StoreKnowledgeBase`）
 13. `app/infrastructure/database/factory.py`（`DatabaseFactory`）
 14. `app/infrastructure/database/base.py`（`IDatabaseWriter`）
 15. `app/infrastructure/database/opensearch/writer.py`（`OpenSearchWriter`）
@@ -147,7 +147,7 @@ def download_from_huggingface(self, model_name: str) -> str: ...
 
 ## 5. API 层实现
 
-文件：`app/api/import/knowledge_base_import_api.py`
+文件：`app/api/upload/knowledge_base_upload_api.py`
 
 建议接口：
 
@@ -191,7 +191,7 @@ async def import_knowledge_base(
 
 - `app/features/async_task/service.py`
 - `app/features/async_task/tasks/dispatch_task.py`
-- `app/features/import/import_task_executor.py`
+- `app/features/upload/upload_task_executor.py`
 
 建议接口：
 
@@ -201,15 +201,15 @@ def submit(self, task_type: str, payload: dict[str, Any], idempotency_key: str |
 def get(self, task_id: str) -> dict[str, Any] | None: ...
 def cancel(self, task_id: str) -> dict[str, Any]: ...
 
-# app/features/import/import_task_executor.py
+# app/features/upload/upload_task_executor.py
 def execute(self, task_id: str, task_type: str, payload: dict[str, Any]) -> dict[str, Any]: ...
 ```
 
 调度关系：
 
 1. API 调用 `AsyncTaskService.submit(...)` 创建业务任务记录并投递 Celery 消息。
-2. Celery Worker 执行 `dispatch_task`，按 `task_type` 路由到 `ImportTaskExecutor`。
-3. `ImportTaskExecutor` 再调用 `KnowledgeBaseImportService.execute_task(...)`。
+2. Celery Worker 执行 `dispatch_task`，按 `task_type` 路由到 `UploadTaskExecutor`。
+3. `UploadTaskExecutor` 再调用 `KnowledgeBaseUploadService.execute_task(...)`。
 4. `dispatch_task` 负责统一状态流转：`queued -> running -> completed|failed|cancelled`。
 
 注意点：
@@ -221,7 +221,7 @@ def execute(self, task_id: str, task_type: str, payload: dict[str, Any]) -> dict
 
 ## 7. 服务层实现
 
-文件：`app/features/import/knowledge_base_import/knowledge_base_import_service.py`
+文件：`app/features/upload/knowledge_base_upload/knowledge_base_upload_service.py`
 
 建议接口：
 
@@ -288,7 +288,7 @@ def sweep_expired_task_workspaces(self, ttl_hours: int, limit: int = 1000) -> in
 
 ## 9. 存储层实现（重点）
 
-文件：`app/features/import/knowledge_base_import/storage/store_knowledge_base.py`
+文件：`app/features/upload/knowledge_base_upload/storage/store_knowledge_base.py`
 
 建议接口：
 

@@ -46,7 +46,7 @@ else 关闭向量模型预加载
 end
 
 == HTTP 接入 ==
-C -> API: POST /api/search/skill (application/json)\n{query, tag, search_type?, top_k?, vector_model?, vector_weight?}
+C -> API: POST /api/search/skill (application/json)\n{query, tag, kb_index?, search_type?, top_k?, vector_model?, vector_weight?}
 API -> API: parse_json_body()
 
 == 读取缓存配置并校验请求 ==
@@ -66,14 +66,20 @@ alt tag 非 skill
   return
 end
 
-API -> SVC: search(query, tag=skill,\nsearch_type, top_k, vector_model, vector_weight)
+API -> SVC: search(query, tag=skill,\nsearch_type, top_k, vector_model, vector_weight,\nkb_index?)
 
 == 读取绑定与一致性检查 ==
 SVC -> DBF: get_writer(domain=SKILL)
 DBF --> SVC: IDatabaseGateway
-SVC -> IDB: get_binding_by_domain_tag(SKILL, tag=skill)
-IDB -> OSW: get_binding_by_domain_tag(...)
-OSW --> IDB: binding?
+alt 请求携带 kb_index
+  SVC -> IDB: get_binding_by_domain_index(SKILL, kb_index)
+  IDB -> OSW: get_binding_by_domain_index(...)
+  OSW --> IDB: binding?
+else 未携带 kb_index
+  SVC -> IDB: get_binding_by_domain_tag(SKILL, tag=skill)
+  IDB -> OSW: get_binding_by_domain_tag(...)
+  OSW --> IDB: binding?
+end
 IDB --> SVC: binding?
 
 alt 未找到绑定

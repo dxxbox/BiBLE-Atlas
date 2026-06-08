@@ -1,0 +1,55 @@
+# Redis 配置文件模板
+# 实例：${INSTANCE_NAME}   端口：${REDIS_PORT}
+# 由 deploy.sh 根据实例参数生成，请勿手动编辑已生成的副本
+
+# ==================== 网络 ====================
+bind 0.0.0.0
+port 6379
+protected-mode no
+tcp-backlog 511
+timeout 0
+tcp-keepalive 300
+
+# ==================== 通用 ====================
+daemonize no
+loglevel notice
+# 输出到 stdout，由 Docker 收集（通过 docker logs 查看）
+logfile ""
+databases 16
+
+# ==================== 持久化：RDB ====================
+# 15 分钟内至少 1 次写入 / 5 分钟内至少 10 次写入 / 1 分钟内至少 10000 次写入
+save 900 1
+save 300 10
+save 60 10000
+stop-writes-on-bgsave-error yes
+rdbcompression yes
+rdbchecksum yes
+dbfilename dump.rdb
+dir /data
+
+# ==================== 持久化：AOF ====================
+appendonly yes
+appendfilename "appendonly.aof"
+appendfsync everysec
+no-appendfsync-on-rewrite no
+auto-aof-rewrite-percentage 100
+auto-aof-rewrite-min-size 64mb
+
+# ==================== 内存管理 ====================
+maxmemory ${MAX_MEMORY}
+# allkeys-lru：当内存达上限时淘汰最近最少使用的 key（适合缓存/Celery backend）
+maxmemory-policy allkeys-lru
+maxmemory-samples 5
+
+# ==================== 慢日志 ====================
+# 超过 10ms 的命令记录到慢日志
+slowlog-log-slower-than 10000
+slowlog-max-len 128
+
+# ==================== 客户端 ====================
+maxclients 1000
+
+# ==================== 安全 ====================
+# 如需设置密码，取消注释并填写：
+# requirepass your_strong_password_here

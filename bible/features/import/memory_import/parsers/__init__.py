@@ -1,2 +1,0 @@
-"""Memory import parser package."""
-

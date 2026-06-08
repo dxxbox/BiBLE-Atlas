@@ -1,7 +1,7 @@
 """Centralised FastAPI dependency providers for the bible API layer.
 
 All ``Depends(...)`` callables live here so that:
-  - Multiple API modules (knowledge-base / skill / memory search) can share
+  - Multiple API modules (knowledge-base / memory search) can share
     the same provider functions without duplication.
   - Unit tests can override any provider via ``app.dependency_overrides``
     without patching module-level globals.
@@ -22,6 +22,13 @@ from bible.config.configure import SearchConfig, get_bible_atlas_config
 def get_config():
     """Return the application-wide BibleAtlasConfig."""
     return get_bible_atlas_config()
+
+
+def get_async_task_service():
+    """Return the shared async task service."""
+    from bible.features import get_task_service
+
+    return get_task_service()
 
 
 def get_search_cfg() -> SearchConfig:
@@ -50,8 +57,27 @@ def get_vector_tool():
 
     cfg = get_bible_atlas_config()
     return VectorTool(
-        workspace_dir=cfg.storage.workspace_dir,
+        workspace_dir=cfg.workspace.root,
         hf_cache_dir=cfg.vector.hf_cache_dir,
+    )
+
+
+def get_skill_search_service():
+    """Build and return a SkillSearchService for the current request."""
+    from bible.features.search.skill_search.skill_search_service import SkillSearchService
+    from bible.infrastructure.database.factory import DatabaseFactory
+    from bible.infrastructure.vector.vector_tool import VectorTool
+
+    cfg = get_bible_atlas_config()
+    db_factory = DatabaseFactory(cfg)
+    vector_tool = VectorTool(
+        workspace_dir=cfg.workspace.root,
+        hf_cache_dir=cfg.vector.hf_cache_dir,
+    )
+    return SkillSearchService(
+        db_factory=db_factory,
+        vector_tool=vector_tool,
+        search_cfg=cfg.search,
     )
 
 
@@ -64,7 +90,7 @@ def get_memory_search_service():
     cfg = get_bible_atlas_config()
     db_factory = DatabaseFactory(cfg)
     vector_tool = VectorTool(
-        workspace_dir=cfg.storage.workspace_dir,
+        workspace_dir=cfg.workspace.root,
         hf_cache_dir=cfg.vector.hf_cache_dir,
     )
     return MemorySearchService(
@@ -90,7 +116,7 @@ def get_kb_search_service():
     cfg = get_bible_atlas_config()
     db_factory = DatabaseFactory(cfg)
     vector_tool = VectorTool(
-        workspace_dir=cfg.storage.workspace_dir,
+        workspace_dir=cfg.workspace.root,
         hf_cache_dir=cfg.vector.hf_cache_dir,
     )
     return KnowledgeBaseSearchService(

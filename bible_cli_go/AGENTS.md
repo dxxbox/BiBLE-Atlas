@@ -25,7 +25,8 @@ internal/
     session_flags.go
   commands/
     handlers.go                ← health / system / knowledge dispatch
-    memory.go                  ← memory 全部业务逻辑（upload/list/search 等）
+    memory.go                  ← memory 子命令主体（upload/list/import 等；search 见下）
+    memory_search_exec.go      ← memory search：`--test` 读 fixtures；否则 HTTP，或仅 `BIBLE_CLI_STUB_MODE` 时 stub
     skills.go                  ← skills 全部业务逻辑
     session.go                 ← session 业务逻辑（get/save/list）
   client/http/
@@ -39,6 +40,9 @@ internal/
     memory_cache.go            ← 本地幂等缓存（.bible-memory-cache.json）
   meta/
     builder.go                 ← 从 message.json 自动生成 meta.json
+  fixtures/                    ← `memory search --test` 等：嵌入 JSON，不经 HTTP
+    memory_search_test.json
+    memory_search.go           ← go:embed + MemorySearchTestData()
   protocol/
     error.go                   ← CLIError 类型、NotImplemented、WrapAsCLIError
     output.go                  ← PrintSuccess / PrintFailure（统一 JSON 信封）
@@ -47,6 +51,13 @@ docs/                          ← 内部设计文档（实现计划等）
 ```
 
 ---
+
+### `--test`（插件多传的开关）与真实请求
+
+- **`memory` 子命令**：`internal/cli/memory_flags.go` 里 **`parseMemoryFlags` 会先 `peelMemoryGlobalTestArgs`**，从整段 argv 里去掉任意位置的独立 `--test` / `-test` 并置 `MemoryCommandOptions.TestMode`；各子命令的 `flag.FlagSet` **不再单独注册** `-test`，避免重复与漏注册。
+- **`bible memory search ... --test`**：只读 `internal/fixtures/memory_search_test.json`，**不发起 HTTP**；返回的 `data` 字段集合与真实 `POST /api/search/memory` 成功体一致（`results` / `total` / `kb_index` / `tag`），**不额外注入** `test_mode`、`response_mode` 等，便于插件用同一套解析逻辑。
+- **默认**：`runMemorySearch` → `memorySearchLive` → 真实请求；仅当 **`BIBLE_CLI_STUB_MODE=1`** 时走 `stubMemorySearch`（`data` 中带 `stub` 等）。**网络失败不再静默 stub**，直接返回错误。
+- 代码入口：`internal/commands/memory_search_exec.go`（`runMemorySearch` / `memorySearchFromFixtures` / `memorySearchLive` 三分离）。
 
 ## 构建与测试命令
 

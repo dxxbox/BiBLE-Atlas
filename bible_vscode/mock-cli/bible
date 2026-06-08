@@ -25,7 +25,11 @@ const os = require('node:os');
 const path = require('node:path');
 const crypto = require('node:crypto');
 
-const argv = process.argv.slice(2);
+const rawArgv = process.argv.slice(2);
+// Strip global --test flag: when present, log it and continue with remaining args.
+const testModeIdx = rawArgv.indexOf('--test');
+const isTestMode = testModeIdx !== -1;
+const argv = isTestMode ? rawArgv.filter(a => a !== '--test') : rawArgv;
 const STATE_PATH = path.join(os.tmpdir(), 'bible-mock-tasks.json');
 const PROFILE_PATH = process.env.BIBLE_MOCK_PROFILE || path.join(os.homedir(), '.bible-mock.json');
 
@@ -60,6 +64,9 @@ main();
 
 function main() {
   try {
+    if (isTestMode) {
+      process.stderr.write(`[mock-cli] --test flag detected (test mode ON); args after strip: ${JSON.stringify(argv)}\n`);
+    }
     if (inject === 'not_implemented') {
       return failExit(3, 'CLI_NOT_IMPLEMENTED', `mock CLI: injection 'not_implemented' active`);
     }
@@ -93,10 +100,9 @@ function dispatchMemory(args) {
   const [sub, ...rest] = args;
   switch (sub) {
     case 'search':                  return cmdMemorySearch(rest);
-    case 'import':                  return cmdMemoryImport(rest);
+    case 'upload':                  return cmdMemoryUpload(rest);
     case 'download':                return cmdMemoryDownload(rest);
-    case 'artifact':                return cmdMemoryArtifact(rest);
-    case '--help':                  return ok({ commands: ['search', 'import', 'download', 'artifact'] });
+    case '--help':                  return ok({ commands: ['search', 'upload', 'download'] });
     default:                        return failExit(3, 'CLI_NOT_IMPLEMENTED', `memory ${sub}`);
   }
 }
@@ -104,7 +110,8 @@ function dispatchMemory(args) {
 function cmdMemorySearch(args) {
   if (args.includes('--help')) return ok({});
   const flags = parseFlags(args);
-  const query = flags['--query'] || '';
+  // CLI: memory search <query> [--top-k N] — query 是 positional 第一个非 flag 参数
+  const query = args.find(a => !a.startsWith('--')) || '';
 
   const cfg = profile.search;
   const trigger = (cfg.errorIfQueryContains || '').trim();
@@ -139,91 +146,85 @@ function cmdMemorySearch(args) {
     results,
     total: results.length,
     kb_index: flags['--kb-index'] || 'memory_main',
-    tag: flags['--tag'] || 'memory',
+    tag: 'memory',
   });
 }
 
 function round2(n) { return Math.round(n * 100) / 100; }
 
-function cmdMemoryImport(args) {
+function cmdMemoryUpload(args) {
+  // CLI: memory upload <session_dir> [--kb-index K] [--vector-model V] [--wait]
   if (args.includes('--help')) return ok({});
   if (inject === 'index_conflict') return fail('INDEX_BINDING_CONFLICT', 'mock injected');
+
   const flags = parseFlags(args);
+  // session_dir 是第一个非 flag 参数
+  const sessionDir = args.find(a => !a.startsWith('--'));
+  if (!sessionDir) return fail('INVALID_ARGS', 'session_dir is required');
 
   let sessionId = `mock-${crypto.randomUUID()}`;
-  const metaFile = flags['--meta-file'];
-  if (metaFile && fs.existsSync(metaFile)) {
+  const metaFile = path.join(sessionDir, 'meta.json');
+  if (fs.existsSync(metaFile)) {
     try {
       const meta = JSON.parse(fs.readFileSync(metaFile, 'utf-8'));
       if (meta && typeof meta.session_id === 'string') sessionId = meta.session_id;
     } catch { /* ignore */ }
   }
 
+  const kbIndex = flags['--kb-index'] || 'memory_main';
   const taskId = `mock-imp-${crypto.randomUUID().slice(0, 8)}`;
   upsertTask(taskId, {
     task_id: taskId,
     task_type: 'import.memory',
     status: 'queued',
     polls: 0,
-    result: { session_id: sessionId, kb_index: flags['--kb-index'] || 'memory_main', chunks_count: 5 },
+    result: { session_id: sessionId, kb_index: kbIndex, chunks_count: 5 },
   });
   return ok({
     task_id: taskId,
     status: 'queued',
-    kb_index: flags['--kb-index'] || 'memory_main',
-    tag: flags['--tag'] || 'memory',
+    kb_index: kbIndex,
     session_id: sessionId,
   });
 }
 
 function cmdMemoryDownload(args) {
-  const [sub, ...rest] = args;
-  if (sub === '--help') return ok({ commands: ['file', 'batch'] });
-  if (sub !== 'file' && sub !== 'batch') return failExit(3, 'CLI_NOT_IMPLEMENTED', `download ${sub}`);
-
-  const flags = parseFlags(rest);
-  const taskId = `mock-dl-${crypto.randomUUID().slice(0, 8)}`;
-  upsertTask(taskId, {
-    task_id: taskId,
-    task_type: sub === 'file' ? 'download.memory' : 'download.memory.batch',
-    status: 'queued',
-    polls: 0,
-    result: {
-      artifact_id: `mock-art-${crypto.randomUUID().slice(0, 8)}`,
-      artifact_name: flags['--download-name'] || (sub === 'file' ? 'source.json' : 'memory-batch.zip'),
-      content_type: sub === 'file' ? 'application/json' : 'application/zip',
-      size_bytes: 1234,
-      expires_at: new Date(Date.now() + 3600_000).toISOString(),
-    },
-  });
-  return ok({ task_id: taskId, status: 'queued' });
-}
-
-function cmdMemoryArtifact(args) {
-  const [sub, ...rest] = args;
-  if (sub === '--help') return ok({ commands: ['fetch'] });
-  if (sub !== 'fetch') return failExit(3, 'CLI_NOT_IMPLEMENTED', `artifact ${sub}`);
-
+  // CLI: memory download [<memory_id>] [--storage-path P] --output DIR --download-name FILENAME
+  // CLI 内部完成 task 提交+轮询+写盘，直接返回 {status:"downloaded", output_path}
+  if (args.includes('--help')) return ok({});
   if (inject === 'artifact_expired') return fail('DOWNLOAD_ARTIFACT_EXPIRED', 'mock injected');
 
-  const flags = parseFlags(rest);
-  const outPath = flags['--out'];
-  if (!outPath) return fail('INVALID_ARGS', '--out required');
+  const flags = parseFlags(args);
+  const outputDir = flags['--output'];
+  const downloadName = flags['--download-name'];
+  const storagePath = flags['--storage-path'] || args.find(a => !a.startsWith('--')) || '';
 
-  fs.mkdirSync(path.dirname(outPath), { recursive: true });
+  if (!outputDir) return fail('INVALID_ARGS', '--output is required');
+  if (!downloadName) return fail('INVALID_ARGS', '--download-name is required');
 
+  fs.mkdirSync(outputDir, { recursive: true });
+
+  const outputPath = path.join(outputDir, downloadName);
+
+  // 优先使用 profile fixture 文件
   const fixturePath = profile.artifact && profile.artifact.fixtureFile;
-  let sizeBytes;
-  let contentType = (profile.artifact && profile.artifact.contentType) || 'application/json';
   if (fixturePath && fs.existsSync(fixturePath)) {
-    fs.copyFileSync(fixturePath, outPath);
-    sizeBytes = fs.statSync(outPath).size;
+    fs.copyFileSync(fixturePath, outputPath);
   } else {
-    const content = JSON.stringify({ mock: true, artifact_id: flags['--id'], fixture: 'default' }, null, 2);
-    fs.writeFileSync(outPath, content);
-    sizeBytes = content.length;
+    // 生成假 source.json（bible-chat-v1 格式，便于 renderChatMarkdown 渲染）
+    const content = JSON.stringify({
+      source_format: 'bible-chat-v1',
+      session_id: 'mock-download-session',
+      exported_at: new Date().toISOString(),
+      turns: [
+        { role: 'user',      content: `[mock] Downloaded content for storage_path: ${storagePath}` },
+        { role: 'assistant', content: '[mock] This is a synthetic source file from the mock CLI. Configure `artifact.fixtureFile` in ~/.bible-mock.json to use a real fixture.' },
+      ],
+    }, null, 2);
+    fs.writeFileSync(outputPath, content);
   }
-  return ok({ path: outPath, size_bytes: sizeBytes, content_type: contentType });
+
+  return ok({ status: 'downloaded', output_path: outputPath });
 }
 
 // ---------- task ----------
@@ -240,9 +241,9 @@ function dispatchTask(args) {
 
 function cmdTaskGet(args) {
   if (args.includes('--help')) return ok({});
-  const flags = parseFlags(args);
-  const id = flags['--id'];
-  if (!id) return fail('INVALID_ARGS', '--id required');
+  // CLI: task get <task_id> — task_id 是 positional
+  const id = args.find(a => !a.startsWith('--'));
+  if (!id) return fail('INVALID_ARGS', 'task_id required');
 
   const t = readTask(id);
   if (!t) return fail('NOT_FOUND', `task not found: ${id}`);
@@ -278,8 +279,8 @@ function cmdTaskGet(args) {
 
 function cmdTaskCancel(args) {
   if (args.includes('--help')) return ok({});
-  const flags = parseFlags(args);
-  const id = flags['--id'];
+  // CLI: task cancel <task_id> — task_id 是 positional
+  const id = args.find(a => !a.startsWith('--'));
   const t = readTask(id);
   if (!t) return ok({ task_id: id, status: 'cancelled' });
   t.status = 'cancelled';

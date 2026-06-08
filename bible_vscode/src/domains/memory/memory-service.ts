@@ -7,25 +7,25 @@ import { CliRunner, CliInvocation } from '../../core/cli/cli-runner';
 import { ExtensionConfig } from '../../core/config/extension-config';
 import { OutputChannel } from '../../core/ui/output-channel';
 import { TaskTracker } from '../../core/task/task-tracker';
-import { ChatExportResult, exportCurrentChat, fromMessages, toCleanSource, rawJson } from '../../core/chat/chat-export';
+import { ChatExportResult, exportCurrentChat, fromMessages, parseChatExportJsonFile, toCleanSource, rawJson } from '../../core/chat/chat-export';
 import { ChatTurn } from '../../core/lm/budget';
 import { MemoryBuilder } from './memory-builder';
 import {
-  ArtifactFetchResponse,
   ChatSource,
+  DownloadResult,
   MemoryHit,
   MemoryMeta,
   MemorySearchResult,
   SearchType,
-  SubmitDownloadResponse,
   SubmitImportResponse,
 } from './memory-types';
-import { formatHit } from './memory-format';
+import { buildLoadedContextMarkdown } from './memory-format';
 
 /** 最近一次 import 写出的临时文件路径（debug 用）。 */
 export interface LastImportFiles {
   dir: string;
-  sourceFile: string;
+  /** 对话正文，对应 CLI 期望的 message.json */
+  messageFile: string;
   metaFile: string;
   /** 原始 VSCode export，本地留存供测试验证，不发给 server。 */
   rawFile?: string;
@@ -56,9 +56,12 @@ export interface MemoryService {
     cancellationToken?: vscode.CancellationToken;
   }): Promise<{ meta: MemoryMeta; via: 'lm' | 'rules' }>;
 
-  submitImport(input: {
-    sourceFile: string;
-    metaFile: string;
+  /**
+   * CLI: `bible memory upload <session_dir> [--kb-index K] [--vector-model V]`
+   * session_dir 内须包含 `message.json`（对话正文）和 `meta.json`（结构化摘要）。
+   */
+  uploadMemoryDir(input: {
+    dir: string;
     kbIndex?: string;
     vectorModel?: string;
   }): Promise<SubmitImportResponse>;
@@ -76,19 +79,9 @@ export interface MemoryService {
     cancellationToken?: vscode.CancellationToken;
   }): Promise<SubmitImportResponse>;
 
-  submitDownloadFile(input: {
-    storagePath: string;
-    downloadName?: string;
-  }): Promise<SubmitDownloadResponse>;
-
-  fetchArtifact(input: {
-    artifactId: string;
-    outputPath: string;
-  }): Promise<ArtifactFetchResponse>;
-
   /**
-   * 把一个 search hit 渲染为 markdown 写到 `${ws}/.bible/memory/loaded-context.md`，
-   * 返回绝对路径。供命令路径"加载到上下文"使用（用户随后在 Chat 用 #file: 引用）。
+   * 把 message.json 原对话（bible-chat-v1）渲染为 Markdown 写到 `${ws}/.bible/memory/loaded-context.md`，
+   * 返回绝对路径。供命令路径「加载到上下文」回看；聊天草稿由调用方单独填入输入框。
    *
    * 同名文件**覆盖式**写入：始终只保留"最近一次加载"。
    */
@@ -127,8 +120,6 @@ export interface MemoryServiceDeps {
   config: ExtensionConfig;
   output: OutputChannel;
   builder: MemoryBuilder;
-  /** 用于 ensureLocalSource 内部驱动异步下载任务并复用统一的进度/取消 UI。 */
-  tasks: TaskTracker;
 }
 
 export class DefaultMemoryService implements MemoryService {
@@ -137,10 +128,10 @@ export class DefaultMemoryService implements MemoryService {
   // ---------- search ----------
 
   async search(input: { query: string; topK?: number; searchType?: SearchType; vectorModel?: string }): Promise<MemorySearchResult> {
-    const args: string[] = ['memory', 'search', '--query', input.query, '--tag', 'memory'];
+    // CLI: bible memory search <query> [--top-k N] [--search-type S]
+    const args: string[] = ['memory', 'search', input.query];
     if (input.topK !== undefined) args.push('--top-k', String(input.topK));
     if (input.searchType) args.push('--search-type', input.searchType);
-    if (input.vectorModel) args.push('--vector-model', input.vectorModel);
     return this.deps.cli.run<MemorySearchResult>({ args });
   }
 
@@ -164,14 +155,10 @@ export class DefaultMemoryService implements MemoryService {
 
   // ---------- import (low-level) ----------
 
-  async submitImport(input: { sourceFile: string; metaFile: string; kbIndex?: string; vectorModel?: string }): Promise<SubmitImportResponse> {
-    const args: string[] = [
-      'memory', 'import',
-      '--tag', 'memory',
-      '--kb-index', input.kbIndex ?? this.deps.config.memoryDefaultKbIndex(),
-      '--source-file', input.sourceFile,
-      '--meta-file', input.metaFile,
-    ];
+  async uploadMemoryDir(input: { dir: string; kbIndex?: string; vectorModel?: string }): Promise<SubmitImportResponse> {
+    // CLI: bible memory upload <session_dir> [--kb-index K] [--vector-model V]
+    const kbIndex = input.kbIndex ?? this.deps.config.memoryDefaultKbIndex();
+    const args: string[] = ['memory', 'upload', input.dir, '--kb-index', kbIndex];
     const vectorModel = input.vectorModel ?? this.deps.config.memoryDefaultVectorModel();
     if (vectorModel) args.push('--vector-model', vectorModel);
 
@@ -181,7 +168,32 @@ export class DefaultMemoryService implements MemoryService {
   // ---------- import (high-level: from current chat) ----------
 
   async importCurrentChat(input?: { kbIndex?: string; cancellationToken?: vscode.CancellationToken }): Promise<SubmitImportResponse> {
-    const exported = await this.exportCurrentChat();
+    let exported: ChatExportResult;
+    try {
+      exported = await this.exportCurrentChat();
+    } catch (firstErr) {
+      this.deps.output.warn('memory.import.chatExportFailed', { message: (firstErr as Error).message });
+      if (input?.cancellationToken?.isCancellationRequested) {
+        throw new vscode.CancellationError();
+      }
+
+      const defaultUri = vscode.workspace.workspaceFolders?.[0]?.uri;
+      const picked = await vscode.window.showOpenDialog({
+        title: 'Select Copilot chat export JSON (e.g. from VS Code Copilot session export)',
+        openLabel: 'Use this file',
+        canSelectMany: false,
+        canSelectFolders: false,
+        filters: { JSON: ['json'] },
+        defaultUri,
+      });
+      if (!picked?.[0]) {
+        throw firstErr;
+      }
+      if (input?.cancellationToken?.isCancellationRequested) {
+        throw new vscode.CancellationError();
+      }
+      exported = await parseChatExportJsonFile(picked[0].fsPath, this.deps.output);
+    }
     return this.importFromSource({
       exported,
       kbIndex: input?.kbIndex,
@@ -214,10 +226,10 @@ export class DefaultMemoryService implements MemoryService {
       cancellationToken: input.cancellationToken,
     });
 
-    const { sourceFile, metaFile, rawFile, dir } = await writeImportFiles(source, meta, input.exported);
+    const { messageFile, metaFile, rawFile, dir } = await writeImportFiles(source, meta, input.exported);
     setLastImportFiles({
       dir,
-      sourceFile,
+      messageFile,
       metaFile,
       rawFile,
       sessionId: meta.session_id,
@@ -227,32 +239,17 @@ export class DefaultMemoryService implements MemoryService {
     // 打印可点击链接（VSCode OutputChannel 会自动识别 file:// URL）
     this.deps.output.info('memory.import.files', {
       sessionId: meta.session_id,
-      source_link: `file://${sourceFile}`,
-      meta_link: `file://${metaFile}`,
-      ...(rawFile ? { raw_link: `file://${rawFile}` } : {}),
+      ...(input.exported.originPath
+        ? { user_picked_json: `file://${input.exported.originPath}` }
+        : {}),
+      generated_source_for_cli: `file://${messageFile}`,
+      generated_meta_for_cli: `file://${metaFile}`,
+      ...(rawFile ? { generated_raw_snapshot: `file://${rawFile}` } : {}),
     });
 
-    return this.submitImport({
-      sourceFile,
-      metaFile,
-      kbIndex: input.kbIndex,
-    });
+    return this.uploadMemoryDir({ dir, kbIndex: input.kbIndex });
     // 临时文件按 bible.debug.keepTempFiles 决定是否保留；
     // 默认保留（true），便于人工审查。GC 由 Bible: Show Last Import Files 命令的 "Clear" 动作触发。
-  }
-
-  // ---------- download ----------
-
-  async submitDownloadFile(input: { storagePath: string; downloadName?: string }): Promise<SubmitDownloadResponse> {
-    const args: string[] = ['memory', 'download', 'file', '--tag', 'memory', '--storage-path', input.storagePath];
-    if (input.downloadName) args.push('--download-name', input.downloadName);
-    return this.deps.cli.run<SubmitDownloadResponse>({ args });
-  }
-
-  async fetchArtifact(input: { artifactId: string; outputPath: string }): Promise<ArtifactFetchResponse> {
-    return this.deps.cli.run<ArtifactFetchResponse>({
-      args: ['memory', 'artifact', 'fetch', '--id', input.artifactId, '--out', input.outputPath],
-    });
   }
 
   // ---------- ensureLocalSource (download + cache) ----------
@@ -287,52 +284,35 @@ export class DefaultMemoryService implements MemoryService {
         return { path: localPath, fromCache: true, sizeBytes: stat.size };
       }
     } catch {
-      /* not cached; fall through to download */
+      /* not cached; fall through */
     }
 
-    // 2. cache miss → 走异步下载任务
+    // 2. cache miss → CLI 集成式下载（CLI 内部完成 task 提交+轮询+写盘）
+    // CLI: bible memory download --storage-path P --output DIR --download-name FILENAME
+    // CLI 最长轮询 5 分钟，插件侧同步等待，需要显式超时放宽。
     this.deps.output.info('memory.source.cacheMiss.startDownload', {
       sessionId: input.hit.session_id,
       storagePath: input.hit.storage_path,
       target: localPath,
     });
 
-    const handle = await this.deps.tasks.submit({
-      taskType: 'download.memory',
-      domain: 'memory',
-      title: `Caching ${input.hit.session_id ?? input.hit.storage_path}`,
-      submit: async () => this.submitDownloadFile({ storagePath: input.hit.storage_path }),
-      showProgress: true,
+    const result = await this.deps.cli.run<DownloadResult>({
+      args: [
+        'memory', 'download',
+        '--storage-path', input.hit.storage_path,
+        '--output', dir,
+        '--download-name', filename,
+      ],
+      timeoutMs: 6 * 60 * 1000, // CLI 最长轮询 5 min；留 1 min 缓冲
     });
 
-    const cancelSub = input.cancellationToken?.onCancellationRequested(() => {
-      void this.deps.tasks.cancel(handle.taskId);
-    });
-
-    let record;
-    try {
-      record = await handle.promise;
-    } finally {
-      cancelSub?.dispose();
-    }
-
-    if (record.status !== 'completed') {
-      const msg = record.error ? `${record.error.code}: ${record.error.message}` : record.status;
-      throw new Error(`Download task ended (${msg})`);
-    }
-
-    const r = record.result as { artifact_id?: string } | undefined;
-    if (!r?.artifact_id) {
-      throw new Error('Download task completed but server returned no artifact_id');
-    }
-
-    const fetched = await this.fetchArtifact({ artifactId: r.artifact_id, outputPath: localPath });
+    const stat = await fs.stat(result.output_path);
     this.deps.output.info('memory.source.downloaded', {
       sessionId: input.hit.session_id,
-      path: fetched.path,
-      sizeBytes: fetched.size_bytes,
+      path: result.output_path,
+      sizeBytes: stat.size,
     });
-    return { path: fetched.path, fromCache: false, sizeBytes: fetched.size_bytes };
+    return { path: result.output_path, fromCache: false, sizeBytes: stat.size };
   }
 
   // ---------- load to context ----------
@@ -342,15 +322,9 @@ export class DefaultMemoryService implements MemoryService {
     await fs.mkdir(dir, { recursive: true });
     const outPath = path.join(dir, 'loaded-context.md');
 
-    const lines: string[] = [
-      `<!-- Loaded by Bible Atlas at ${new Date().toISOString()} -->`,
-      '',
-      formatHit(hit, 1),
-    ];
-    if (sourceFilePath) {
-      lines.push('', `> Full source file: \`${sourceFilePath}\``);
-    }
-    await fs.writeFile(outPath, lines.join('\n') + '\n', 'utf-8');
+    const body = await buildLoadedContextMarkdown(hit, sourceFilePath);
+    const content = `<!-- Loaded by Bible Atlas at ${new Date().toISOString()} -->\n\n${body}`;
+    await fs.writeFile(outPath, content, 'utf-8');
 
     this.deps.output.info('memory.context.loaded', { path: outPath, sessionId: hit.session_id });
     return outPath;
@@ -380,7 +354,7 @@ function sanitizeFilename(s: string): string {
 
 /**
  * 写出三个临时文件：
- *   source.json     — 精简对话（bible-chat-v1），发给 server
+ *   message.json    — 精简对话（bible-chat-v1），CLI `memory upload` 要求的文件名
  *   meta.json       — LM 提炼的结构化摘要，发给 server
  *   source.raw.json — 原始 VSCode export JSON，**仅本地留存**，不发给 CLI
  */
@@ -388,13 +362,13 @@ export async function writeImportFiles(
   source: ChatSource,
   meta: MemoryMeta,
   exported?: ChatExportResult,
-): Promise<{ sourceFile: string; metaFile: string; rawFile: string | undefined; dir: string }> {
+): Promise<{ messageFile: string; metaFile: string; rawFile: string | undefined; dir: string }> {
   const dir = path.join(os.tmpdir(), 'bible-vscode', crypto.randomUUID());
   await fs.mkdir(dir, { recursive: true });
 
-  const sourceFile = path.join(dir, 'source.json');
+  const messageFile = path.join(dir, 'message.json');
   const metaFile = path.join(dir, 'meta.json');
-  await fs.writeFile(sourceFile, JSON.stringify(source, null, 2), 'utf-8');
+  await fs.writeFile(messageFile, JSON.stringify(source, null, 2), 'utf-8');
   await fs.writeFile(metaFile, JSON.stringify(meta, null, 2), 'utf-8');
 
   let rawFile: string | undefined;
@@ -403,7 +377,7 @@ export async function writeImportFiles(
     await fs.writeFile(rawFile, rawJson(exported), 'utf-8');
   }
 
-  return { sourceFile, metaFile, rawFile, dir };
+  return { messageFile, metaFile, rawFile, dir };
 }
 
 export async function cleanupDir(dir: string): Promise<void> {
@@ -414,9 +388,9 @@ export async function cleanupDir(dir: string): Promise<void> {
   }
 }
 
-/** 用于构造 invocation 的 helper，可在 Tool 中复用拼参逻辑（保持与 service.submit* 一致）。 */
-export function buildImportInvocation(sourceFile: string, metaFile: string, kbIndex: string, vectorModel?: string): CliInvocation {
-  const args = ['memory', 'import', '--tag', 'memory', '--kb-index', kbIndex, '--source-file', sourceFile, '--meta-file', metaFile];
+/** 用于构造 invocation 的 helper，可在 Tool 中复用拼参逻辑（保持与 service.uploadMemoryDir 一致）。 */
+export function buildUploadInvocation(sessionDir: string, kbIndex: string, vectorModel?: string): CliInvocation {
+  const args = ['memory', 'upload', sessionDir, '--kb-index', kbIndex];
   if (vectorModel) args.push('--vector-model', vectorModel);
   return { args };
 }

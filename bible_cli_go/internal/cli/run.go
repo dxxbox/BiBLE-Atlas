@@ -10,10 +10,17 @@ import (
 	clienthttp "bible-cli-go/internal/client/http"
 	"bible-cli-go/internal/commands"
 	"bible-cli-go/internal/config"
+	"bible-cli-go/internal/logger"
 	"bible-cli-go/internal/protocol"
 )
 
 func Run(args []string, stdout io.Writer, stderr io.Writer) int {
+	// Initialise file logger once per process.  All structured log entries are
+	// written to ~/.bible/cli.log (overridable via BIBLE_CLI_LOG_FILE) so they
+	// never pollute the JSON protocol stream on stdout.
+	logger.Init()
+	start := logger.Invoke(args)
+
 	if len(args) == 0 {
 		printHelp(stdout)
 		return 0
@@ -177,16 +184,28 @@ func Run(args []string, stdout io.Writer, stderr io.Writer) int {
 		response, err = dispatcher.Handle(command, action, query, tag)
 	}
 	if err != nil {
-		return fail(stdout, stderr, protocol.WrapAsCLIError(err))
+		cliErr := protocol.WrapAsCLIError(err)
+		logger.Failed(start, cliErr.Code, cliErr.Message)
+		return failLogged(stdout, stderr, cliErr)
 	}
 
 	if err := protocol.PrintSuccess(stdout, response); err != nil {
-		return fail(stdout, stderr, protocol.CLIError{Code: "INTERNAL", Message: "Failed to serialize command output.", ExitCode: 1})
+		logger.Failed(start, "INTERNAL", "Failed to serialize command output.")
+		return failLogged(stdout, stderr, protocol.CLIError{Code: "INTERNAL", Message: "Failed to serialize command output.", ExitCode: 1})
 	}
+	logger.Done(start, command, action, response)
 	return 0
 }
 
 func fail(stdout io.Writer, stderr io.Writer, err protocol.CLIError) int {
+	return failInternal(stdout, stderr, err, false)
+}
+
+func failLogged(stdout io.Writer, stderr io.Writer, err protocol.CLIError) int {
+	return failInternal(stdout, stderr, err, true)
+}
+
+func failInternal(stdout io.Writer, stderr io.Writer, err protocol.CLIError, alreadyLogged bool) int {
 	if printErr := protocol.PrintFailure(stdout, err.Code, err.Message); printErr != nil {
 		protocol.PrintCLIError(stderr, protocol.CLIError{Code: "INTERNAL", Message: "Failed to serialize command output.", ExitCode: 1})
 		return 1
@@ -194,6 +213,16 @@ func fail(stdout io.Writer, stderr io.Writer, err protocol.CLIError) int {
 
 	if os.Getenv("BIBLE_CLI_LEGACY_STDERR") == "1" {
 		protocol.PrintCLIError(stderr, err)
+	}
+
+	// Early argument/parse failures are not logged elsewhere, so record them
+	// here. Execution-path failures are logged by logger.Failed before calling
+	// failLogged, so skip the duplicate entry in that case.
+	if !alreadyLogged {
+		logger.Error("cli.failed", map[string]any{
+			"code":    err.Code,
+			"message": err.Message,
+		})
 	}
 
 	return err.ExitCode
@@ -213,7 +242,8 @@ func printHelp(w io.Writer) {
 	fmt.Fprintln(w, "  bible memory build-meta <session_dir>")
 	fmt.Fprintln(w, "  bible memory status [task_id] [--memory-id ID] [--cache-dir DIR]")
 	fmt.Fprintln(w, "  bible memory list [--limit N] [--tag TAG] [--since DATE]")
-	fmt.Fprintln(w, "  bible memory search <query> [--top-k N]")
+	fmt.Fprintln(w, "  bible memory search <query> [--top-k N] [--test]")
+	fmt.Fprintln(w, "  bible memory import --source-file <path> --meta-file <path> --kb-index <index> [--tag memory]")
 	fmt.Fprintln(w, "  bible memory download <memory_id> [--storage-path PATH ...] [--package-name NAME] [--output DIR]")
 	fmt.Fprintln(w, "  bible memory cache-status [base_dir]")
 	fmt.Fprintln(w, "  bible skills list [--limit N] [--tag TAG]")

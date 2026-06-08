@@ -217,11 +217,56 @@ class PostgresWriter(IDatabaseWriter):
             )
         return {"updated": True, "_id": self._binding_doc_id(domain, kb_index)}
 
+    def update_binding(
+        self,
+        domain: DomainType,
+        kb_index: str,
+        patch: dict[str, Any],
+    ) -> dict[str, Any]:
+        """Update arbitrary fields on an existing binding row."""
+        from psycopg import sql
+
+        if not patch:
+            return {"updated": False, "_id": self._binding_doc_id(domain, kb_index)}
+
+        now = self._now_iso()
+        patch_with_ts = {**patch, "updated_at": now}
+        set_fragments = [
+            sql.SQL("{} = %s").format(sql.Identifier(k))
+            for k in patch_with_ts
+        ]
+        query = sql.SQL(
+            "UPDATE {} SET {} WHERE domain_type = %s AND kb_index = %s"
+        ).format(
+            sql.Identifier(self._binding_table),
+            sql.SQL(", ").join(set_fragments),
+        )
+        params = list(patch_with_ts.values()) + [domain, kb_index]
+        try:
+            with self._pool.connection() as conn:
+                with conn.cursor() as cur:
+                    cur.execute(query, params)
+                conn.commit()
+        except Exception as exc:
+            raise DatabaseError(
+                code="DATABASE_BACKEND_UNAVAILABLE",
+                message="Failed to update index binding in Postgres.",
+                details={"domain_type": domain, "kb_index": kb_index},
+            ) from exc
+        return {"updated": True, "_id": self._binding_doc_id(domain, kb_index)}
+
     # ------------------------------------------------------------------
     # Bulk content / file-registry operations
     # ------------------------------------------------------------------
 
-    def bulk_upsert_content_docs(self, index: str, docs: list[dict[str, Any]]) -> BulkWriteResult:
+    def bulk_upsert_content_docs(
+        self,
+        index: str,
+        docs: list[dict[str, Any]],
+        *,
+        vector_options: dict[str, Any] | None = None,
+    ) -> BulkWriteResult:
+        del vector_options
         return self._bulk_upsert_json_records(
             table_name=self._content_table,
             index=index,

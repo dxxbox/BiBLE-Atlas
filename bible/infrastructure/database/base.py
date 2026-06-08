@@ -18,7 +18,21 @@ class IDatabaseWriter(Protocol):
     def deactivate_binding(self, domain: DomainType, kb_index: str) -> dict[str, Any]:
         ...
 
-    def bulk_upsert_content_docs(self, index: str, docs: list[dict[str, Any]]) -> BulkWriteResult:
+    def update_binding(
+        self,
+        domain: DomainType,
+        kb_index: str,
+        patch: dict[str, Any],
+    ) -> dict[str, Any]:
+        ...
+
+    def bulk_upsert_content_docs(
+        self,
+        index: str,
+        docs: list[dict[str, Any]],
+        *,
+        vector_options: dict[str, Any] | None = None,
+    ) -> BulkWriteResult:
         ...
 
     def bulk_upsert_file_registry(self, index: str, file_records: list[dict[str, Any]]) -> BulkWriteResult:

@@ -12,6 +12,7 @@ import (
 	"bible-cli-go/internal/cache"
 	clienthttp "bible-cli-go/internal/client/http"
 	"bible-cli-go/internal/config"
+	"bible-cli-go/internal/logger"
 	"bible-cli-go/internal/meta"
 	"bible-cli-go/internal/protocol"
 )
@@ -49,6 +50,13 @@ type MemoryCommandOptions struct {
 	TopK       int
 	Threshold  float64
 	SearchType string
+	// TestMode: set when any standalone `--test` / `-test` appears in memory
+	// subcommand args (peeled in cli.parseMemoryFlags before per-action FlagSet).
+	TestMode bool
+
+	// import
+	SourceFile string
+	MetaFile   string
 
 	// download
 	StoragePath     string
@@ -73,11 +81,13 @@ func (d *Dispatcher) MemoryExecute(action string, opts MemoryCommandOptions) (ma
 	case "list":
 		return memoryList(d.client, opts)
 	case "search":
-		return memorySearch(d.client, opts)
+		return runMemorySearch(d.client, opts)
 	case "cache-status":
 		return memoryCacheStatus(opts)
 	case "download":
 		return memoryDownload(d.client, opts)
+	case "import":
+		return memoryImport(d.client, opts, d.cfg)
 	default:
 		return nil, protocol.NotImplemented("memory " + action)
 	}
@@ -166,6 +176,20 @@ func memoryUpload(client *clienthttp.Client, opts MemoryCommandOptions, cfg conf
 	if m == nil {
 		return nil, protocol.CLIError{Code: "INVALID_ARGS", Message: "meta.json is missing.", ExitCode: 1}
 	}
+	// Plugin meta.json (VS Code MemoryMeta) often has session_id + abstract but no memory_id/title.
+	patched, err := meta.PatchPluginMetaJSONForUpload(sessionDir, rawMsg)
+	if err != nil {
+		return nil, protocol.CLIError{Code: "INTERNAL", Message: "Failed to patch meta.json: " + err.Error(), ExitCode: 1}
+	}
+	if patched {
+		m, err = meta.LoadMetaJSON(sessionDir)
+		if err != nil {
+			return nil, protocol.CLIError{Code: "INVALID_ARGS", Message: err.Error(), ExitCode: 1}
+		}
+		if m == nil {
+			return nil, protocol.CLIError{Code: "INVALID_ARGS", Message: "meta.json is missing.", ExitCode: 1}
+		}
+	}
 	if strings.TrimSpace(m.MemoryID) == "" {
 		return nil, protocol.CLIError{Code: "INVALID_ARGS", Message: "meta.json is missing required field: memory_id", ExitCode: 1}
 	}
@@ -206,6 +230,36 @@ func memoryUpload(client *clienthttp.Client, opts MemoryCommandOptions, cfg conf
 				"reason":    "already uploaded with same meta content",
 			}, nil
 		}
+	}
+
+	// IDE test mode: same envelope as successful POST /api/import/memory, no HTTP.
+	if opts.TestMode {
+		logger.Info("memory.upload.test", map[string]any{"session_dir": sessionDir, "kb_index": kbIndex})
+		taskID := fmt.Sprintf("test-upload-task-%d", time.Now().UnixNano())
+		payload := map[string]any{
+			"task_id":   taskID,
+			"status":    "accepted",
+			"memory_id": m.MemoryID,
+			"kb_index":  kbIndex,
+			"tag":       "memory",
+		}
+		if sid, ok := sessionIDFromMessageJSON(rawMsg); ok && sid != "" {
+			payload["session_id"] = sid
+		}
+		entry := cache.MemoryCacheEntry{
+			MemoryID:     m.MemoryID,
+			KbIndex:      kbIndex,
+			MetaHash:     metaHash,
+			TaskID:       taskID,
+			UploadStatus: "accepted",
+			UploadedAt:   time.Now().UTC().Format(time.RFC3339),
+			ServerURL:    client.BaseURL(),
+		}
+		_ = cache.SaveCache(sessionDir, entry)
+		if opts.Wait && taskID != "" {
+			logger.Info("memory.upload.test.skip_poll", map[string]any{"task_id": taskID})
+		}
+		return payload, nil
 	}
 
 	vectorModel := resolveVectorModel(opts.VectorModel, cfg)
@@ -266,6 +320,145 @@ func memoryUpload(client *clienthttp.Client, opts MemoryCommandOptions, cfg conf
 	}
 
 	return payload, nil
+}
+
+// memoryImport implements `bible memory import`.
+//
+// Unlike `memory upload` which expects a session directory with a pre-existing
+// message.json / meta.json layout, `memory import` accepts explicit file paths.
+// This is the entry-point used by the VS Code plugin's chat-export strategy:
+//
+//	bible memory import \
+//	  --source-file /tmp/bible-vscode/<id>/source.json \
+//	  --meta-file   /tmp/bible-vscode/<id>/meta.json   \
+//	  --kb-index    memory_main                         \
+//	  --tag         memory
+//
+// Stub mode:
+//   - When BIBLE_CLI_STUB_MODE=1 is set the server is never contacted and a
+//     pre-canned "accepted" response is returned immediately.
+//   Network / HTTP errors are returned to the caller (no automatic stub).
+func memoryImport(client *clienthttp.Client, opts MemoryCommandOptions, cfg config.ClientConfig) (map[string]any, error) {
+	sourceFile := strings.TrimSpace(opts.SourceFile)
+	metaFile := strings.TrimSpace(opts.MetaFile)
+
+	logger.Info("memory.import.start", map[string]any{
+		"source_file": sourceFile,
+		"meta_file":   metaFile,
+		"kb_index":    opts.KbIndex,
+		"tag":         opts.Tag,
+	})
+
+	// --- Input validation ---------------------------------------------------
+
+	if sourceFile == "" {
+		return nil, protocol.CLIError{Code: "INVALID_ARGS", Message: "--source-file is required.", ExitCode: 1}
+	}
+	if metaFile == "" {
+		return nil, protocol.CLIError{Code: "INVALID_ARGS", Message: "--meta-file is required.", ExitCode: 1}
+	}
+	if _, err := os.Stat(sourceFile); os.IsNotExist(err) {
+		return nil, protocol.CLIError{
+			Code:     "INVALID_ARGS",
+			Message:  fmt.Sprintf("source-file does not exist: %s", sourceFile),
+			ExitCode: 1,
+		}
+	}
+	if _, err := os.Stat(metaFile); os.IsNotExist(err) {
+		return nil, protocol.CLIError{
+			Code:     "INVALID_ARGS",
+			Message:  fmt.Sprintf("meta-file does not exist: %s", metaFile),
+			ExitCode: 1,
+		}
+	}
+
+	kbIndex := resolveKbIndex(opts.KbIndex, cfg)
+	if kbIndex == "" {
+		return nil, protocol.CLIError{
+			Code:     "INVALID_ARGS",
+			Message:  "kb_index is required. Provide --kb-index flag or set BIBLE_MEMORY_KB_INDEX env variable.",
+			ExitCode: 1,
+		}
+	}
+
+	tag := strings.TrimSpace(opts.Tag)
+	if tag == "" {
+		tag = "memory"
+	}
+
+	// IDE test mode: accepted import envelope, no HTTP (no stub_* markers).
+	if opts.TestMode {
+		logger.Info("memory.import.test", map[string]any{"kb_index": kbIndex})
+		rawMeta, err := os.ReadFile(metaFile)
+		if err != nil {
+			return nil, protocol.CLIError{Code: "INTERNAL", Message: err.Error(), ExitCode: 1}
+		}
+		var mf map[string]any
+		_ = json.Unmarshal(rawMeta, &mf)
+		sessionID, _ := mf["session_id"].(string)
+		memoryID, _ := mf["memory_id"].(string)
+		taskID := fmt.Sprintf("test-import-task-%d", time.Now().UnixNano())
+		out := map[string]any{
+			"task_id":  taskID,
+			"status":   "accepted",
+			"kb_index": kbIndex,
+			"tag":      tag,
+		}
+		if sessionID != "" {
+			out["session_id"] = sessionID
+		}
+		if memoryID != "" {
+			out["memory_id"] = memoryID
+		}
+		return out, nil
+	}
+
+	// --- Stub mode shortcut -------------------------------------------------
+	// Return immediately without touching the network when explicitly requested.
+	if isStubMode() {
+		logger.Info("memory.import.stub", map[string]any{
+			"reason":   "BIBLE_CLI_STUB_MODE=1",
+			"kb_index": kbIndex,
+		})
+		return stubMemoryImport(kbIndex, "stub_mode"), nil
+	}
+
+	// --- Real server call ---------------------------------------------------
+
+	vectorModel := resolveVectorModel(opts.VectorModel, cfg)
+
+	// Assemble the multipart payload: meta.json is mandatory, source (message)
+	// is sent as message.json so the server-side parser recognises it.
+	files := []clienthttp.MemoryFile{
+		{Filename: "meta.json", Path: metaFile, ContentType: "application/json"},
+		{Filename: "message.json", Path: sourceFile, ContentType: "application/json"},
+	}
+
+	importReq := clienthttp.MemoryImportRequest{
+		Files:       files,
+		KbIndex:     kbIndex,
+		Tag:         tag,
+		VectorModel: vectorModel,
+	}
+
+	logger.Debug("memory.import.http", map[string]any{
+		"kb_index":     kbIndex,
+		"tag":          tag,
+		"vector_model": vectorModel,
+	})
+
+	payload, err := client.ImportMemory(importReq)
+	if err != nil {
+		logger.Error("memory.import.error", map[string]any{"error": err.Error()})
+		return nil, err
+	}
+
+	logger.Info("memory.import.ok", map[string]any{
+		"task_id":  payload["task_id"],
+		"status":   payload["status"],
+		"kb_index": kbIndex,
+	})
+	return decorateServerResponse(payload), nil
 }
 
 func memoryUploadAll(client *clienthttp.Client, opts MemoryCommandOptions, cfg config.ClientConfig) (map[string]any, error) {
@@ -456,6 +649,15 @@ func memoryStatus(client *clienthttp.Client, opts MemoryCommandOptions) (map[str
 		}
 	}
 
+	if opts.TestMode && strings.TrimSpace(taskID) != "" {
+		logger.Info("memory.status.test", map[string]any{"task_id": taskID})
+		return map[string]any{
+			"task_id":  taskID,
+			"status":   "completed",
+			"progress": 100,
+		}, nil
+	}
+
 	return client.GetTask(taskID)
 }
 
@@ -463,6 +665,19 @@ func memoryList(client *clienthttp.Client, opts MemoryCommandOptions) (map[strin
 	limit := opts.Limit
 	if limit <= 0 {
 		limit = 20
+	}
+	if opts.TestMode {
+		listTag := strings.TrimSpace(opts.Tag)
+		if listTag == "" {
+			listTag = "memory"
+		}
+		logger.Info("memory.list.test", map[string]any{"tag": listTag})
+		return map[string]any{
+			"results":  []any{},
+			"total":    0,
+			"kb_index": "memory_main",
+			"tag":      listTag,
+		}, nil
 	}
 	req := clienthttp.MemorySearchRequest{
 		Query:      "*",
@@ -472,24 +687,15 @@ func memoryList(client *clienthttp.Client, opts MemoryCommandOptions) (map[strin
 		FilterTag:  opts.Tag,
 		Since:      opts.Since,
 	}
-	return client.MemorySearch(req)
-}
-
-func memorySearch(client *clienthttp.Client, opts MemoryCommandOptions) (map[string]any, error) {
-	if strings.TrimSpace(opts.Query) == "" {
-		return nil, protocol.CLIError{Code: "INVALID_ARGS", Message: "query is required for memory search.", ExitCode: 1}
+	if isStubMode() {
+		logger.Info("memory.list.stub", map[string]any{"reason": "BIBLE_CLI_STUB_MODE=1"})
+		return stubMemoryList("stub_mode"), nil
 	}
-	topK := opts.TopK
-	if topK <= 0 {
-		topK = 5
+	payload, err := client.MemorySearch(req)
+	if err != nil {
+		return payload, err
 	}
-	req := clienthttp.MemorySearchRequest{
-		Query:      opts.Query,
-		TopK:       topK,
-		Threshold:  opts.Threshold,
-		SearchType: opts.SearchType,
-	}
-	return client.MemorySearch(req)
+	return decorateServerResponse(payload), nil
 }
 
 func memoryDownload(client *clienthttp.Client, opts MemoryCommandOptions) (map[string]any, error) {
@@ -504,6 +710,10 @@ func memoryDownload(client *clienthttp.Client, opts MemoryCommandOptions) (map[s
 	}
 	if len(storagePaths) == 0 {
 		return nil, protocol.CLIError{Code: "INVALID_ARGS", Message: "Provide a memory id or --storage-path for download.", ExitCode: 1}
+	}
+
+	if opts.TestMode {
+		return memoryDownloadTestMode(opts, storagePaths)
 	}
 
 	var (
@@ -587,6 +797,48 @@ func memoryDownload(client *clienthttp.Client, opts MemoryCommandOptions) (map[s
 	}, nil
 }
 
+// memoryDownloadTestMode writes a minimal bible-chat-v1 JSON without contacting
+// the server. Return shape matches a successful integrated download.
+func memoryDownloadTestMode(opts MemoryCommandOptions, storagePaths []string) (map[string]any, error) {
+	outputDir := strings.TrimSpace(opts.OutputDir)
+	if outputDir == "" {
+		home, _ := os.UserHomeDir()
+		outputDir = filepath.Join(home, ".bible", "memory")
+	}
+	if err := os.MkdirAll(outputDir, 0o755); err != nil {
+		return nil, protocol.CLIError{Code: "INTERNAL", Message: "Cannot create output directory: " + err.Error(), ExitCode: 1}
+	}
+
+	filename := strings.TrimSpace(opts.DownloadName)
+	if filename == "" {
+		filename = strings.TrimSpace(opts.PackageName)
+	}
+	if filename == "" {
+		filename = filepath.Base(storagePaths[0])
+	}
+	if filename == "." || filename == string(filepath.Separator) || filename == "" {
+		filename = "test-download"
+	}
+	if filepath.Ext(filename) == "" {
+		if len(storagePaths) > 1 {
+			filename += ".zip"
+		} else {
+			filename += ".json"
+		}
+	}
+	destPath := filepath.Join(outputDir, filename)
+
+	body := []byte(`{"source_format":"bible-chat-v1","session_id":"test-download","exported_at":"1970-01-01T00:00:00Z","turns":[]}`)
+	if err := os.WriteFile(destPath, body, 0o644); err != nil {
+		return nil, protocol.CLIError{Code: "INTERNAL", Message: "Failed to write memory file: " + err.Error(), ExitCode: 1}
+	}
+	logger.Info("memory.download.test", map[string]any{"output_path": destPath})
+	return map[string]any{
+		"status":      "downloaded",
+		"output_path": destPath,
+	}, nil
+}
+
 func memoryCacheStatus(opts MemoryCommandOptions) (map[string]any, error) {
 	baseDir := opts.BaseDir
 	if strings.TrimSpace(baseDir) == "" {
@@ -652,6 +904,23 @@ func memoryCacheStatus(opts MemoryCommandOptions) (map[string]any, error) {
 		sessions = []map[string]any{}
 	}
 	return map[string]any{"sessions": sessions}, nil
+}
+
+// sessionIDFromMessageJSON returns session_id from bible-chat-v1 message.json when present.
+func sessionIDFromMessageJSON(raw []byte) (string, bool) {
+	var mj map[string]any
+	if err := json.Unmarshal(raw, &mj); err != nil {
+		return "", false
+	}
+	s, ok := mj["session_id"].(string)
+	if !ok {
+		return "", false
+	}
+	s = strings.TrimSpace(s)
+	if s == "" {
+		return "", false
+	}
+	return s, true
 }
 
 // unmarshalJSON validates that data is valid JSON by attempting to decode into v.

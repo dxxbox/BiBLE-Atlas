@@ -1,0 +1,51 @@
+services:
+  redis:
+    image: redis:7-alpine
+    container_name: redis-${INSTANCE_NAME}
+    hostname: redis-${INSTANCE_NAME}
+    command: redis-server /etc/redis/redis.conf
+    ports:
+      - "${REDIS_PORT}:6379"
+    volumes:
+      - ${DATA_DIR}/data:/data:Z
+      - ${DATA_DIR}/config/redis.conf:/etc/redis/redis.conf:ro
+      # 日志输出到 stdout，通过 docker logs 查看，无需挂载日志目录
+    networks:
+      - redis-${INSTANCE_NAME}-net
+    deploy:
+      resources:
+        limits:
+          memory: ${MEM_LIMIT}
+        reservations:
+          memory: ${MEM_RESERVE}
+    healthcheck:
+      test: ["CMD", "redis-cli", "-p", "6379", "ping"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 10s
+    restart: unless-stopped
+
+  redis-commander:
+    image: rediscommander/redis-commander:latest
+    container_name: redis-commander-${INSTANCE_NAME}
+    environment:
+      - REDIS_HOSTS=local:redis-${INSTANCE_NAME}:6379
+      - HTTP_USER=${COMMANDER_USER}
+      - HTTP_PASSWORD=${COMMANDER_PASSWORD}
+    ports:
+      - "${COMMANDER_PORT}:8081"
+    depends_on:
+      redis:
+        condition: service_healthy
+    networks:
+      - redis-${INSTANCE_NAME}-net
+    deploy:
+      resources:
+        limits:
+          memory: 256M
+    restart: unless-stopped
+
+networks:
+  redis-${INSTANCE_NAME}-net:
+    driver: bridge

@@ -3,57 +3,64 @@
 # 修改后自动生效，或调用 reload_config() 手动刷新
 # ============================================================
 
+# ==================== 日志配置 ====================
 log:
-  level: DEBUG    # DEBUG | INFO | WARNING | ERROR | CRITICAL
-  format: "[%(asctime)s] [%(processName)s/%(threadName)s] %(levelname)s %(filename)s:%(lineno)s: %(message)s"
-  ouktput: file
-  log_dir: ./workspace/log
+  level: DEBUG       # 日志级别：DEBUG | INFO | WARNING | ERROR | CRITICAL
+                    # DEBUG 会输出每个处理步骤的详细信息，便于排查问题
+                    # INFO  只输出关键节点（任务开始/结束、chunk 数量、文件写入等）
+  format: "[%(asctime)s] [%(processName)s/%(threadName)s] %(levelname)s %(filename)s:%(lineno)d: %(message)s"
+  output: file    # 输出目标：stdout | stderr | file（file 时日志写入 workspace_dir/log/）
+  log_dir: ./workspace/log  # 日志目录；留空则默认为 <workspace_dir>/log/
 
-storage:
-  workspace_dir: ./workspace/memory   #root folder for data persist, files/import_work are all created within.
+# ==================== 工作区配置 ====================
+# 运行时产物根目录（向量模型缓存、推理临时文件等），不含业务数据。
+# 业务数据（文件落盘、任务工作区）由各 domain 的 import_memory / import_skill 独立配置。
+workspace:
+  root: ./workspace
 
+# ==================== 文件系统配置 ====================
+# 切换后端：将 backend 改为 minio 或 s3，并填写对应节的配置
+# 安装依赖：pip install 'bible-atlas[minio]' 或 pip install 'bible-atlas[s3]'
+# 注意：本地后端（local）的落盘根目录由各 domain 自己的 files_dir 指定，此处无需配置。
 file_system:
-  backend: local    #backend type: local | minio | s3
+  backend: local                        # 后端类型：local | minio | s3
   local:
-    root_dir: ./workspace/memory/files
-    hash_algo: sha256
-    chunk_size: 1048576
-    use_atomic_rename: true
+    hash_algo: sha256                   # 摘要算法
+    chunk_size: 1048576                 # 分块写入大小（字节），默认 1 MB
+    use_atomic_rename: true             # 先写临时文件再原子重命名，防止并发读到半文件
 
-#------ MinIO configure while minio enabled
-#
-#minio:
-#  endpoint: localhost:9000
-#  access_key: minioadmin
-#  secret_key: minioadmin
-#  bucket: bible-atlas
-#  prefix: ""
-#  secure: false
-#  region: ""
-#  hash_algo: sha256
-#  chunk_size: 1048576
+  # ---- MinIO 配置（backend: minio 时生效）----
+  # minio:
+  #   endpoint: localhost:9000          # MinIO 服务地址（不含 http://）
+  #   access_key: minioadmin            # Access Key
+  #   secret_key: minioadmin            # Secret Key
+  #   bucket: bible-atlas               # 目标 bucket（需提前创建）
+  #   prefix: ""                        # 对象键前缀（可选），如 "bible-files"
+  #   secure: false                     # true 表示使用 HTTPS
+  #   region: ""                        # 区域（可选）
+  #   hash_algo: sha256
+  #   chunk_size: 1048576
 
+  # ---- AWS S3 配置（backend: s3 时生效）----
+  # s3:
+  #   bucket: bible-atlas               # 目标 bucket
+  #   prefix: ""                        # 对象键前缀（可选）
+  #   region: us-east-1                 # AWS 区域
+  #   endpoint_url: ""                  # 自定义端点（空 = 真实 AWS；非空 = S3-compatible 服务）
+  #   access_key: ""                    # 留空则使用 IAM Role / 环境变量 AWS_ACCESS_KEY_ID
+  #   secret_key: ""
+  #   hash_algo: sha256
+  #   chunk_size: 1048576
 
-#--------- AWS S3 configure while S3 enabled
-#
-#s3:
-#  bucket: bible-atlas
-#  prefix: ""
-#  region: us-east-1
-#  endpoint_url: ""
-#  access_key: ""
-#  secret_key: ""
-#  hash_algo: sha256
-#  chunk_size: 1048576
-
-#----------database configure
+# ==================== 数据库配置 ====================
+# 切换后端：将 backend 改为 elasticsearch 或 postgres，并填写对应节的配置
 database:
-  backend: opensearch     # can be switch to : opensearch | elasticsearch | postgres
+  backend: opensearch   # 后端类型：opensearch | elasticsearch | postgres
 
-  # --------- opensearch configure
+  # ---- OpenSearch 配置（backend: opensearch 时生效）----
   opensearch:
     hosts:
-      - "localhost:9201"
+      - "localhost:9800"
     timeout_seconds: 30
     use_ssl: false
     verify_certs: true
@@ -65,25 +72,75 @@ database:
     bulk_chunk_size: 500
     request_timeout_seconds: 60
 
-  # --------- elasiticsearch configure
+  # ---- Elasticsearch 配置（backend: elasticsearch 时生效）----
+  # elasticsearch:
+  #   hosts:
+  #     - "localhost:9200"
+  #   timeout_seconds: 30
+  #   use_ssl: false
+  #   verify_certs: true
+  #   username: ""
+  #   password: ""
+  #   binding_index: v4_index_binding
+  #   async_task_index: v4_async_tasks
+  #   refresh_policy: "false"
+  #   bulk_chunk_size: 500
+  #   request_timeout_seconds: 60
 
-  # --------- postgres configure
+  # ---- PostgreSQL 配置（backend: postgres 时生效）----
+  # postgres:
+  #   dsn: "postgresql://user:password@localhost:5432/bible"
+  #   pool_min_size: 1
+  #   pool_max_size: 10
+  #   pool_timeout_seconds: 30
+  #   binding_table: v4_index_binding
+  #   content_table: v4_content_docs
+  #   file_registry_table: v4_file_registry
+  #   async_task_table: v4_async_tasks
+  #   bulk_chunk_size: 500
 
+# ==================== Celery 异步任务队列配置 ====================
 celery:
-  broker_url: "redis://localhost: 6379/0"
-  result_backend: "redis://localhost:6379/1"
-  worker_concurrency: 4                     # worker sub-process, 0 means CPU core num.
+  broker_url: "redis://localhost:9880/0"
+  result_backend: "redis://localhost:9880/1"
+  worker_concurrency: 4          # worker 子进程数，0 表示使用 CPU 核心数
 
-# --------------- Import configure
+# ==================== Memory Import 配置 ====================
 import_memory:
-  parsers_dir:              ./bible/features/import/memory_import/parsers     # 预注册脚本目录，客户端上传的脚本存在任务工作区
-  import_work_dir:          ./workspace/memory/import_work                    # 任务工作区
-  keep_failed_workspace:    true
-  task_timeout_seconds:     300                                               # 单个 import 任务整体超时
-  sandbox_timeout_seconds:  60                                                # 解析脚本子进程超时（秒）
-  workspace_ttl_hours:      24                                                # 工作区保留时长，0 表示不自动清理
-  sweep_interval_seconds:   3600                                              # TTL 扫描周期
+  parsers_dir: ./bible/features/upload/memory_upload/parsers  # 预注册脚本目录（parse_memory.py / parse_default.py）
+  custom_parsers_dir: ./bible/features/upload/memory_upload/parsers/custom  # 上传脚本通过校验并导入成功后覆盖保存为 parse_memory.py
+  import_work_dir: ./workspace/memory/import_work             # 任务工作区根目录：API 上传暂存、解析器脚本暂存、任务产物均存于此
+  files_dir: ./workspace/memory/files                         # 文件永久落盘根目录（MEMORY/<kb_index>/<date>/）
+  keep_failed_workspace: true            # 是否保留失败的任务工作区，true 表示保留，false 表示删除
+  task_timeout_seconds: 300              # 单个 import 任务整体超时（秒），0 表示不限
+  sandbox_timeout_seconds: 60            # 解析脚本子进程超时（秒）
+  workspace_ttl_hours: 24                # 任务工作区保留时长（小时），0 表示不自动清理
+  sweep_interval_seconds: 3600           # TTL 扫描周期（秒），默认 1 小时
 
+# ==================== Skill Import 配置 ====================
+import_skill:
+  parsers_dir: ./bible/features/upload/skill_upload/parsers   # 预注册脚本目录
+  custom_parsers_dir: ./bible/features/upload/skill_upload/parsers/custom  # 上传脚本通过校验并导入成功后覆盖保存为 parse_skill.py
+  import_work_dir: ./workspace/skill/import_work              # 任务工作区根目录（临时，可清理）
+  files_dir: ./workspace/skill/files                          # 文件永久落盘根目录（<date>/<task_id>/）
+  keep_failed_workspace: true            # 是否保留失败的任务工作区
+  task_timeout_seconds: 300
+  sandbox_timeout_seconds: 60
+  workspace_ttl_hours: 24
+  sweep_interval_seconds: 3600
+  allowed_extensions:
+    - .skill
+    - .md
+    - .json
+    - .png
+    - .jpg
+    - .jpeg
+    - .pdf
+    - .txt
+    - .yaml
+    - .yml
+    - .sh
+    - .py
 
 # ==================== 库配置 ====================
 # 测试库列表（包含所有可用库）
@@ -155,22 +212,32 @@ library_to_coding_language:
 default_coding_language: cpp
 
 # ==================== 文件上传限制 ====================
-# 单个文件最大大小（字节）
-max_file_size: 10485760  # 10MB
+upload:
+  # 单个文件最大大小（字节）
+  max_file_size: 10485760      # 10 MB
 
-max_total_size: 209715200
+  # 单次上传总大小上限（字节）
+  max_total_size: 209715200    # 200 MB
 
-# 单次上传最大文件数
-max_file_count: 2000
+  # 单次上传最大文件数
+  max_file_count: 2000
 
-# 允许的文件格式
-allowed_extensions:
-  - .md
-  - .json
-  - .pdf
-  - .py
+  # 允许的文件扩展名
+  allowed_extensions:
+    - .md
+    - .json
 
 # ==================== 检索配置 ====================
+search:
+  default_top_k: 10
+  max_top_k: 100
+  allowed_search_types:
+    - keyword
+    - title
+    - text
+    - vector
+    - hybrid
+
 # 默认检索结果数量
 default_top_k: 10
 
@@ -252,53 +319,15 @@ copilot_config:
   default_model: "gpt-5-mini"
   workspace_root: "/var/fpwork2/fenghxu/cprt_ai_context/elastic_operator/website_9220/"  # 工作空间绝对路径
 
-# ==================== Vector configure
-vector:
-  preload_on_startup: true                  # 启动预加载
-  hf_cache_dir:       ./workspace/hf_cache  # HuggingFace 缓存目录
-  batch_size:         32                    # 向量编码大小，与 embedding 对齐
-
-  available_models:
-    - id: 'mini'
-      name: 'paraphrase-multilingual-MiniLM-L12-v2'
-      description: "Lighting, Multi-languages"
-      params: '118M'
-      dims: 384
-      languages: ['多语言']
-    
-    - id: 'bge-large'
-      name: 'BAAI/bge-large-zh-v1.5'
-      description: 'CN prio, high accuracy'
-      params: '326M'
-      dims: 1024
-      languages: ['中文', '英文']
-
-    - id: 'mpnet'
-      name: 'paraphrase-multilingual-mpnet-base-v2'
-      description: 'Balance, multi-language'
-      params: '278M'
-      dims: 768
-      languages: ['多语言']
-
-    - id: 'bge-m3'
-      name: 'BAAI/bge-m3'
-      description: 'Multi-Language, long-context'
-      params: '568M'
-      dims: 1024
-      languages: ['100+ 语言']
-    
-    - id: 'e5-large'
-      name: 'intfloat/multilingual-e5-large'
-      description: 'Multi-Language, High Perform'
-      params: '560M'
-      dims: 1024
-      languages: ['多语言']
-
 # ==================== Rerank（重排序）配置 ====================
 # 是否启用 Rerank（默认false，用于对比评估效果）
 rerank:
   enable: true
-  
+  preload_on_startup: true   # 启动时预加载 rerank 模型到内存（与 vector.preload_on_startup 同步）
+
+  # HuggingFace 缓存目录（与向量模型共用同一目录）
+  hf_cache_dir: ./workspace/hf_cache
+
   # 默认使用的 rerank 模型
   default_model: 'bge-reranker-base'
   
@@ -345,9 +374,59 @@ rerank:
       params: '110M'
       languages: ['英文']
       speed: '~150 对/秒'
-  
-  # 是否在启动时预加载所有模型
+    
+# ==================== 向量模型配置 ====================
+# name 为 HuggingFace / sentence-transformers 模型 id（启动预加载与 ensure_model_ready 使用）。
+vector:
+  # 是否在启动时预加载所有模型（预加载列表为各条目的 name）
   preload_on_startup: true
-  
-  # Rerank 推理批处理大小
+
+  # HuggingFace 缓存目录（模型权重，体积较大，独立于业务数据目录）
+  hf_cache_dir: ./workspace/hf_cache
+
+  # 向量编码批大小（与 embedding 侧预留/对齐，当前实现未强制使用）
   batch_size: 32
+
+  # 可用的向量模型列表
+  available_models:
+    - id: 'mini'
+      name: 'paraphrase-multilingual-MiniLM-L12-v2'
+      description: '多语言，轻量快速'
+      params: '118M'
+      dims: 384
+      languages: ['多语言']
+
+    - id: 'mpnet'
+      name: 'paraphrase-multilingual-mpnet-base-v2'
+      description: '多语言，平衡性好'
+      params: '278M'
+      dims: 768
+      languages: ['多语言']
+
+    - id: 'bge-base'
+      name: 'BAAI/bge-base-zh-v1.5'
+      description: '中文优化，基础版'
+      params: '102M'
+      dims: 768
+      languages: ['中文', '英文']
+
+    - id: 'bge-large'
+      name: 'BAAI/bge-large-zh-v1.5'
+      description: '中文优化，高精度'
+      params: '326M'
+      dims: 1024
+      languages: ['中文', '英文']
+
+    - id: 'bge-m3'
+      name: 'BAAI/bge-m3'
+      description: '多语言，支持长文本'
+      params: '568M'
+      dims: 1024
+      languages: ['100+ 语言']
+
+    - id: 'e5-large'
+      name: 'intfloat/multilingual-e5-large'
+      description: '多语言，高性能'
+      params: '560M'
+      dims: 1024
+      languages: ['多语言']

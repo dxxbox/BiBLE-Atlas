@@ -23,8 +23,8 @@ v4 的目标不是“兼容当前工程实现”，而是建立统一、可扩�
 
 - 默认解析脚本（系统内置）
 - `KNOWLEDGE_BASE` 自定义脚本（上传或目录发现）
-- `skill_import/parsers/` 下解析器
-- `memory_import/parsers/` 下解析器
+- `skill_upload/parsers/` 下解析器
+- `memory_upload/parsers/` 下解析器
 
 ### 2.2 统一函数签名
 
@@ -301,22 +301,31 @@ POST /kb_design_main/_search
 
 当前 v4 按域管理解析脚本目录：
 
-- `app/features/import/knowledge_base_import/parsers/`
-- `app/features/import/skill_import/parsers/`
-- `app/features/import/memory_import/parsers/`
+- `app/features/upload/knowledge_base_upload/parsers/`
+- `app/features/upload/skill_upload/parsers/`
+- `app/features/upload/memory_upload/parsers/`
 
 ### 3.2 选择算法
 
-导入请求到达后按以下顺序确定最终解析脚本：
+导入请求到达后按 domain 确定最终解析脚本：
 
-1. 若请求上传 `parser_script`：
-   - 在对应域 `*_import_service.py` 内通过 `save_uploaded_parser(...)` 保存脚本到域内 `parsers/`
-   - 作为本次导入最终脚本（`KNOWLEDGE_BASE` 目标名 `parse_{tag}.py`，`SKILL/MEMORY` 分别为 `parse_skill.py` / `parse_memory.py`）
-2. 若请求未上传 `parser_script`：
-   - `KNOWLEDGE_BASE` 在域内 `parsers/` 查找 `parse_{tag}.py`
-   - `SKILL/MEMORY` 在域内 `parsers/` 查找固定脚本 `parse_skill.py` / `parse_memory.py`
-3. 若仍未命中：回退到域内 `parsers/parse_default.py`
-4. 默认脚本也缺失：返回 `PARSER_SCRIPT_NOT_FOUND`
+1. `KNOWLEDGE_BASE` 既有策略：
+   - 若请求上传 `parser_script`，在 `knowledge_base_upload_service.py` 内保存为 `parsers/parse_<tag>.py`，并作为本次导入最终脚本。
+   - 若请求未上传 `parser_script`，在域内 `parsers/` 查找 `parse_<tag>.py`。
+   - 若仍未命中，回退到域内 `parsers/parse_default.py`。
+2. `SKILL/MEMORY` custom parser 策略：
+   - 若请求上传 `parser_script`，API 先保存到任务 session 临时目录；当前任务只使用该临时脚本执行。
+   - 上传脚本只有在 `ASTGuard`、`SandboxRunner`、`ParseResult` schema 校验和后续 store 全部成功后，才原子覆盖保存到 `custom_parsers_dir/parse_skill.py` 或 `custom_parsers_dir/parse_memory.py`。
+   - 若请求未上传 `parser_script`，先查 `custom_parsers_dir/parse_skill.py` / `custom_parsers_dir/parse_memory.py`。
+   - custom 目录未命中后，再查预注册 `parsers_dir/parse_skill.py` / `parsers_dir/parse_memory.py`。
+   - 仍未命中，回退到 `parsers_dir/parse_default.py`。
+3. 默认脚本也缺失：返回 `PARSER_SCRIPT_NOT_FOUND`。
+
+补充约束：
+
+- 上传脚本失败不得覆盖已有 custom parser。
+- custom parser 与上传脚本执行前都需要经过 `ASTGuard`；预注册 `parsers_dir` 脚本视为可信脚本。
+- `SKILL/MEMORY` 的 binding 中 `parser_script_source` 建议记录固定文件名（`parse_skill.py` / `parse_memory.py`），`parser_script_sha256` 记录实际执行脚本内容摘要。
 
 > 未来“统一脚本目录 + 配置化 `parser_dir`”方案见 `06_未来演进规划.md`，不影响当前 v4 基线。
 

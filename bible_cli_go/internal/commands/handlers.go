@@ -5,6 +5,7 @@ import (
 
 	clienthttp "bible-cli-go/internal/client/http"
 	"bible-cli-go/internal/config"
+	"bible-cli-go/internal/logger"
 	"bible-cli-go/internal/protocol"
 )
 
@@ -22,6 +23,7 @@ func NewDispatcher(cfg config.ClientConfig) *Dispatcher {
 }
 
 func (d *Dispatcher) Handle(command string, action string, query string, tag string) (map[string]any, error) {
+	logger.Debug("dispatcher.handle", map[string]any{"command": command, "action": action})
 	switch command {
 	case "health":
 		return d.client.Health()
@@ -35,26 +37,45 @@ func (d *Dispatcher) Handle(command string, action string, query string, tag str
 }
 
 func (d *Dispatcher) Search(options clienthttp.SearchOptions) (map[string]any, error) {
+	logger.Debug("dispatcher.search", map[string]any{"query": options.Query, "top_k": options.TopK})
 	return d.client.Search(options)
 }
 
 func (d *Dispatcher) handleSystem(action string) (map[string]any, error) {
+	logger.Debug("dispatcher.system", map[string]any{"action": action})
 	switch action {
 	case "status":
-		return d.client.Status()
+		payload, err := d.client.Status()
+		if err != nil {
+			return payload, err
+		}
+		return decorateServerResponse(payload), nil
 	case "info":
-		return d.client.Info()
+		payload, err := d.client.Info()
+		if err != nil {
+			return payload, err
+		}
+		return decorateServerResponse(payload), nil
 	default:
 		return nil, protocol.NotImplemented(strings.TrimSpace("system " + action))
 	}
 }
 
 func (d *Dispatcher) handleKnowledge(action string, query string, tag string) (map[string]any, error) {
+	logger.Debug("dispatcher.knowledge", map[string]any{"action": action, "tag": tag})
 	switch action {
 	case "list":
-		return d.client.KnowledgeList()
+		payload, err := d.client.KnowledgeList()
+		if err != nil {
+			return payload, err
+		}
+		return decorateServerResponse(payload), nil
 	case "search":
-		return d.client.KnowledgeSearch(clienthttp.KnowledgeSearchRequest{Query: query, Tag: tag})
+		payload, err := d.client.KnowledgeSearch(clienthttp.KnowledgeSearchRequest{Query: query, Tag: tag})
+		if err != nil {
+			return payload, err
+		}
+		return decorateServerResponse(payload), nil
 	default:
 		return nil, protocol.NotImplemented(strings.TrimSpace("knowledge " + action))
 	}

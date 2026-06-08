@@ -13,8 +13,9 @@
 ## 1. 适用范围
 
 - 仅覆盖 `POST /api/search/knowledge-base`。
-- 请求体字段沿用 `02_API接口文档.md`（`query/tag/search_type/top_k/vector_model/vector_weight`）。
+- 请求体字段沿用 `02_API接口文档.md`（`query/tag/kb_index/search_type/top_k/vector_model/vector_weight`）。
 - `tag` 为 KNOWLEDGE_BASE 子类型标识（如 `design/flow/alg`），通过绑定记录映射到实际 `kb_index` 与 `search_profile`。
+- `kb_index` 可选；提供时按 `domain=KNOWLEDGE_BASE + kb_index` 精确查找绑定，未提供时按 `domain=KNOWLEDGE_BASE + tag` 查找 active binding。
 
 ---
 
@@ -118,13 +119,16 @@ def search(
     top_k: int | None,
     vector_model: str | None,
     vector_weight: float | None,
+    kb_index: str | None = None,
 ) -> dict[str, Any]: ...
 ```
 
 建议流程：
 
 1. 参数校验（`query/tag` 必填）。
-2. 根据 `domain=KNOWLEDGE_BASE + tag` 读取绑定记录。
+2. 读取绑定记录：
+   - 若请求显式携带 `kb_index`，根据 `domain=KNOWLEDGE_BASE + kb_index` 精确查找绑定。
+   - 否则根据 `domain=KNOWLEDGE_BASE + tag` 查找 active binding。
 3. 标准化 `search_type/top_k/vector_weight`。
 4. 向量模型一致性校验（请求显式带模型时必须与绑定一致）。
 5. 调用 `KnowledgeBaseSearcher.search(...)`。

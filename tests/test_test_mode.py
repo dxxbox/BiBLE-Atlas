@@ -353,7 +353,7 @@ def test_skill_import_preflight_accepts_standard_skill_package():
 def test_skill_import_preflight_rejects_nonstandard_skill_package_shapes():
     root_file = io.BytesIO()
     with zipfile.ZipFile(root_file, "w") as zf:
-        zf.writestr("SKILLS.md", "# Root manifest\n")
+        zf.writestr("SKILL.md", "# Root manifest\n")
     response = client().post(
         "/api/import/skill",
         data={"kb_index": "kb_skill_test", "tag": "skill"},
@@ -364,8 +364,8 @@ def test_skill_import_preflight_rejects_nonstandard_skill_package_shapes():
 
     multiple_roots = io.BytesIO()
     with zipfile.ZipFile(multiple_roots, "w") as zf:
-        zf.writestr("one/SKILLS.md", "# One\n")
-        zf.writestr("two/SKILLS.md", "# Two\n")
+        zf.writestr("one/SKILL.md", "# One\n")
+        zf.writestr("two/SKILL.md", "# Two\n")
     response = client().post(
         "/api/import/skill",
         data={"kb_index": "kb_skill_test", "tag": "skill"},

@@ -18,7 +18,11 @@ import threading
 from typing import Any
 
 from bible.common.logger import get_logger
-from bible.infrastructure.vector._model_utils import download_lock_path, get_local_model_path
+from bible.infrastructure.vector._model_utils import (
+    download_lock_path,
+    get_local_model_path,
+    resolve_hf_cache_dir,
+)
 
 logger = get_logger(__name__)
 
@@ -43,11 +47,7 @@ class RerankTool:
     def __init__(self, workspace_dir: str, hf_cache_dir: str | None = None) -> None:
         self._workspace_dir = workspace_dir
         # HF cache dir: explicit arg > env var > workspace_dir/hf_cache
-        self._hf_cache_dir = (
-            hf_cache_dir
-            or os.environ.get("HF_HOME")
-            or os.path.join(workspace_dir, "hf_cache")
-        )
+        self._hf_cache_dir = resolve_hf_cache_dir(workspace_dir, hf_cache_dir)
 
     # ------------------------------------------------------------------
     # Public API
@@ -86,7 +86,11 @@ class RerankTool:
                         "Loading rerank model '%s' from local path: %s", model_name, local_path
                     )
                     return self._load_model(model_name, local_path, source="local")
-                logger.info("Rerank model '%s' not found locally, downloading…", model_name)
+                logger.info(
+                    "Rerank model '%s' not found locally under %s, downloading…",
+                    model_name,
+                    self._hf_cache_dir,
+                )
                 return self._download_from_huggingface(model_name)
             finally:
                 fcntl.flock(_lf, fcntl.LOCK_UN)
@@ -127,9 +131,25 @@ class RerankTool:
     # ------------------------------------------------------------------
 
     def _download_from_huggingface(self, model_name: str) -> dict[str, Any]:
-        """Download via sentence-transformers CrossEncoder (sets HF_HOME first)."""
+        """Download via sentence-transformers CrossEncoder using configured cache."""
         os.environ.setdefault("HF_HOME", self._hf_cache_dir)
-        return self._load_model(model_name, model_name, source="download")
+        os.environ.setdefault(
+            "HUGGINGFACE_HUB_CACHE",
+            os.path.join(self._hf_cache_dir, "hub"),
+        )
+        result = self._load_model(model_name, model_name, source="download")
+        local_path = get_local_model_path(
+            model_name,
+            self._hf_cache_dir,
+            required_metadata=["config.json"],
+        )
+        logger.info(
+            "Rerank model '%s' download/load complete; cache_dir=%s local_path=%s",
+            model_name,
+            self._hf_cache_dir,
+            local_path or "<not found>",
+        )
+        return result
 
     def _load_model(self, model_name: str, load_path: str, source: str) -> dict[str, Any]:
         try:
@@ -146,11 +166,10 @@ class RerankTool:
         with RerankTool._cache_lock:
             if model_name not in RerankTool._model_cache:
                 try:
-                    load_kwargs: dict[str, Any] = {}
+                    load_kwargs: dict[str, Any] = {"cache_folder": self._hf_cache_dir}
                     if source == "local":
-                        # Prevent AutoModel from making network requests when
-                        # loading from a local snapshot.
-                        load_kwargs["automodel_args"] = {"local_files_only": True}
+                        # Prevent network requests when loading from a local snapshot.
+                        load_kwargs["local_files_only"] = True
                     model = CrossEncoder(load_path, **load_kwargs)
                     logger.info(
                         "Rerank model '%s' loaded (source=%s).", model_name, source

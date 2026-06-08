@@ -25,12 +25,14 @@ class LogConfig(BaseModel):
     rotation_interval: str = "midnight"
 
 
-class StorageConfig(BaseModel):
-    workspace_dir: str = "./workspace/memory"
+class WorkspaceConfig(BaseModel):
+    """Runtime workspace root — used by VectorTool, RerankTool, and as a fallback
+    for any path that is not explicitly configured elsewhere."""
+    root: str = "./workspace"
 
 
 class FileSystemLocalConfig(BaseModel):
-    root_dir: str = "./workspace/memory/files"
+    root_dir: str = "./workspace/files"
     hash_algo: str = "sha256"
     chunk_size: int = 1024 * 1024
     use_atomic_rename: bool = True
@@ -69,12 +71,27 @@ class FileSystemConfig(BaseModel):
 
 class ImportMemoryConfig(BaseModel):
     parsers_dir: str = "./workspace/memory/parsers"
+    custom_parsers_dir: str = "./bible/features/upload/memory_upload/parsers/custom"
     import_work_dir: str = "./workspace/memory/import_work"
+    files_dir: str = "./workspace/memory/files"
     task_timeout_seconds: int = 300
     sandbox_timeout_seconds: int = 60
     workspace_ttl_hours: int = 24
     sweep_interval_seconds: int = 3600
     keep_failed_workspace: bool = False
+
+
+class ImportSkillConfig(BaseModel):
+    parsers_dir: str = "./bible/features/upload/skill_upload/parsers"
+    custom_parsers_dir: str = "./bible/features/upload/skill_upload/parsers/custom"
+    import_work_dir: str = "./workspace/skill/import_work"
+    files_dir: str = "./workspace/skill/files"
+    task_timeout_seconds: int = 300
+    sandbox_timeout_seconds: int = 60
+    workspace_ttl_hours: int = 24
+    sweep_interval_seconds: int = 3600
+    keep_failed_workspace: bool = False
+    allowed_extensions: list[str] = Field(default_factory=lambda: [".skill", ".md", ".json", ".png", ".jpg", ".jpeg", ".pdf", ".txt"])
 
 
 class AsyncTaskConfig(BaseModel):
@@ -86,6 +103,12 @@ class UploadConstraintsConfig(BaseModel):
     max_total_size: int = 200 * 1024 * 1024  # 200 MB total
     max_file_count: int = 2000
     allowed_extensions: list[str] = Field(default_factory=lambda: [".md", ".json"])
+
+
+class SkillUploadConstraintsConfig(UploadConstraintsConfig):
+    allowed_extensions: list[str] = Field(
+        default_factory=lambda: [".skill", ".md", ".json", ".txt", ".yaml", ".yml", ".sh", ".py"]
+    )
 
 
 class VectorModelEntry(BaseModel):
@@ -226,8 +249,8 @@ class BibleAtlasConfig(BaseModel):
     atlas_api_key: Optional[str] = None
     atlas_timeout: int = 10
 
-    storage: StorageConfig = Field(
-        default_factory=lambda: StorageConfig(), description="Storage configuration"
+    workspace: WorkspaceConfig = Field(
+        default_factory=lambda: WorkspaceConfig(), description="Runtime workspace root"
     )
     log: LogConfig = Field(default_factory=lambda: LogConfig(), description="Logging configuration")
     vector: VectorConfig = Field(
@@ -241,6 +264,9 @@ class BibleAtlasConfig(BaseModel):
     )
     import_memory: ImportMemoryConfig = Field(
         default_factory=lambda: ImportMemoryConfig(), description="Memory import settings"
+    )
+    import_skill: ImportSkillConfig = Field(
+        default_factory=lambda: ImportSkillConfig(), description="Skill import settings"
     )
     file_system: FileSystemConfig = Field(
         default_factory=FileSystemConfig, description="File system backend configuration"

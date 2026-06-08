@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 from dataclasses import asdict, dataclass, field
 from typing import Any, Literal
 
@@ -28,6 +29,12 @@ class IndexBinding:
     created_at: str | None = None
     updated_at: str | None = None
     deleted_at: str | None = None
+
+    def __post_init__(self) -> None:
+        if isinstance(self.search_profile_json, str):
+            self.search_profile_json = json.loads(self.search_profile_json)
+        if not isinstance(self.search_profile_json, dict):
+            raise ValueError("IndexBinding.search_profile_json must be a dict or JSON object string")
 
     def to_dict(self) -> dict[str, Any]:
         return asdict(self)

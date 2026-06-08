@@ -38,7 +38,10 @@ from bible.features.search.memory_search.memory_search_service import (
     IndexNotBoundError as MemoryIndexNotBoundError,
     VectorModelConflictError as MemoryVectorModelConflictError,
 )
-
+from bible.features.search.skill_search.skill_search_service import (
+    IndexNotBoundError as SkillIndexNotBoundError,
+    VectorModelConflictError as SkillVectorModelConflictError,
+)
 # ── Error-code → HTTP status mapping ──────────────────────────────────────────
 # Derived from §7 of 02_API接口文档.md and §11 of knowledge_base_search_implementation.md
 
@@ -79,6 +82,9 @@ _EXCEPTION_MAP: list[tuple[type[Exception], str, bool]] = [
     # MEMORY
     (MemoryIndexNotBoundError,      "INDEX_NOT_BOUND",       True),
     (MemoryVectorModelConflictError,"VECTOR_MODEL_CONFLICT", True),
+    # SKILL
+    (SkillIndexNotBoundError,       "INDEX_NOT_BOUND",       True),
+    (SkillVectorModelConflictError, "VECTOR_MODEL_CONFLICT", True),
     # Shared
     (SearchProfileInvalidError,     "SEARCH_PROFILE_INVALID",True),
     (SearchInternalError,           "INTERNAL_ERROR",        False),

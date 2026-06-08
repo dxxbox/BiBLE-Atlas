@@ -19,29 +19,38 @@ dependencies = [
     "uvicorn>=0.34.0",
     "types-PyYAML>=6.0",
     "python-multipart>=0.0.9",
-    "pydantic>=2.0.0",
+    "pydantic>=2.0",
     "opensearch-py>=3.2.0",
-    "celery[redis]>=5.3.0",
+    "celery[redis]>=5.3",
 ]
+
+# bible_cli (Python CLI) 已废弃，入口点已移除。
+# Go CLI 实现位于 bible_cli_go/，使用 `go build ./cmd/bible-cli` 构建。
+# [project.scripts]
+# bs = "bible_cli_DEPRECATED.python_cli:main"
+# biblesearch = "bible_cli_DEPRECATED.python_cli:main"
 
 [project.optional-dependencies]
-
+# 向量检索功能（embedding 模型），不需要向量化时可不装
 vector = [
-    "sentence-transformers>=3.0.0",
+    "sentence-transformers>=3.0",
 ]
 
+# MinIO 文件系统后端
 minio = [
-    "minio>=7.0.0",
+    "minio>=7.0",
 ]
 
+# AWS S3 文件系统后端
 s3 = [
-    "boto3>=1.26.0",
+    "boto3>=1.26",
 ]
 
 test = [
     "pytest>=8.0",
     "httpx>=0.24.0",
-    "fakeredis>=2.0"
+    "fakeredis>=2.0",
+    "numpy>=1.24",
 ]
 
 dev = [
@@ -96,7 +105,7 @@ skip-magic-trailing-comma = false
 line-ending = "auto"
 
 [tool.setuptools.packages.find]
-include = ["bible", "bible.*"]
+include = ["bible*", "bible_cli_DEPRECATED*"]
 
 
 [tool.setuptools_scm]

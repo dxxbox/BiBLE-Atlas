@@ -11,17 +11,18 @@ participant "ConfigManager\napp/config/config_manager.py" as CFG
 database "AppConfigYaml\napp/config/application.yaml" as CF
 participant "VectorModelPreloader\napp/infrastructure/vector/model_preloader.py" as VMP
 participant "VectorTool\napp/infrastructure/vector/vector_tool.py" as VEC
-participant "MemoryImportAPI\napp/api/import/memory_import_api.py" as API
+participant "MemoryUploadAPI\napp/api/upload/memory_upload_api.py" as API
 participant "AsyncTaskService\napp/features/async_task/service.py" as ATS
 database "AsyncTaskRepository\napp/features/async_task/repository.py" as ATR
 participant "CeleryBroker\nmemory:// / redis:// / amqp://" as BRK
 participant "CeleryWorker\ncelery worker process" as WRK
-participant "ImportTaskExecutor\napp/features/import/import_task_executor.py" as IEX
-participant "MemoryImportService\napp/features/import/memory_import/memory_import_service.py" as SVC
-database "MemoryParsersDir\napp/features/import/memory_import/parsers/" as PSD
-participant "ASTGuard\napp/features/import/parser_runtime/ast_guard.py" as AST
-participant "SandboxRunner\napp/features/import/parser_runtime/sandbox_runner.py" as RUN
-participant "StoreMemory\napp/features/import/memory_import/storage/store_memory.py" as STOR
+participant "UploadTaskExecutor\napp/features/upload/upload_task_executor.py" as IEX
+participant "MemoryUploadService\napp/features/upload/memory_upload/memory_upload_service.py" as SVC
+database "MemoryParsersDir\napp/features/upload/memory_upload/parsers/" as PSD
+database "MemoryCustomParsersDir\ncustom_parsers_dir/" as CPSD
+participant "ASTGuard\napp/features/upload/parser_runtime/ast_guard.py" as AST
+participant "SandboxRunner\napp/features/upload/parser_runtime/sandbox_runner.py" as RUN
+participant "StoreMemory\napp/features/upload/memory_upload/storage/store_memory.py" as STOR
 participant "FileSystemFactory\napp/infrastructure/file_system/factory.py" as FSF
 participant "IFileSystemGateway\napp/infrastructure/file_system/base.py" as IFS
 participant "LocalFileSystemGateway\napp/infrastructure/file_system/local.py" as LFS
@@ -101,35 +102,44 @@ end note
 
 == 解析脚本选择 ==
 alt 请求携带 parser_script
-  SVC -> SVC: save_uploaded_parser(parser_script,\nparsers_dir, target_name="parse_memory.py")
-  SVC -> PSD: write("parse_memory.py")
-  PSD --> SVC: saved_path
-  SVC -> SVC: parser_script_source = upload
+  SVC -> SVC: 使用 API 已暂存的上传脚本\nparser_script_path=session_dir/<upload_name>
+  SVC -> SVC: user_supplied=true\nparser_script_source="parse_memory.py"
 else 请求未携带 parser_script
-  SVC -> PSD: exists("parse_memory.py")?
-  alt 命中 parse_memory.py
-    PSD --> SVC: true
-    SVC -> SVC: parser_script_path = "parsers/parse_memory.py"\nparser_script_source = dir_discovery
-  else 未命中 parse_memory.py
-    PSD --> SVC: false
-    SVC -> PSD: exists("parse_default.py")?
-    alt 命中 parse_default.py
+  SVC -> CPSD: exists("custom_parsers_dir/parse_memory.py")?
+  alt 命中 custom parse_memory.py
+    CPSD --> SVC: true
+    SVC -> SVC: parser_script_path="custom_parsers_dir/parse_memory.py"\nparser_script_source="parse_memory.py"
+  else custom 未命中
+    CPSD --> SVC: false
+    SVC -> PSD: exists("parsers_dir/parse_memory.py")?
+    alt 命中预注册 parse_memory.py
       PSD --> SVC: true
-      SVC -> SVC: parser_script_path = "parsers/parse_default.py"\nparser_script_source = default
-    else 默认脚本缺失
+      SVC -> SVC: parser_script_path="parsers_dir/parse_memory.py"\nparser_script_source="parse_memory.py"
+    else 预注册 parse_memory.py 未命中
       PSD --> SVC: false
-      SVC -> WRK: raise DomainError(PARSER_SCRIPT_NOT_FOUND)
-      return
+      SVC -> PSD: exists("parsers_dir/parse_default.py")?
+      alt 命中 parse_default.py
+        PSD --> SVC: true
+        SVC -> SVC: parser_script_path="parsers_dir/parse_default.py"\nparser_script_source="parse_default.py"
+      else 默认脚本缺失
+        PSD --> SVC: false
+        SVC -> WRK: raise DomainError(PARSER_SCRIPT_NOT_FOUND)
+        return
+      end
     end
   end
 end
 
 == 安全门禁 ==
-SVC -> AST: validate(parser_script_path)
-AST --> SVC: pass/fail
-alt AST 失败
-  SVC -> WRK: raise DomainError(PARSER_SCRIPT_RISK)
-  return
+alt user_supplied 或命中 custom parser
+  SVC -> AST: validate(parser_script_path)
+  AST --> SVC: pass/fail
+  alt AST 失败
+    SVC -> WRK: raise DomainError(PARSER_SCRIPT_RISK)\n不覆盖 custom parser
+    return
+  end
+else 预注册 parsers_dir 脚本
+  SVC -> SVC: 跳过 ASTGuard（预注册脚本可信）
 end
 
 == 临时落地与 manifest 构建 ==
@@ -215,6 +225,14 @@ STOR --> SVC: {database_write_status, file_write_status,\nstored_files_count}
 alt 入库失败
   SVC -> WRK: raise DomainError(INTERNAL_ERROR)
   return
+end
+
+alt user_supplied 且导入成功
+  SVC -> CPSD: atomic replace\ncustom_parsers_dir/parse_memory.py
+  note right
+    仅在 ASTGuard、Sandbox、ParseResult 校验和 store 全部成功后覆盖。
+    失败任务不得覆盖已有 custom parser。
+  end note
 end
 
 == 任务完成 ==

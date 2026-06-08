@@ -1,12 +1,12 @@
 # Import 实现文档索引（v4）
 
-本目录聚焦导入业务编排（API -> AsyncTaskService/Celery -> ImportTaskExecutor -> Service -> Store）。
+本目录聚焦导入业务编排（API -> AsyncTaskService/Celery -> UploadTaskExecutor -> Service -> Store）。
 
 ## 业务域实现
 
 - `knowledge_base_import_implementation.md`
 - `skill_import_implementation.md`
-- `skill_package_parser_implementation.md`（SKILL 专用 `.skill`/`SKILL.md` 解析实现）
+- `skill_package_parser_implementation.md`（SKILL 专用 `.skill`/`SKILLS.md` 解析实现）
 - `memory_import_implementation.md`
 - `memory_meta_parser_implementation.md`（MEMORY 专用 `meta.json` 解析实现）
 

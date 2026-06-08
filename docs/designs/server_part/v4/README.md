@@ -81,24 +81,28 @@
    - 基于 Celery 的通用异步任务机制设计（提交、路由、重试、取消、可观测）
    - 支持无 Redis 本地模式；import 仅作为接入示例
 
-8. **Import 流程图（PlantUML）**
+8. **[08_Test_Mode详细设计.md](./08_Test_Mode详细设计.md)**
+   - v4 HTTP API Test Mode 的详细设计
+   - fixture schema、selector 匹配、异步任务、artifact 与错误响应契约
+
+9. **Import 流程图（PlantUML）**
    - `import_pumls/knowledge_base_import_flow.puml`
    - `import_pumls/skill_import_flow.puml`
    - `import_pumls/memory_import_flow.puml`
    - 三者都包含配置管理类读取上传限制参数（文件类型、单文件大小、总大小、文件总数）
 
-9. **Search 流程图（PlantUML）**
+10. **Search 流程图（PlantUML）**
    - `search_pumls/knowledge_base_search_flow.puml`
    - `search_pumls/skill_search_flow.puml`
    - `search_pumls/memory_search_flow.puml`
    - 与 `import_pumls` 保持同粒度的类/接口级时序表达
 
-10. **Download 流程图（PlantUML）**
+11. **Download 流程图（PlantUML）**
    - `download_pumls/skill_download_flow.puml`
    - `download_pumls/memory_download_flow.puml`
    - 与 `import_pumls/search_pumls` 保持同粒度的类/接口级时序表达
 
-11. **Import 详细开发指南**
+12. **Import 详细开发指南**
    - `import_implementations/README.md`
    - `import_implementations/knowledge_base_import_implementation.md`
    - `import_implementations/skill_import_implementation.md`
@@ -106,20 +110,20 @@
    - `import_implementations/parser_runtime_implementation.md`（`ASTGuard` + `SandboxRunner` 通用实现）
    - 逐类文档聚焦导入业务编排；通用解析运行时细节统一在 `parser_runtime_implementation.md`
 
-12. **Infrastructure 详细开发指南**
+13. **Infrastructure 详细开发指南**
    - `infrastructure_implementation/database_implementation.md`
    - `infrastructure_implementation/file_system_implementation.md`
    - `infrastructure_implementation/README.md`
    - 统一描述 `infrastructure/database/` 与 `infrastructure/file_system/` 的类初始化、成员、接口与内部实现
 
-13. **Search 详细开发指南**
+14. **Search 详细开发指南**
    - `search_implementation/README.md`
    - `search_implementation/knowledge_base_search_implementation.md`
    - `search_implementation/skill_search_implementation.md`
    - `search_implementation/memory_search_implementation.md`
    - 聚焦检索业务编排、`search_profile` 编译与 DSL 构建
 
-14. **Download 详细开发指南**
+15. **Download 详细开发指南**
    - `download_implementation/README.md`
    - `download_implementation/skill_download_implementation.md`
    - `download_implementation/memory_download_implementation.md`
@@ -136,11 +140,31 @@
 5. `05_v4关键设计补全与风险清单.md`
 6. `06_未来演进规划.md`
 7. `07_Celery通用异步任务机制设计与实现.md`
-8. `import_pumls/*.puml`
-9. `search_pumls/*.puml`
-10. `download_pumls/*.puml`
-11. `import_implementations/*.md`
-12. `search_implementation/*.md`
-13. `download_implementation/*.md`
-14. `infrastructure_implementation/*.md`
+8. `08_Test_Mode详细设计.md`
+9. `import_pumls/*.puml`
+10. `search_pumls/*.puml`
+11. `download_pumls/*.puml`
+12. `import_implementations/*.md`
+13. `search_implementation/*.md`
+14. `download_implementation/*.md`
+15. `infrastructure_implementation/*.md`
+
+---
+
+## Test Mode 开发入口
+
+Test Mode 是独立于生产 `bible.main:create_app()` 的 v4 HTTP API 替身，不启动真实 DB、OpenSearch、向量模型或 Celery Worker。
+
+启动方式：
+
+```bash
+python -m bible.test_mode.server --addr 127.0.0.1:5555
+python -m bible.test_mode.server --addr 127.0.0.1:5555 --fixture ./fixture.json
+```
+
+实现入口：
+
+- `bible/test_mode/`：独立 FastAPI app、fixture resolver、内存 task/artifact store。
+- `bible/test_mode/fixtures/builtin.json`：内置 happy path fixture。
+- `tests/test_test_mode.py`：Test Mode 契约、路由漂移和下载链路测试。
 

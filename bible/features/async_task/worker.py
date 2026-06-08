@@ -12,29 +12,23 @@ from celery.signals import worker_init, worker_process_init
 from bible.common.logger import get_logger
 from bible.features.async_task.celery_app import celery_app  # noqa: F401 – registers the app
 import bible.features.async_task.tasks.dispatch_task  # noqa: F401 – registers the task
+from bible.features.upload import container as upload_container
 
 logger = get_logger(__name__)
 
 
 @worker_init.connect
 def _bootstrap_worker(**_kwargs: object) -> None:
-    """Initialize the import container when the Celery main worker process starts."""
+    """Initialize the upload container when the Celery main worker process starts."""
     multiprocessing.current_process().name = "celery-main"
     try:
-        import importlib
-
         from bible.config.configure import get_bible_atlas_config
         from bible.features.async_task.container import build_task_container
 
-        # "import" is a reserved keyword so the package cannot be imported with
-        # a plain from-import statement; use importlib instead (same pattern as
-        # bible/main.py).
-        container = importlib.import_module("bible.features.import.container")
-
         config = get_bible_atlas_config()
         build_task_container(config)
-        container.build_import_container(config)
-        logger.info("Celery worker: import container initialized.")
+        upload_container.build_upload_container(config)
+        logger.info("Celery worker: upload container initialized.")
 
         # Worker 独立进程，需在 fork pool workers 之前同步预加载所有模型。
         # fork 后的 pool workers 直接继承已填充的 _model_cache，
@@ -48,11 +42,11 @@ def _bootstrap_worker(**_kwargs: object) -> None:
             from bible.infrastructure.vector.model_preloader import VectorModelPreloader
 
             vector_tool = VectorTool(
-                workspace_dir=config.storage.workspace_dir,
+                workspace_dir=config.workspace.root,
                 hf_cache_dir=config.vector.hf_cache_dir,
             ) if _preload_vector else None
             rerank_tool = RerankTool(
-                workspace_dir=config.storage.workspace_dir,
+                workspace_dir=config.workspace.root,
                 hf_cache_dir=config.rerank.hf_cache_dir,
             ) if _preload_rerank else None
             preloader = VectorModelPreloader(
@@ -68,7 +62,7 @@ def _bootstrap_worker(**_kwargs: object) -> None:
             preloader.preload_all_models()
             logger.info("Celery worker: model preload complete.")
     except Exception:
-        logger.exception("Celery worker: failed to initialize import container.")
+        logger.exception("Celery worker: failed to initialize upload container.")
 
 
 @worker_process_init.connect
@@ -84,25 +78,24 @@ def _reset_db_connections(**_kwargs: object) -> None:
     opens its own fresh connections rather than inheriting potentially-broken ones.
     """
     try:
-        import importlib
-
-        # "import" is a reserved keyword – use importlib for this package.
-        container = importlib.import_module("bible.features.import.container")
-        executor = getattr(container, "_import_executor", None)
+        executor = getattr(upload_container, "_upload_executor", None)
         if executor is None:
             return
 
-        mem_service = getattr(executor, "_memory_import_service", None)
-        if mem_service is None:
-            return
-        store = getattr(mem_service, "_store_memory", None)
-        if store is None:
-            return
-        db_factory = getattr(store, "_db_factory", None)
-        if db_factory is None:
-            return
+        mem_service = getattr(executor, "_memory_upload_service", None)
+        if mem_service is not None:
+            store_mem = getattr(mem_service, "_store_memory", None)
+            db_factory_mem = getattr(store_mem, "_db_factory", None) if store_mem is not None else None
+            if db_factory_mem is not None:
+                db_factory_mem.reset()
 
-        db_factory.reset()
+        skill_service = getattr(executor, "_skill_import_service", None)
+        if skill_service is not None:
+            store_skill = getattr(skill_service, "_store_skill", None)
+            db_factory_skill = getattr(store_skill, "_db_factory", None) if store_skill is not None else None
+            if db_factory_skill is not None:
+                db_factory_skill.reset()
+
         # Shorten the default name "ForkPoolWorker-N" → "Worker-N" for cleaner log output.
         proc = multiprocessing.current_process()
         proc.name = proc.name.replace("ForkPoolWorker-", "Worker-")

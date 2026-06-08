@@ -9,10 +9,37 @@ import * as fs from 'node:fs/promises';
 import { ModuleDeps } from '../../types';
 import { MemoryService } from '../memory-service';
 import { LoadedContext, MemoryHit } from '../memory-types';
-import { parseChatSource, renderChatMarkdown } from '../memory-format';
-import { openChatAndAutoSend } from '../../../core/chat/chat-trigger';
+import { buildLoadedContextMarkdown, parseChatSource, renderChatMarkdown } from '../memory-format';
 
 export const LAST_LOADED_KEY = 'bible.memory.lastLoadedContext';
+
+/** 命令 ID：复制 @bible-memory /load 到剪贴板（由 memory-module 注册）。 */
+export const CMD_COPY_LOAD_CMD = 'bible.memory.copyLoadCmd';
+
+/** 模块级状态栏 item，loadHitToContext 调用后一直显示，直到下次加载或扩展停用。 */
+let _loadedBar: vscode.StatusBarItem | undefined;
+
+/**
+ * 创建/更新状态栏条目，显示"已加载某 session，点击复制 @bible-memory /load"。
+ * 每次 loadHitToContext 调用时刷新文本，旧 item 复用（不重复创建）。
+ */
+export function updateLoadedContextBar(sessionId: string): void {
+  if (!_loadedBar) {
+    _loadedBar = vscode.window.createStatusBarItem(vscode.StatusBarAlignment.Right, 50);
+    _loadedBar.command = CMD_COPY_LOAD_CMD;
+  }
+  _loadedBar.text = `$(bookmark) Memory: ${sessionId}`;
+  _loadedBar.tooltip = new vscode.MarkdownString(
+    `**Memory context loaded**: \`${sessionId}\`\n\nClick to copy \`@bible-memory /load\` to clipboard`,
+  );
+  _loadedBar.show();
+}
+
+/** 供 memory-module.ts 在停用时回收状态栏 item。 */
+export function disposeLoadedContextBar(): void {
+  _loadedBar?.dispose();
+  _loadedBar = undefined;
+}
 
 /**
  * 把一条 hit 的"摘要视图"渲染成 markdown 并在编辑器里打开。
@@ -77,7 +104,7 @@ export async function previewHitSummary(
     lines.push(
       '_Source not downloaded yet._',
       '',
-      'Pick **Load to @bible-memory** to download the full source and inject into chat.',
+      'Pick **Load to @bible-memory** to download message.json and open it in the editor. Then type `@bible-memory /load` in Chat to inject.',
     );
   }
 
@@ -131,11 +158,14 @@ export async function ensureSourceWithProgress(
 }
 
 /**
- * "加载到上下文"实现：
- *   1. 落一份 loaded-context.md 便于人工回看
- *   2. 把 LoadedContext 存 workspaceState，供 participant /load 读取
- *   3. 自动打开 Copilot Chat 并发送 "@bible-memory /load"
- *      → participant 把 hit 摘要 + source 全文写入 chat 历史
+ * "加载到上下文"实现（无 Chat 自动操作版）：
+ *
+ *   1. 把 message.json 原对话渲染为 Markdown 写到 `loaded-context.md`
+ *   2. 把 LoadedContext 存 workspaceState，供 `@bible-memory /load` 读取
+ *   3. 在编辑器里（旁开新列）打开 `loaded-context.md`，用户可阅读原对话
+ *   4. 弹通知告知用户去 Chat 里输入 `@bible-memory /load`（participant 会把对话流入历史）
+ *
+ * **不会触发任何 Chat 面板命令**，彻底避免误发送。
  */
 export async function loadHitToContext(
   ctx: vscode.ExtensionContext,
@@ -144,8 +174,10 @@ export async function loadHitToContext(
   hit: MemoryHit,
   sourceFilePath: string | undefined,
 ): Promise<void> {
+  // 1. 写 loaded-context.md（原对话 Markdown）
   const mdPath = await service.loadHitToContextFile(hit, sourceFilePath);
 
+  // 2. 存 workspaceState，供 @bible-memory /load 读取
   const context: LoadedContext = {
     hit,
     sourceFilePath,
@@ -159,21 +191,21 @@ export async function loadHitToContext(
     mdPath,
   });
 
-  const opened = await openChatAndAutoSend('@bible-memory /load', deps.output);
-  if (opened) {
-    void deps.notify.info(
-      sourceFilePath
-        ? `Loaded "${hit.session_id}" + full source into @bible-memory chat.`
-        : `Loaded "${hit.session_id}" (summary only) into @bible-memory chat. Download the source first to inject full content.`,
-    );
-  } else {
-    // 这里仍然要 await：是用户必须看到的提示，且带按钮可点击
-    const action = await deps.notify.warn(
-      `Could not auto-open Copilot Chat in this IDE. Wrote ${mdPath}. Manually open Chat and type "@bible-memory /load".`,
-      'Reveal File',
-    );
-    if (action === 'Reveal File') {
-      await vscode.commands.executeCommand('revealFileInOS', vscode.Uri.file(mdPath));
-    }
+  // 3. 在当前编辑器列打开 loaded-context.md 供阅读
+  try {
+    const doc = await vscode.workspace.openTextDocument(vscode.Uri.file(mdPath));
+    await vscode.window.showTextDocument(doc, { preview: true, preserveFocus: false });
+  } catch {
+    // 打开失败不影响主流程
   }
+
+  // 4. 更新状态栏（持久显示，不会自动消失，点击复制 @bible-memory /load）
+  updateLoadedContextBar(hit.session_id);
+
+  // 5. 弹一条即时通知，提示用户看状态栏（不带按钮，fire-and-forget）
+  void deps.notify.info(
+    sourceFilePath
+      ? `Memory "${hit.session_id}" ready — click the status bar item to copy @bible-memory /load`
+      : `Memory "${hit.session_id}" (summary) ready — click the status bar item to copy @bible-memory /load`,
+  );
 }

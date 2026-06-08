@@ -1,4 +1,8 @@
+import * as fs from 'node:fs/promises';
 import { ChatSource, MemoryHit, MemorySearchResult } from './memory-types';
+
+/** 加载到聊天草稿 / loaded-context.md 的正文长度上限（字符）。 */
+export const DEFAULT_LOAD_CONTEXT_MAX_CHARS = 60_000;
 
 /**
  * 把 search 结果格式化为 LM 注入文本（也用于命令面板展示）。
@@ -70,4 +74,54 @@ export function parseChatSource(json: string): ChatSource | undefined {
     /* ignore */
   }
   return undefined;
+}
+
+/**
+ * 从本地的 message.json（bible-chat-v1）构建「加载到上下文」用的 Markdown：
+ * 原对话渲染，不含检索摘要 abstract。
+ *
+ * - 无路径或读失败：简短说明（不嵌入 summary）
+ * - 非 bible-chat-v1：以 ```json 原文展示
+ */
+export async function buildLoadedContextMarkdown(
+  hit: MemoryHit,
+  messageJsonPath: string | undefined,
+  maxChars: number = DEFAULT_LOAD_CONTEXT_MAX_CHARS,
+): Promise<string> {
+  const header = [
+    `<!-- Bible Atlas · memory · session: ${hit.session_id} · storage_path: ${hit.storage_path} -->`,
+    '',
+    `## Memory: \`${hit.session_id}\``,
+    '',
+  ].join('\n');
+
+  if (!messageJsonPath) {
+    return (
+      `${header}` +
+      '_No message.json on disk yet — use **Load** only after the source file has been downloaded for this entry._\n'
+    );
+  }
+
+  let raw: string;
+  try {
+    raw = await fs.readFile(messageJsonPath, 'utf-8');
+  } catch {
+    return `${header}_Could not read message.json at \`${messageJsonPath}\`._\n`;
+  }
+
+  const source = parseChatSource(raw);
+  let body: string;
+  if (source) {
+    body = renderChatMarkdown(source);
+  } else {
+    body = ['_message.json is not bible-chat-v1; raw file:_', '', '```json', raw, '```'].join('\n');
+  }
+
+  let text = header + body;
+  if (text.length > maxChars) {
+    text =
+      text.slice(0, maxChars) +
+      `\n\n_…truncated to ${maxChars} characters (full text is in \`${messageJsonPath}\`)._\n`;
+  }
+  return text;
 }

@@ -35,6 +35,11 @@
           "default": 30000,
           "description": "Per-call CLI timeout in milliseconds."
         },
+        "bible.cli.testMode": {
+          "type": "boolean",
+          "default": false,
+          "description": "Test mode: automatically append --test to every CLI invocation. The Go CLI will return mock data without contacting the server, enabling client–CLI joint debugging without a running backend."
+        },
         "bible.task.pollIntervalMs": {
           "type": "number",
           "default": 2000,

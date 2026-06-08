@@ -36,19 +36,31 @@ class LocalFileSystemGateway:
     def store(
         self,
         file_stream: BinaryIO,
-        domain: str,
-        kb_index: str,
-        filename: str,
+        domain: str | None = None,
+        kb_index: str | None = None,
+        filename: str = "",
         task_id: str | None = None,
     ) -> FileStoreResult:
         started_at = time.monotonic()
-        safe_domain = sanitize_segment(domain, fallback="UNKNOWN")
-        safe_kb_index = sanitize_segment(kb_index, fallback="default")
         safe_task_id = sanitize_segment(task_id or "default", fallback="default")
         safe_filename = sanitize_filename(filename)
         date_part = datetime.now(UTC).strftime("%Y%m%d")
 
-        relative_path = Path(safe_domain) / safe_kb_index / date_part / safe_task_id / safe_filename
+        # Build path segments: domain and kb_index are both optional.
+        # When the gateway root_dir already encodes scope (e.g. skill-specific dir),
+        # callers can omit domain to avoid redundant path segments.
+        if domain:
+            safe_domain = sanitize_segment(domain, fallback="UNKNOWN")
+        else:
+            safe_domain = "UNKNOWN"
+
+        if kb_index:
+            safe_kb_index = sanitize_segment(kb_index, fallback="default")
+        else:
+            safe_kb_index = ""
+
+        parts = [p for p in [safe_domain, safe_kb_index, date_part, safe_task_id, safe_filename] if p]
+        relative_path = Path(*parts) if parts else Path(safe_filename)
         final_path = self._resolve_storage_path(relative_path)
         final_path.parent.mkdir(parents=True, exist_ok=True)
 

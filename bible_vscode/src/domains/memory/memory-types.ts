@@ -65,31 +65,31 @@ export interface ChatSource {
   turns: ChatTurn[];
 }
 
-/** 提交 import 后的同步响应。 */
+/**
+ * CLI `memory upload <dir>` 的同步响应，字段来自 server ImportMemory API 透传。
+ * 仅 task_id 为必填；其余字段由 server 决定是否返回。
+ */
 export interface SubmitImportResponse {
   task_id: string;
-  status: 'queued';
-  kb_index: string;
-  tag: string;
-  session_id: string;
-}
-
-/** 单文件 / 批量 download 任务的同步响应。 */
-export interface SubmitDownloadResponse {
-  task_id: string;
-  status: 'queued';
-}
-
-/** artifact fetch 同步流响应。 */
-export interface ArtifactFetchResponse {
-  path: string;
-  size_bytes: number;
-  content_type: string;
+  status: string;
+  memory_id?: string;
+  kb_index?: string;
+  tag?: string;
+  session_id?: string;
 }
 
 /**
- * 持久化在 workspaceState 里的"最近加载到上下文"的描述。
- * 命令路径写入，participant `/load` 读取并把内容流入 chat（让 LM 看到）。
+ * CLI `memory download` 集成式下载的同步响应。
+ * CLI 内部完成 task 提交 + 轮询 + artifact 写盘，最终返回本地路径。
+ */
+export interface DownloadResult {
+  status: 'downloaded';
+  output_path: string;
+}
+
+/**
+ * 持久化在 workspaceState 里的「最近加载到上下文」的描述。
+ * 命令路径：把 message.json 原对话填入 **Chat 输入框草稿**（不自动发送）；`/load` 读取后把同一正文流式写入本轮回复。
  */
 export interface LoadedContext {
   hit: MemoryHit;

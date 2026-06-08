@@ -1,0 +1,113 @@
+# Entity test runtime config.
+# Keep test-generated custom parser scripts under workspace/ so live tests do not
+# write into source parser directories.
+
+log:
+  level: DEBUG
+  format: "[%(asctime)s] [%(processName)s/%(threadName)s] %(levelname)s %(filename)s:%(lineno)d: %(message)s"
+  output: file
+  log_dir: ./workspace/log
+
+workspace:
+  root: ./workspace
+
+file_system:
+  backend: local
+  local:
+    hash_algo: sha256
+    chunk_size: 1048576
+    use_atomic_rename: true
+
+database:
+  backend: opensearch
+  opensearch:
+    hosts:
+      - "localhost:19800"
+    timeout_seconds: 30
+    use_ssl: false
+    verify_certs: true
+    username: opensearch-xo
+    password: MyStr0ng!Pass#2024
+    binding_index: v4_index_binding
+    async_task_index: v4_async_tasks
+    refresh_policy: "false"
+    bulk_chunk_size: 500
+    request_timeout_seconds: 60
+
+celery:
+  broker_url: "redis://localhost:19880/0"
+  result_backend: "redis://localhost:19880/1"
+  worker_concurrency: 1
+
+import_memory:
+  parsers_dir: ./bible/features/upload/memory_upload/parsers
+  custom_parsers_dir: ./workspace/entity_test/memory/parsers/custom
+  import_work_dir: ./workspace/memory/import_work
+  files_dir: ./workspace/memory/files
+  keep_failed_workspace: true
+  task_timeout_seconds: 300
+  sandbox_timeout_seconds: 60
+  workspace_ttl_hours: 24
+  sweep_interval_seconds: 3600
+
+import_skill:
+  parsers_dir: ./bible/features/upload/skill_upload/parsers
+  custom_parsers_dir: ./workspace/entity_test/skill/parsers/custom
+  import_work_dir: ./workspace/skill/import_work
+  files_dir: ./workspace/skill/files
+  keep_failed_workspace: true
+  task_timeout_seconds: 300
+  sandbox_timeout_seconds: 60
+  workspace_ttl_hours: 24
+  sweep_interval_seconds: 3600
+  allowed_extensions:
+    - .skill
+    - .md
+    - .json
+    - .png
+    - .jpg
+    - .jpeg
+    - .pdf
+    - .txt
+    - .yaml
+    - .yml
+    - .sh
+    - .py
+
+upload:
+  max_file_size: 10485760
+  max_total_size: 209715200
+  max_file_count: 2000
+  allowed_extensions:
+    - .md
+    - .json
+
+search:
+  default_top_k: 10
+  max_top_k: 100
+  allowed_search_types:
+    - keyword
+    - title
+    - text
+    - vector
+    - hybrid
+
+vector:
+  preload_on_startup: true
+  hf_cache_dir: ./workspace/hf_cache
+  batch_size: 32
+  available_models:
+    - id: bge-base
+      name: BAAI/bge-base-zh-v1.5
+      description: 中文优化，基础版
+      params: 102M
+      dims: 768
+      languages:
+        - 中文
+        - 英文
+
+rerank:
+  enable: true
+  preload_on_startup: true
+  hf_cache_dir: ./workspace/hf_cache
+  default_model: bge-reranker-base

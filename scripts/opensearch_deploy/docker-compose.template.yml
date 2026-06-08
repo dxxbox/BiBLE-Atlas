@@ -1,0 +1,141 @@
+version: '3.8'
+
+services:
+  opensearch:
+    image: opensearchproject/opensearch:latest
+    container_name: opensearch-${USER_NAME}
+    hostname: opensearch-${USER_NAME}
+    # rootless Podman 会把宿主用户拥有的 bind mount 映射成容器内 root:root。
+    # 使用 opensearch 用户 + root 组，配合部署脚本设置的 775 目录权限写入数据目录。
+    user: "1000:0"
+    environment:
+      # 集群配置
+      - cluster.name=opensearch-${USER_NAME}-cluster
+      - node.name=opensearch-${USER_NAME}-node1
+      - discovery.type=single-node
+      # OpenSearch 3.x 单节点模式会自动设置所有必需角色
+      
+      # 内存配置
+      - "OPENSEARCH_JAVA_OPTS=-Xms${JVM_HEAP_SIZE} -Xmx${JVM_HEAP_SIZE}"
+      - bootstrap.memory_lock=true
+      - indices.memory.index_buffer_size=10%
+      - indices.fielddata.cache.size=20%
+      - indices.requests.cache.size=5%
+      
+      # 线程池配置
+      - thread_pool.search.size=${SEARCH_THREAD_SIZE}
+      - thread_pool.search.queue_size=1000
+      - thread_pool.write.size=${WRITE_THREAD_SIZE}
+      - thread_pool.write.queue_size=500
+      
+      # 向量搜索配置（OpenSearch 3.x k-NN 插件默认启用）
+      - knn.algo_param.index_thread_qty=${KNN_THREAD_SIZE}
+      - knn.memory.circuit_breaker.enabled=true
+      - knn.memory.circuit_breaker.limit=50%
+      
+      # 性能配置
+      - indices.query.bool.max_clause_count=2048
+      # 注：索引级别配置（refresh_interval, number_of_replicas, number_of_shards）
+      # 不能在节点配置中设置，需要通过 API 或索引模板设置
+      
+      # 网络配置
+      - network.host=0.0.0.0
+      - http.port=9200
+      - http.cors.enabled=true
+      - http.cors.allow-origin="*"
+      
+      # 安全配置（OpenSearch 3.x 禁用安全插件）
+      - DISABLE_SECURITY_PLUGIN=${SECURITY_DISABLED}
+      - OPENSEARCH_INITIAL_ADMIN_PASSWORD=${ADMIN_PASSWORD}
+      - DISABLE_INSTALL_DEMO_CONFIG=true
+      - DISABLE_PERFORMANCE_ANALYZER_AGENT_CLI=true
+      
+      # 磁盘配置
+      - cluster.routing.allocation.disk.threshold_enabled=true
+      - cluster.routing.allocation.disk.watermark.low=85%
+      - cluster.routing.allocation.disk.watermark.high=90%
+      - cluster.routing.allocation.disk.watermark.flood_stage=95%
+      
+      # 日志配置
+      - logger.level=INFO
+    
+    ulimits:
+      memlock:
+        soft: -1
+        hard: -1
+      nofile:
+        soft: 65536
+        hard: 65536
+    
+    volumes:
+      # 数据目录（:Z 标签用于 Podman/SELinux 权限）
+      - ${DATA_DIR}/data:/usr/share/opensearch/data:Z
+      # 日志使用容器内部目录（避免 Podman 权限问题），通过 docker logs 查看
+      # 备份目录
+      - ${DATA_DIR}/backup:/usr/share/opensearch/backup:Z
+      # 配置文件（可选）
+      # - ${DATA_DIR}/config/opensearch.yml:/usr/share/opensearch/config/opensearch.yml
+    
+    ports:
+      - "${HTTP_PORT}:9200"
+      - "${PERF_PORT}:9600"
+    
+    networks:
+      - opensearch-${USER_NAME}-net
+    
+    # 资源限制
+    deploy:
+      resources:
+        limits:
+          cpus: '${CPU_LIMIT}'
+          memory: ${MEM_LIMIT}
+        reservations:
+          cpus: '${CPU_RESERVE}'
+          memory: ${MEM_RESERVE}
+    
+    healthcheck:
+      test: ["CMD-SHELL", "curl -f http://localhost:9200/_cluster/health || exit 1"]
+      interval: 30s
+      timeout: 10s
+      retries: 5
+      start_period: 60s
+    
+    restart: unless-stopped
+
+  opensearch-dashboards:
+    image: opensearchproject/opensearch-dashboards:latest
+    container_name: opensearch-dashboards-${USER_NAME}
+    ports:
+      - "${DASHBOARD_PORT}:5601"
+    expose:
+      - "5601"
+    environment:
+      - 'OPENSEARCH_HOSTS=["http://opensearch-${USER_NAME}:9200"]'
+      - SERVER_HOST=0.0.0.0
+      - SERVER_NAME=opensearch-dashboards-${USER_NAME}
+      - DISABLE_SECURITY_DASHBOARDS_PLUGIN=${SECURITY_DISABLED}
+      - OPENSEARCH_SECURITY_DISABLED=${SECURITY_DISABLED}
+      - OPENSEARCH_REQUESTTIMEOUT=60000
+    depends_on:
+      - opensearch
+    networks:
+      - opensearch-${USER_NAME}-net
+    
+    # 资源限制
+    deploy:
+      resources:
+        limits:
+          cpus: '2'
+          memory: 2G
+    
+    healthcheck:
+      test: ["CMD-SHELL", "curl -f http://localhost:5601/ -o /dev/null -w '%{http_code}' -s | grep -E '^(200|302)$' || exit 1"]
+      interval: 30s
+      timeout: 10s
+      retries: 5
+    
+    restart: unless-stopped
+
+networks:
+  opensearch-${USER_NAME}-net:
+    driver: bridge

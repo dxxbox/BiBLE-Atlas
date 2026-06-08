@@ -13,8 +13,9 @@
 ## 1. 适用范围
 
 - 仅覆盖 `POST /api/search/skill`。
-- 请求体字段沿用 `02_API接口文档.md`（`query/tag/search_type/top_k/vector_model/vector_weight`）。
-- `tag` 固定为 `skill`，检索目标数据来自 SKILL 导入产物（`SKILL.md` 解析出的 `name/description/body/content`）。
+- 请求体字段沿用 `02_API接口文档.md`（`query/tag/kb_index/search_type/top_k/vector_model/vector_weight`）。
+- `tag` 固定为 `skill`，检索目标数据来自 SKILL 导入产物（`SKILLS.md` 解析出的 `name/description/body/content`）。
+- `kb_index` 可选；提供时按 `domain=SKILL + kb_index` 精确查找绑定，未提供时按 `domain=SKILL + tag=skill` 查找 active binding。
 
 ---
 
@@ -126,13 +127,16 @@ def search(
     top_k: int | None,
     vector_model: str | None,
     vector_weight: float | None,
+    kb_index: str | None = None,
 ) -> dict[str, Any]: ...
 ```
 
 建议流程：
 
 1. 参数校验（`query/tag` 必填，`tag == "skill"`）。
-2. 读取绑定记录（至少拿到 `kb_index/search_profile/vector_model`）。
+2. 读取绑定记录（至少拿到 `kb_index/search_profile/vector_model`）：
+   - 若请求显式携带 `kb_index`，调用 `get_binding_by_domain_index(SKILL, kb_index)` 精确查找。
+   - 否则调用 `get_binding_by_domain_tag(SKILL, tag)`，保持旧客户端兼容。
 3. 解析并标准化 `search_type/top_k/vector_weight`。
 4. 做向量模型一致性校验：
    - 请求显式带 `vector_model` 时，必须与绑定模型一致。

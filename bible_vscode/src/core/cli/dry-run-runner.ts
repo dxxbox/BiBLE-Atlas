@@ -52,7 +52,16 @@ export class DryRunCliRunner implements CliRunner {
   // ---------- 文件参数回显 ----------
 
   private dumpFileArgs(args: string[]): void {
-    const flagsThatPointToFiles = ['--source-file', '--meta-file', '--input-file', '--paths-file'];
+    // 对于 memory upload，args[2] 是 session_dir，展示目录内的 message.json / meta.json
+    if (args[0] === 'memory' && args[1] === 'upload' && args[2] && !args[2].startsWith('--')) {
+      const sessionDir = args[2];
+      for (const name of ['message.json', 'meta.json']) {
+        this.dumpFile(`(dir)${name}`, path.join(sessionDir, name));
+      }
+      return;
+    }
+    // 其余命令：检查 --*-file 型 flag
+    const flagsThatPointToFiles = ['--input-file', '--paths-file'];
     for (let i = 0; i < args.length; i++) {
       if (!flagsThatPointToFiles.includes(args[i])) continue;
       const filePath = args[i + 1];
@@ -103,9 +112,8 @@ export class DryRunCliRunner implements CliRunner {
 
     if (cmd === 'memory') {
       if (sub === 'search') return ok(this.fakeSearch(args));
-      if (sub === 'import') return ok(this.registerImportTask(args));
-      if (sub === 'download' && (sub2 === 'file' || sub2 === 'batch')) return ok(this.registerDownloadTask(sub2, args));
-      if (sub === 'artifact' && sub2 === 'fetch') return ok(this.fakeArtifactFetch(args));
+      if (sub === 'upload') return ok(this.registerUploadTask(args));
+      if (sub === 'download') return ok(this.fakeIntegratedDownload(args));
     }
 
     if (cmd === 'task') {
@@ -121,90 +129,80 @@ export class DryRunCliRunner implements CliRunner {
   }
 
   private fakeSearch(args: string[]): Record<string, unknown> {
-    const flags = parseFlags(args);
-    const query = (flags['--query'] as string) ?? '(empty)';
+    // CLI: memory search <query> [--top-k N] — query 是 positional (args[2])
+    const query = args[2] ?? '(empty)';
     return {
       results: [
         mkHit('dry-session-aaa', 0.93, `Dry-run match for "${query}"`),
         mkHit('dry-session-bbb', 0.78, `Older dry-run note about "${query}"`),
       ],
       total: 2,
-      kb_index: (flags['--kb-index'] as string) ?? 'memory_main',
-      tag: (flags['--tag'] as string) ?? 'memory',
+      kb_index: 'memory_main',
+      tag: 'memory',
     };
   }
 
-  private registerImportTask(args: string[]): Record<string, unknown> {
+  private registerUploadTask(args: string[]): Record<string, unknown> {
+    // CLI: memory upload <session_dir> [--kb-index K] — session_dir 是 positional (args[2])
     const flags = parseFlags(args);
-    const taskId = `dry-imp-${crypto.randomUUID().slice(0, 8)}`;
-    const sessionId = readSessionIdFromMeta(flags['--meta-file'] as string | undefined) ?? `dry-session-${crypto.randomUUID().slice(0, 8)}`;
+    const sessionDir = args[2] ?? '';
     const kbIndex = (flags['--kb-index'] as string) ?? 'memory_main';
+    const taskId = `dry-imp-${crypto.randomUUID().slice(0, 8)}`;
+    const metaPath = sessionDir ? path.join(sessionDir, 'meta.json') : undefined;
+    const sessionId = readSessionIdFromMeta(metaPath) ?? `dry-session-${crypto.randomUUID().slice(0, 8)}`;
 
     this.tasks.set(taskId, {
       task_type: 'import.memory',
-      result: {
-        session_id: sessionId,
-        kb_index: kbIndex,
-        chunks_count: 5,
-      },
+      result: { session_id: sessionId, kb_index: kbIndex, chunks_count: 5 },
     });
 
-    return {
-      task_id: taskId,
-      status: 'queued',
-      kb_index: kbIndex,
-      tag: (flags['--tag'] as string) ?? 'memory',
-      session_id: sessionId,
-    };
+    return { task_id: taskId, status: 'queued', kb_index: kbIndex, session_id: sessionId };
   }
 
-  private registerDownloadTask(sub: 'file' | 'batch', args: string[]): Record<string, unknown> {
+  private fakeIntegratedDownload(args: string[]): Record<string, unknown> {
+    // CLI: memory download --storage-path P --output DIR --download-name FILENAME
+    // CLI 内部完成轮询+写盘，直接返回 {status: "downloaded", output_path}
     const flags = parseFlags(args);
-    const taskId = `dry-dl-${crypto.randomUUID().slice(0, 8)}`;
-    const artifactId = `dry-art-${crypto.randomUUID().slice(0, 8)}`;
-    const artifactName =
-      (flags['--download-name'] as string) ??
-      (sub === 'file' ? 'source.json' : (flags['--package-name'] as string) ?? 'memory-batch.zip');
+    const outputDir = flags['--output'] as string | undefined;
+    const downloadName = flags['--download-name'] as string | undefined;
+    const storagePath = flags['--storage-path'] as string | undefined;
 
-    this.tasks.set(taskId, {
-      task_type: sub === 'file' ? 'download.memory' : 'download.memory.batch',
-      result: {
-        artifact_id: artifactId,
-        artifact_name: artifactName,
-        content_type: sub === 'file' ? 'application/json' : 'application/zip',
-        size_bytes: 1234,
-        expires_at: new Date(Date.now() + 3600_000).toISOString(),
-      },
-    });
-
-    return { task_id: taskId, status: 'queued' };
-  }
-
-  private fakeArtifactFetch(args: string[]): Record<string, unknown> {
-    const flags = parseFlags(args);
-    const outPath = flags['--out'] as string | undefined;
-    if (!outPath) {
-      return { path: '', size_bytes: 0, content_type: 'application/octet-stream' };
+    if (!outputDir || !downloadName) {
+      return {
+        ok: false,
+        error: { code: 'INVALID_ARGS', message: 'dry-run: --output and --download-name are required' },
+      };
     }
-    const content = JSON.stringify({ dry_run: true, artifact_id: flags['--id'] }, null, 2);
+
+    const outputPath = path.join(outputDir, downloadName);
+    const content = JSON.stringify({
+      source_format: 'bible-chat-v1',
+      session_id: 'dry-download-session',
+      exported_at: new Date().toISOString(),
+      turns: [
+        { role: 'user', content: `[dry-run] Downloaded source for ${storagePath ?? 'unknown'}` },
+        { role: 'assistant', content: '[dry-run] This is a synthetic source file created by DryRunCliRunner.' },
+      ],
+    }, null, 2);
+
     try {
-      fs.mkdirSync(path.dirname(outPath), { recursive: true });
-      fs.writeFileSync(outPath, content);
-      this.opts.output.info('[DRY-RUN] cli.artifact.wrote', { path: outPath, size_bytes: content.length });
+      fs.mkdirSync(outputDir, { recursive: true });
+      fs.writeFileSync(outputPath, content);
+      this.opts.output.info('[DRY-RUN] cli.download.wrote', { path: outputPath, size_bytes: content.length });
     } catch (err) {
-      this.opts.output.warn('[DRY-RUN] cli.artifact.writeFailed', { path: outPath, error: (err as Error).message });
+      this.opts.output.warn('[DRY-RUN] cli.download.writeFailed', { path: outputPath, error: (err as Error).message });
     }
-    return { path: outPath, size_bytes: content.length, content_type: 'application/json' };
+
+    return { status: 'downloaded', output_path: outputPath };
   }
 
   private fakeTaskGet(args: string[]): Record<string, unknown> {
-    const flags = parseFlags(args);
-    const id = flags['--id'] as string | undefined;
+    // CLI: task get <task_id> — task_id 是 positional (args[2])
+    const id = args[2];
     if (!id) {
-      return { task_id: '', task_type: 'unknown', status: 'failed', error: { code: 'INVALID_ARGS', message: '--id required' } };
+      return { task_id: '', task_type: 'unknown', status: 'failed', error: { code: 'INVALID_ARGS', message: 'task_id required' } };
     }
     const known = this.tasks.get(id);
-    // dry-run 不模拟轮询：直接返回 completed
     return {
       task_id: id,
       task_type: known?.task_type ?? 'unknown',
@@ -216,8 +214,8 @@ export class DryRunCliRunner implements CliRunner {
   }
 
   private fakeTaskCancel(args: string[]): Record<string, unknown> {
-    const flags = parseFlags(args);
-    return { task_id: (flags['--id'] as string) ?? '', status: 'cancelled' };
+    // CLI: task cancel <task_id> — task_id 是 positional (args[2])
+    return { task_id: args[2] ?? '', status: 'cancelled' };
   }
 }
 

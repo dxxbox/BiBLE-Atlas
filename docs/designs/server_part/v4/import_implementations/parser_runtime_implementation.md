@@ -1,6 +1,6 @@
 # Parser Runtime 通用实现指南（ASTGuard + SandboxRunner）
 
-本文档定义 `app/features/import/parser_runtime/` 下通用运行时组件的实现细节。  
+本文档定义 `app/features/upload/parser_runtime/` 下通用运行时组件的实现细节。  
 该组件与业务类型无关，统一服务于 `KNOWLEDGE_BASE/SKILL/MEMORY` 三类导入流程。
 
 ---
@@ -8,7 +8,7 @@
 ## 1. 目录与职责
 
 ```text
-app/features/import/parser_runtime/
+app/features/upload/parser_runtime/
 ├── ast_guard.py
 ├── sandbox_runner.py
 └── schemas.py                # 可选：ParseResult / ValidationError 类型定义
@@ -66,7 +66,7 @@ class ParserRuntimeError(RuntimeError):
 
 ## 3. `ASTGuard` 完整实现
 
-文件：`app/features/import/parser_runtime/ast_guard.py`
+文件：`app/features/upload/parser_runtime/ast_guard.py`
 
 ```python
 from __future__ import annotations
@@ -400,7 +400,7 @@ class ASTGuard:
 
 ## 4. `SandboxRunner` 完整实现
 
-文件：`app/features/import/parser_runtime/sandbox_runner.py`
+文件：`app/features/upload/parser_runtime/sandbox_runner.py`
 
 ```python
 from __future__ import annotations

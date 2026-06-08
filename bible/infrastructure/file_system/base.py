@@ -9,9 +9,9 @@ class IFileSystemGateway(Protocol):
     def store(
         self,
         file_stream: BinaryIO,
-        domain: str,
-        kb_index: str,
-        filename: str,
+        domain: str | None = None,
+        kb_index: str | None = None,
+        filename: str = "",
         task_id: str | None = None,
     ) -> FileStoreResult:
         ...

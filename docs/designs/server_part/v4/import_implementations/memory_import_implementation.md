@@ -27,14 +27,14 @@
 2. `app/config/config_manager.py`（`ConfigManager`）
 3. `app/infrastructure/vector/model_preloader.py`（`VectorModelPreloader`）
 4. `app/infrastructure/vector/vector_tool.py`（`VectorTool`）
-5. `app/api/import/memory_import_api.py`（`MemoryImportAPI`）
+5. `app/api/upload/memory_upload_api.py`（`MemoryUploadAPI`）
 6. `app/features/async_task/service.py`（`AsyncTaskService`）
 7. `app/features/async_task/tasks/dispatch_task.py`（`dispatch_task`）
-8. `app/features/import/import_task_executor.py`（`ImportTaskExecutor`）
-9. `app/features/import/memory_import/memory_import_service.py`（`MemoryImportService`）
-10. `app/features/import/parser_runtime/ast_guard.py`（`ASTGuard`）
-11. `app/features/import/parser_runtime/sandbox_runner.py`（`SandboxRunner`）
-12. `app/features/import/memory_import/storage/store_memory.py`（`StoreMemory`）
+8. `app/features/upload/upload_task_executor.py`（`UploadTaskExecutor`）
+9. `app/features/upload/memory_upload/memory_upload_service.py`（`MemoryUploadService`）
+10. `app/features/upload/parser_runtime/ast_guard.py`（`ASTGuard`）
+11. `app/features/upload/parser_runtime/sandbox_runner.py`（`SandboxRunner`）
+12. `app/features/upload/memory_upload/storage/store_memory.py`（`StoreMemory`）
 13. `app/infrastructure/file_system/factory.py`（`FileSystemFactory`）
 14. `app/infrastructure/file_system/base.py`（`IFileSystemGateway`）
 15. `app/infrastructure/file_system/local.py`（`LocalFileSystemGateway`）
@@ -51,11 +51,14 @@ from dataclasses import dataclass
 from typing import Any, Literal
 
 @dataclass
-class MemoryImportPayload:
+class MemoryUploadPayload:
     kb_index: str
     tag: Literal["memory"]
     vector_model: str | None
     parser_context: dict[str, Any] | None
+    parser_script_path: str | None = None
+    parser_script_filename: str | None = None
+    session_upload_dir: str | None = None
 
 @dataclass
 class FileStoreResult:
@@ -74,6 +77,8 @@ class ParseResult:
 注意点：
 - `tag` 必须固定为 `memory`。
 - MEMORY 流程和 SKILL 结构相同，但 domain、默认脚本和注册语义不同。
+- `import_memory.parsers_dir` 是预注册脚本目录，`import_memory.custom_parsers_dir` 是上传脚本通过校验并导入成功后的持久化目录。
+- `parser_script` 上传文件不直接写入 `custom_parsers_dir`；它先进入任务临时目录，当前任务成功后才覆盖保存为 `custom_parsers_dir/parse_memory.py`。
 
 ---
 
@@ -106,7 +111,7 @@ def download_from_huggingface(self, model_name: str) -> str: ...
 
 ## 5. API 层实现
 
-文件：`app/api/import/memory_import_api.py`
+文件：`app/api/upload/memory_upload_api.py`
 
 ```python
 async def import_memory(
@@ -142,7 +147,7 @@ async def import_memory(
 
 - `app/features/async_task/service.py`
 - `app/features/async_task/tasks/dispatch_task.py`
-- `app/features/import/import_task_executor.py`
+- `app/features/upload/upload_task_executor.py`
 
 建议接口：
 
@@ -152,39 +157,38 @@ def submit(self, task_type: str, payload: dict[str, Any], idempotency_key: str |
 def get(self, task_id: str) -> dict[str, Any] | None: ...
 def cancel(self, task_id: str) -> dict[str, Any]: ...
 
-# app/features/import/import_task_executor.py
+# app/features/upload/upload_task_executor.py
 def execute(self, task_id: str, task_type: str, payload: dict[str, Any]) -> dict[str, Any]: ...
 ```
 
 调度关系：
 
 1. API 提交 `task_type=import.memory` 到 `AsyncTaskService`。
-2. `dispatch_task` 在 Celery Worker 进程中消费并分发给 `ImportTaskExecutor`。
-3. `ImportTaskExecutor` 调用 `MemoryImportService.execute_task(...)` 完成导入。
+2. `dispatch_task` 在 Celery Worker 进程中消费并分发给 `UploadTaskExecutor`。
+3. `UploadTaskExecutor` 调用 `MemoryUploadService.execute_task(...)` 完成导入。
 4. 状态机统一由通用异步层维护（`queued/running/completed/failed/cancelled`）。
 
-### 6.2 `MemoryImportService`
+### 6.2 `MemoryUploadService`
 
 ```python
-def execute_task(self, task_id: str, payload: MemoryImportPayload, files: list[Any]) -> None: ...
-def save_uploaded_parser(self, parser_script: Any, parsers_dir: str, target_name: str = "parse_memory.py") -> str: ...
+def execute_task(self, task_id: str, payload: MemoryUploadPayload, files: list[Any]) -> None: ...
 def validate_parse_result_schema(self, result: ParseResult) -> None: ...
 def merge_chunks_and_check_profile_consistency(self, all_results: list[ParseResult]) -> ParseResult: ...
 def cleanup_staged_workspace(self, task_id: str, keep_failed_workspace: bool) -> None: ...
 ```
 
-调用关系（`memory_import_service.py` 内）：
+调用关系（`memory_upload_service.py` 内）：
 
 - `execute_task`（对外入口）：
-  1. 选择并保存最终解析脚本（必要时调用 `save_uploaded_parser`）
-  2. 调用 `ASTGuard.validate(...)`
+  1. 选择解析脚本（上传临时脚本 / custom parser / 预注册脚本 / default）
+  2. 对上传脚本和 custom parser 调用 `ASTGuard.validate(...)`
   3. 调用 `StoreMemory.stage_upload_files(...)`
   4. 调用 `StoreMemory.build_parse_manifest(...)`
   5. 调用 `SandboxRunner.run_parse(...)`
   6. 调用 `validate_parse_result_schema(...)`
   7. 调用 `StoreMemory.store(...)`（存储总入口）
-  8. 在 `finally` 调用 `cleanup_staged_workspace(...)`（内部委托 `StoreMemory.cleanup_task_workspace(...)`）
-- `save_uploaded_parser`：仅由 `execute_task` 调用
+  8. 若本次请求携带上传脚本且导入成功，则原子覆盖保存到 `custom_parsers_dir/parse_memory.py`
+  9. 在 `finally` 调用 `cleanup_staged_workspace(...)`（内部委托 `StoreMemory.cleanup_task_workspace(...)`）
 - `validate_parse_result_schema`：仅由 `execute_task` 调用，校验 `chunks/search_profile/local_file_storage_plan`
 - `merge_chunks_and_check_profile_consistency`：兼容保留；当前 MEMORY 默认单次 parse，可不经过多结果合并
 - `cleanup_staged_workspace`：仅由 `execute_task` 的 `finally` 调用，封装 `StoreMemory.cleanup_task_workspace(...)` 并处理失败保留策略
@@ -192,13 +196,16 @@ def cleanup_staged_workspace(self, task_id: str, keep_failed_workspace: bool) ->
 关键逻辑：
 
 1. **脚本选择**
-   - 上传脚本 -> `parsers/parse_memory.py`
-   - 否则查 `parsers/parse_memory.py`
-   - 否则回退 `parsers/parse_default.py`
+   - 本次请求携带 `parser_script`：API 先保存到任务 session 临时目录；本任务只使用该临时脚本执行。
+   - 本次请求不携带 `parser_script`：先查 `custom_parsers_dir/parse_memory.py`
+   - custom 目录未命中：查 `parsers_dir/parse_memory.py`
+   - 仍未命中：回退 `parsers_dir/parse_default.py`
    - 均无 -> `PARSER_SCRIPT_NOT_FOUND`
 
 2. **安全检查**
-   - `ASTGuard.validate(script_path)` 不通过直接失败
+   - 上传脚本和 `custom_parsers_dir` 中的脚本必须执行 `ASTGuard.validate(script_path)`。
+   - `parsers_dir` 中的预注册脚本视为可信脚本，不重复执行 ASTGuard。
+   - 上传脚本 ASTGuard 失败、Sandbox 失败、ParseResult schema 校验失败或后续 store 失败时，不得覆盖已有 custom parser。
 
 3. **临时落地 + manifest 构建**
    - 将上传文件先落到任务工作目录（临时区）
@@ -220,7 +227,13 @@ def cleanup_staged_workspace(self, task_id: str, keep_failed_workspace: bool) ->
      5. 写内容索引（`meta.json` 语义 chunk）
    - MEMORY 的语义内容来自 `meta.json`；附件不生成内容 chunk
 
-6. **staging 目录清理（新增约束）**
+6. **custom parser 持久化**
+   - 仅当本次请求携带 `parser_script` 且步骤 2-5 全部成功后，才保存该脚本。
+   - 保存目标固定为 `custom_parsers_dir/parse_memory.py`，不保留上传文件原名。
+   - 如果目标已存在，使用原子替换覆盖（建议先写临时文件，再 `os.replace`）。
+   - binding 中 `parser_script_source` 建议记录为 `parse_memory.py`，`parser_script_sha256` 记录本次实际执行脚本内容摘要。
+
+7. **staging 目录清理（新增约束）**
    - `execute_task(...)` 必须使用 `try/except/finally`；`finally` 中执行清理，不能因异常跳过
    - 清理目标建议为整任务目录：`<import_work_root>/<task_id>/`（包含 `staged/` 与 `memory_request_manifest.json`）
    - 默认策略：成功/失败都清理，避免临时文件长期堆积
@@ -237,7 +250,7 @@ def cleanup_staged_workspace(self, task_id: str, keep_failed_workspace: bool) ->
 
 ## 7. 存储层实现（MEMORY）
 
-文件：`app/features/import/memory_import/storage/store_memory.py`
+文件：`app/features/upload/memory_upload/storage/store_memory.py`
 
 建议接口：
 
@@ -297,15 +310,15 @@ def _store_parsed_content(self, kb_index: str, chunks: list[dict[str, Any]]) -> 
 
 ### 7.5 调用关系（按文件）
 
-- `app/features/import/import_task_executor.py`
-  - `execute(...)` -> `MemoryImportService.execute_task(...)`
-- `app/features/import/memory_import/memory_import_service.py`
+- `app/features/upload/upload_task_executor.py`
+  - `execute(...)` -> `MemoryUploadService.execute_task(...)`
+- `app/features/upload/memory_upload/memory_upload_service.py`
   - `execute_task(...)` -> `StoreMemory.stage_upload_files(...)`
   - `execute_task(...)` -> `StoreMemory.build_parse_manifest(...)`
   - `execute_task(...)` -> `SandboxRunner.run_parse(...)`
   - `execute_task(...)` -> `StoreMemory.store(...)`
   - `execute_task(...)` -> `cleanup_staged_workspace(...)` -> `StoreMemory.cleanup_task_workspace(...)`（finally）
-- `app/features/import/memory_import/storage/store_memory.py`
+- `app/features/upload/memory_upload/storage/store_memory.py`
   - `store(...)` -> `_save_files_by_plan(...)` -> `FileSystemFactory.get_gateway()` -> `IFileSystemGateway.store(...)`
   - `store(...)` -> `_hydrate_chunks_with_storage_paths(...)`
   - `store(...)` -> `_get_or_create_binding(...)` -> `DatabaseFactory.get_writer(...)` -> `IDatabaseWriter.get_binding_by_domain_index/create_index_binding(...)`

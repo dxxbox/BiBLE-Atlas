@@ -12,8 +12,8 @@ export function registerShowLastImportFilesCommand(deps: ModuleDeps): vscode.Dis
     }
 
     const items: Array<vscode.QuickPickItem & { _action: 'open-source' | 'open-meta' | 'reveal' | 'clear' | 'log' }> = [
-      { label: '$(file-code) Open source.json', detail: last.sourceFile, _action: 'open-source' },
-      { label: '$(json) Open meta.json',        detail: last.metaFile,   _action: 'open-meta' },
+      { label: '$(file-code) Open message.json', detail: last.messageFile, _action: 'open-source' },
+      { label: '$(json) Open meta.json',         detail: last.metaFile,   _action: 'open-meta' },
       { label: '$(folder-opened) Reveal directory', detail: last.dir,    _action: 'reveal' },
       { label: '$(output) Show in OutputChannel', detail: `session_id=${last.sessionId}, written_at=${last.writtenAt}`, _action: 'log' },
       { label: '$(trash) Clear temp directory',  detail: `delete ${last.dir}`, _action: 'clear' },
@@ -27,7 +27,7 @@ export function registerShowLastImportFilesCommand(deps: ModuleDeps): vscode.Dis
 
     switch (pick._action) {
       case 'open-source':
-        await openIfExists(last.sourceFile);
+        await openIfExists(last.messageFile);
         break;
       case 'open-meta':
         await openIfExists(last.metaFile);

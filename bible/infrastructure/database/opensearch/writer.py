@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from copy import deepcopy
 from datetime import datetime, timezone
 from typing import TYPE_CHECKING, Any, Iterable
 
@@ -32,9 +33,16 @@ class OpenSearchWriter(IDatabaseWriter):
         from opensearchpy.exceptions import NotFoundError, TransportError
 
         doc_id = self._binding_doc_id(domain, kb_index)
+        self._logger.info(
+            "OpenSearch binding lookup by index started domain=%s kb_index=%s binding_index=%s",
+            domain,
+            kb_index,
+            self._binding_index,
+        )
         try:
             resp = self._client.get(index=self._binding_index, id=doc_id)
         except NotFoundError:
+            self._logger.info("OpenSearch binding lookup by index miss domain=%s kb_index=%s", domain, kb_index)
             return None
         except TransportError as exc:
             raise DatabaseError(
@@ -45,14 +53,27 @@ class OpenSearchWriter(IDatabaseWriter):
 
         source = resp.get("_source", {})
         if not source.get("is_active", True):
+            self._logger.info(
+                "OpenSearch binding lookup by index found inactive binding domain=%s kb_index=%s",
+                domain,
+                kb_index,
+            )
             return None
+        self._logger.info("OpenSearch binding lookup by index hit domain=%s kb_index=%s", domain, kb_index)
         return self._to_binding(source)
 
     def get_binding_by_domain_tag(self, domain: DomainType, tag: str) -> IndexBinding | None:
         from opensearchpy.exceptions import TransportError
 
+        self._logger.info(
+            "OpenSearch binding lookup by tag started domain=%s tag=%s binding_index=%s",
+            domain,
+            tag,
+            self._binding_index,
+        )
         query = {
             "size": 2,
+            "sort": [{"created_at": {"order": "desc"}}],
             "query": {
                 "bool": {
                     "filter": [
@@ -74,13 +95,22 @@ class OpenSearchWriter(IDatabaseWriter):
 
         hits = (resp.get("hits") or {}).get("hits") or []
         if not hits:
+            self._logger.info("OpenSearch binding lookup by tag miss domain=%s tag=%s", domain, tag)
             return None
         if len(hits) > 1:
-            self._logger.error(
+            self._logger.warning(
                 "Duplicated active bindings found for same domain/tag: domain=%s tag=%s count=%d",
                 domain, tag, len(hits),
             )
-        return self._to_binding(hits[0].get("_source", {}))
+        selected = hits[0].get("_source", {})
+        self._logger.info(
+            "OpenSearch binding lookup by tag hit domain=%s tag=%s selected_kb_index=%s count=%d",
+            domain,
+            tag,
+            selected.get("kb_index"),
+            len(hits),
+        )
+        return self._to_binding(selected)
 
     def create_index_binding(self, binding_doc: dict[str, Any]) -> dict[str, Any]:
         from opensearchpy.exceptions import ConflictError, TransportError
@@ -216,11 +246,59 @@ class OpenSearchWriter(IDatabaseWriter):
             ) from exc
         return {"updated": True, "_id": resp.get("_id", doc_id)}
 
+    def update_binding(
+        self,
+        domain: DomainType,
+        kb_index: str,
+        patch: dict[str, Any],
+    ) -> dict[str, Any]:
+        """Atomically update arbitrary fields on an existing binding document."""
+        from opensearchpy.exceptions import NotFoundError, TransportError
+
+        doc_id = self._binding_doc_id(domain, kb_index)
+        now = self._now_iso()
+        patch_with_ts = {**patch, "updated_at": now}
+        set_clauses = " ".join(
+            f"ctx._source.{k} = params.{k};" for k in patch_with_ts
+        )
+        script = {
+            "source": set_clauses,
+            "lang": "painless",
+            "params": patch_with_ts,
+        }
+        try:
+            resp = self._client.update(
+                index=self._binding_index,
+                id=doc_id,
+                body={"script": script},
+                refresh=self._refresh_policy,
+                request_timeout=self._request_timeout,
+            )
+        except NotFoundError as exc:
+            raise DatabaseError(
+                code="INDEX_NOT_BOUND",
+                message=f"Binding not found for {domain}::{kb_index}.",
+            ) from exc
+        except TransportError as exc:
+            raise DatabaseError(
+                code="DATABASE_BACKEND_UNAVAILABLE",
+                message="Failed to update index binding.",
+                details={"domain_type": domain, "kb_index": kb_index},
+            ) from exc
+        return {"updated": True, "_id": resp.get("_id", doc_id)}
+
     # ------------------------------------------------------------------
     # Bulk content / file-registry operations
     # ------------------------------------------------------------------
 
-    def bulk_upsert_content_docs(self, index: str, docs: list[dict[str, Any]]) -> BulkWriteResult:
+    def bulk_upsert_content_docs(
+        self,
+        index: str,
+        docs: list[dict[str, Any]],
+        *,
+        vector_options: dict[str, Any] | None = None,
+    ) -> BulkWriteResult:
+        self._ensure_vector_index_mapping(index, docs, vector_options=vector_options)
         return self._bulk(index=index, docs=docs)
 
     def bulk_upsert_file_registry(
@@ -229,6 +307,48 @@ class OpenSearchWriter(IDatabaseWriter):
         file_records: list[dict[str, Any]],
     ) -> BulkWriteResult:
         return self._bulk(index=index, docs=file_records)
+
+    def search_content_docs(
+        self,
+        index: str,
+        dsl: dict[str, Any],
+    ) -> dict[str, Any]:
+        from opensearchpy.exceptions import TransportError
+
+        size = dsl.get("size") if isinstance(dsl, dict) else None
+        self._logger.info(
+            "OpenSearch content search started index=%s size=%s",
+            index,
+            size if size is not None else "<unspecified>",
+        )
+        dsl = self._prepare_search_dsl(dsl)
+        try:
+            response = self._client.search(
+                index=index,
+                body=dsl,
+                request_timeout=self._request_timeout,
+            )
+        except TransportError as exc:
+            raise DatabaseError(
+                code="DATABASE_BACKEND_UNAVAILABLE",
+                message="Failed to search content documents.",
+                details={"index": index},
+            ) from exc
+
+        hits_obj = response.get("hits") or {}
+        total = hits_obj.get("total", 0)
+        total_value = int(total.get("value", 0)) if isinstance(total, dict) else int(total)
+        hits = hits_obj.get("hits") or []
+        self._logger.info(
+            "OpenSearch content search completed index=%s total=%d hits=%d",
+            index,
+            total_value,
+            len(hits),
+        )
+        return {
+            "total": total_value,
+            "hits": hits,
+        }
 
     # ------------------------------------------------------------------
     # Async task operations
@@ -432,6 +552,142 @@ class OpenSearchWriter(IDatabaseWriter):
                 result.errors[:5],
             )
         return result
+
+    def _ensure_vector_index_mapping(
+        self,
+        index: str,
+        docs: list[dict[str, Any]],
+        *,
+        vector_options: dict[str, Any] | None = None,
+    ) -> None:
+        from opensearchpy.exceptions import TransportError
+
+        vector_dims = self._first_content_vector_dims(docs)
+        if vector_dims is None:
+            return
+
+        vector_mapping = {
+            "type": "knn_vector",
+            "dimension": vector_dims,
+        }
+        num_candidates = self._num_candidates_from_options(vector_options)
+        index_settings: dict[str, Any] = {"knn": True}
+        if num_candidates is not None:
+            index_settings["knn.algo_param.ef_search"] = num_candidates
+        try:
+            if not self._client.indices.exists(index=index):
+                self._logger.info(
+                    "Creating OpenSearch vector index index=%s dims=%d num_candidates=%s",
+                    index,
+                    vector_dims,
+                    num_candidates if num_candidates is not None else "<default>",
+                )
+                self._client.indices.create(
+                    index=index,
+                    body={
+                        "settings": {"index": index_settings},
+                        "mappings": {"properties": {"content_vector": vector_mapping}},
+                    },
+                    request_timeout=self._request_timeout,
+                )
+                return
+
+            mapping_response = self._client.indices.get_mapping(index=index)
+            properties = self._mapping_properties(mapping_response, index)
+            existing = properties.get("content_vector")
+            if existing is None:
+                self._logger.info(
+                    "Adding OpenSearch vector field mapping index=%s dims=%d",
+                    index,
+                    vector_dims,
+                )
+                self._client.indices.put_mapping(
+                    index=index,
+                    body={"properties": {"content_vector": vector_mapping}},
+                    request_timeout=self._request_timeout,
+                )
+            elif existing.get("type") != "knn_vector":
+                self._logger.warning(
+                    "OpenSearch index %s has non-vector content_vector mapping: %s",
+                    index,
+                    existing,
+                )
+                return
+
+            if num_candidates is not None:
+                self._logger.info(
+                    "Updating OpenSearch vector num_candidates index=%s num_candidates=%d",
+                    index,
+                    num_candidates,
+                )
+                self._client.indices.put_settings(
+                    index=index,
+                    body={"index": {"knn.algo_param.ef_search": num_candidates}},
+                    request_timeout=self._request_timeout,
+                )
+        except TransportError as exc:
+            raise DatabaseError(
+                code="DATABASE_BACKEND_UNAVAILABLE",
+                message="Failed to prepare vector index mapping.",
+                details={
+                    "index": index,
+                    "vector_dims": vector_dims,
+                    "num_candidates": num_candidates,
+                },
+            ) from exc
+
+    @staticmethod
+    def _first_content_vector_dims(docs: list[dict[str, Any]]) -> int | None:
+        for doc in docs:
+            vector = doc.get("content_vector")
+            if isinstance(vector, list) and vector:
+                return len(vector)
+        return None
+
+    @staticmethod
+    def _mapping_properties(mapping_response: Any, index: str) -> dict[str, Any]:
+        if not isinstance(mapping_response, dict):
+            return {}
+        index_mapping = mapping_response.get(index)
+        if not isinstance(index_mapping, dict):
+            return {}
+        mappings = index_mapping.get("mappings")
+        if not isinstance(mappings, dict):
+            return {}
+        properties = mappings.get("properties")
+        return properties if isinstance(properties, dict) else {}
+
+    @staticmethod
+    def _num_candidates_from_options(vector_options: dict[str, Any] | None) -> int | None:
+        if not vector_options:
+            return None
+        num_candidates = vector_options.get("num_candidates")
+        if type(num_candidates) is int and num_candidates > 0:
+            return num_candidates
+        return None
+
+    def _prepare_search_dsl(self, dsl: dict[str, Any]) -> dict[str, Any]:
+        """Translate backend-neutral kNN options to OpenSearch query DSL.
+
+        ``num_candidates`` is the unified profile key.  OpenSearch 2.11 does
+        not accept it in the query body; the equivalent search width is
+        configured on the index via ``index.knn.algo_param.ef_search``.
+        """
+        prepared = deepcopy(dsl)
+        self._strip_num_candidates_from_knn(prepared)
+        return prepared
+
+    def _strip_num_candidates_from_knn(self, node: Any) -> None:
+        if isinstance(node, dict):
+            for key, value in node.items():
+                if key == "knn" and isinstance(value, dict):
+                    for knn_body in value.values():
+                        if isinstance(knn_body, dict):
+                            knn_body.pop("num_candidates", None)
+                self._strip_num_candidates_from_knn(value)
+        elif isinstance(node, list):
+            for item in node:
+                self._strip_num_candidates_from_knn(item)
 
     def _binding_doc_id(self, domain: DomainType, kb_index: str) -> str:
         return f"{domain}::{kb_index}"

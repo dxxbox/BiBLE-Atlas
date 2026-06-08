@@ -1,0 +1,72 @@
+# OpenSearch 配置文件模板
+# 此文件将被部署脚本复制到用户的配置目录
+
+# ==================== 集群配置 ====================
+cluster.name: ${CLUSTER_NAME}
+node.name: ${NODE_NAME}
+node.roles: [cluster_manager, data, ingest]
+
+# ==================== 网络配置 ====================
+network.host: 0.0.0.0
+http.port: 9200
+transport.port: 9300
+
+# ==================== 发现配置 ====================
+discovery.type: single-node
+
+# ==================== 路径配置 ====================
+path.data: /usr/share/opensearch/data
+path.logs: /usr/share/opensearch/logs
+
+# ==================== 内存配置 ====================
+bootstrap.memory_lock: true
+indices.memory.index_buffer_size: 10%
+indices.fielddata.cache.size: 20%
+indices.requests.cache.size: 5%
+
+# ==================== 性能配置 ====================
+thread_pool.search.size: ${SEARCH_THREAD_SIZE}
+thread_pool.search.queue_size: 1000
+thread_pool.write.size: ${WRITE_THREAD_SIZE}
+thread_pool.write.queue_size: 500
+indices.query.bool.max_clause_count: 2048
+
+# ==================== 向量搜索配置 ====================
+knn.plugin.enabled: true
+knn.algo_param.index_thread_qty: ${KNN_THREAD_SIZE}
+knn.memory.circuit_breaker.enabled: true
+knn.memory.circuit_breaker.limit: 50%
+knn.cache.item.expiry.enabled: true
+knn.cache.item.expiry.minutes: 60
+
+# ==================== 安全配置 ====================
+# 开发环境可以禁用，生产环境建议启用
+plugins.security.disabled: ${SECURITY_DISABLED}
+
+# ==================== 跨域配置 ====================
+http.cors.enabled: true
+http.cors.allow-origin: "*"
+http.cors.allow-headers: "X-Requested-With,Content-Type,Content-Length,Authorization"
+
+# ==================== 日志配置 ====================
+logger.level: INFO
+
+# 慢查询日志
+index.search.slowlog.threshold.query.warn: 10s
+index.search.slowlog.threshold.query.info: 5s
+index.search.slowlog.threshold.fetch.warn: 1s
+
+# 慢索引日志
+index.indexing.slowlog.threshold.index.warn: 10s
+index.indexing.slowlog.threshold.index.info: 5s
+
+# ==================== 磁盘配置 ====================
+cluster.routing.allocation.disk.threshold_enabled: true
+cluster.routing.allocation.disk.watermark.low: 85%
+cluster.routing.allocation.disk.watermark.high: 90%
+cluster.routing.allocation.disk.watermark.flood_stage: 95%
+
+# ==================== 索引配置 ====================
+index.refresh_interval: 5s
+index.number_of_replicas: 0
+index.number_of_shards: 2

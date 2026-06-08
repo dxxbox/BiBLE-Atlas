@@ -1,7 +1,5 @@
 import * as vscode from 'vscode';
-import * as path from 'node:path';
 import { MemoryService } from '../memory-service';
-import { TaskTracker } from '../../../core/task/task-tracker';
 import { Notifications } from '../../../core/ui/notifications';
 import { OutputChannel } from '../../../core/ui/output-channel';
 import { ExtensionConfig } from '../../../core/config/extension-config';
@@ -14,12 +12,17 @@ export interface MemoryDownloadInput {
 
 export interface MemoryDownloadDeps {
   service: MemoryService;
-  tasks: TaskTracker;
   notify: Notifications;
   output: OutputChannel;
   config: ExtensionConfig;
 }
 
+/**
+ * LM Tool: bible_memory_download
+ *
+ * 让 LM Agent 能按需下载并缓存 memory source 文件。
+ * 复用 ensureLocalSource 的缓存+集成下载逻辑；不再单独维护 3 步 TaskTracker 流。
+ */
 export class MemoryDownloadTool implements vscode.LanguageModelTool<MemoryDownloadInput> {
   constructor(private readonly deps: MemoryDownloadDeps) {}
 
@@ -31,7 +34,7 @@ export class MemoryDownloadTool implements vscode.LanguageModelTool<MemoryDownlo
       confirmationMessages: {
         title: 'Download memory file?',
         message: new vscode.MarkdownString(
-          `Download \`${opts.input.storagePath}\` to ${opts.input.outputDir ?? this.deps.config.memoryDownloadDir()}?`,
+          `Download \`${opts.input.storagePath}\` to local cache?`,
         ),
       },
     };
@@ -39,46 +42,26 @@ export class MemoryDownloadTool implements vscode.LanguageModelTool<MemoryDownlo
 
   async invoke(opts: vscode.LanguageModelToolInvocationOptions<MemoryDownloadInput>): Promise<vscode.LanguageModelToolResult> {
     const input = opts.input;
-    const outputDir = resolveOutputDir(input.outputDir ?? this.deps.config.memoryDownloadDir());
 
-    const handle = await this.deps.tasks.submit({
-      taskType: 'download.memory',
-      domain: 'memory',
-      title: `Downloading memory: ${input.storagePath}`,
-      submit: async () => {
-        const resp = await this.deps.service.submitDownloadFile({
-          storagePath: input.storagePath,
-          downloadName: input.downloadName,
-        });
-        return { task_id: resp.task_id };
-      },
-      showProgress: true,
-      onCompleted: async (record) => {
-        const result = record.result as { artifact_id?: string; artifact_name?: string } | undefined;
-        if (!result?.artifact_id) {
-          await this.deps.notify.warn('Download task completed but no artifact_id returned.');
-          return;
-        }
-        const fileName = input.downloadName ?? result.artifact_name ?? `memory-${record.taskId}`;
-        const outputPath = path.join(outputDir, fileName);
-        const fetched = await this.deps.service.fetchArtifact({ artifactId: result.artifact_id, outputPath });
-        const pick = await this.deps.notify.info(
-          `Memory file downloaded: ${fetched.path} (${fetched.size_bytes} bytes)`,
-          'Reveal in Explorer',
-        );
-        if (pick === 'Reveal in Explorer') {
-          await vscode.commands.executeCommand('revealFileInOS', vscode.Uri.file(fetched.path));
-        }
-      },
+    // ensureLocalSource 使用 session_id ?? storage_path 作为缓存键；
+    // LM Tool 只知道 storage_path，所以 session_id 留空，CLI 会按 storage_path 下载。
+    const result = await this.deps.service.ensureLocalSource({
+      hit: { session_id: '', storage_path: input.storagePath },
     });
 
+    const label = result.fromCache ? 'cached' : 'downloaded';
+    const pick = await this.deps.notify.info(
+      `Memory file ${label}: ${result.path} (${result.sizeBytes} bytes)`,
+      'Reveal in Explorer',
+    );
+    if (pick === 'Reveal in Explorer') {
+      await vscode.commands.executeCommand('revealFileInOS', vscode.Uri.file(result.path));
+    }
+
     return new vscode.LanguageModelToolResult([
-      new vscode.LanguageModelTextPart(`Memory download queued. task_id: \`${handle.taskId}\`.`),
+      new vscode.LanguageModelTextPart(
+        `Memory source ${label}. Local path: \`${result.path}\` (${result.sizeBytes} bytes).`,
+      ),
     ]);
   }
-}
-
-function resolveOutputDir(template: string): string {
-  const ws = vscode.workspace.workspaceFolders?.[0]?.uri.fsPath;
-  return template.replace('${workspaceFolder}', ws ?? process.cwd());
 }

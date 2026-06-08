@@ -13,8 +13,9 @@
 ## 1. 适用范围
 
 - 仅覆盖 `POST /api/search/memory`。
-- 请求体字段沿用 `02_API接口文档.md`（`query/tag/search_type/top_k/vector_model/vector_weight`）。
+- 请求体字段沿用 `02_API接口文档.md`（`query/tag/kb_index/search_type/top_k/vector_model/vector_weight`）。
 - `tag` 固定为 `memory`。
+- `kb_index` 可选；提供时按 `domain=MEMORY + kb_index` 精确查找绑定，未提供时按 `domain=MEMORY + tag=memory` 查找 active binding。
 - 检索目标数据来自 MEMORY 导入产物（`meta.json` 语义字段 + 附件存储路径回填）。
 
 ---
@@ -153,13 +154,17 @@ def search(
     top_k: int | None,
     vector_model: str | None,
     vector_weight: float | None,
+    kb_index: str | None = None,
 ) -> dict[str, Any]: ...
 ```
 
 建议流程：
 
 1. 参数校验（`query/tag` 必填，`tag == "memory"`）。
-2. 读取绑定记录（`kb_index/search_profile/vector_model`）。
+2. 读取绑定记录（`kb_index/search_profile/vector_model`）：
+   - 若请求显式携带 `kb_index`，调用 `get_binding_by_domain_index(MEMORY, kb_index)` 精确查找。
+   - 否则调用 `get_binding_by_domain_tag(MEMORY, tag)`，保持旧客户端兼容。
+   - 同一 `MEMORY + memory` 下存在多个 active binding 时，按 tag 查找存在歧义；需要指定某次导入的数据时应传 `kb_index`。
 3. 标准化 `search_type/top_k/vector_weight`。
 4. 向量模型一致性校验。
 5. 调用 `MemorySearcher.search(...)` 执行检索。

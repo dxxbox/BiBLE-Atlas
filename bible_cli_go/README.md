@@ -168,6 +168,9 @@ bible memory list --limit 20 --tag my-tag
 
 # 检索记忆
 bible memory search "调度算法" --top-k 10
+# 插件/IDE 联调：`--test` 不访问服务器，返回与真实检索相同字段结构的预设 JSON（见 internal/fixtures/memory_search_test.json）
+bible memory search "任意查询" --top-k 10 --test
+# 同上，`memory upload` / `memory download` / `memory import` 等子命令也接受 `--test`（与 Cursor/VS Code 扩展在 bible.cli.testMode 下追加的标志一致）
 
 # 下载记忆产物（单文件）
 bible memory download --output /tmp/ <memory_id>
@@ -241,6 +244,11 @@ bible session save --input '...' --kb-index my-kb
 | `BIBLE_MEMORY_KB_INDEX` | memory 上传默认 kb_index | — |
 | `BIBLE_MEMORY_VECTOR_MODEL` | memory 上传默认向量模型 | — |
 | `BIBLE_CLI_LEGACY_STDERR` | `1` 时把错误同时打到 stderr | — |
+| `BIBLE_CLI_STUB_MODE` | `1` / `true` / `yes` 时 **不连服务器**，`memory search` / `import` / `list` 等返回与插件契约一致的伪造 JSON（联调扩展用） | — |
+| `BIBLE_CLI_LOG_FILE` | 结构化 NDJSON 日志（默认 `~/.bible/cli.log`），不影响 stdout。`go test` 构建且未设置本变量时，默认写到 `$TMPDIR/bible-cli-go-test-<pid>.log`，避免污染用户目录下的 cli.log | — |
+| `BIBLE_CLI_LOG_DISABLE` | 设为 `1` 时关闭写文件日志（仅 stdout 协议） | — |
+
+**离线 / 无后端联调**：请使用扩展 **`bible.cli.testMode`**（向 CLI 追加 `--test`，`memory search` 走 fixtures、其它 memory 子命令走无 HTTP 的约定响应），或设置 **`BIBLE_CLI_STUB_MODE=1`**（全局 stub，响应中带 `stub: true`）。**未设置上述二者时，网络错误会直接失败**（`ok: false` / `UNAVAILABLE` 等），不再静默返回伪造成功数据。
 
 ### 配置文件
 

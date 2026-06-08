@@ -9,8 +9,25 @@ import (
 	"bible-cli-go/internal/protocol"
 )
 
+// peelMemoryGlobalTestArgs removes every standalone `--test` / `-test` token from
+// args (the VS Code extension appends `--test` after all other flags). Any
+// occurrence sets opts.TestMode so each subcommand's FlagSet does not need its
+// own `-test` definition.
+func peelMemoryGlobalTestArgs(args []string, opts *commands.MemoryCommandOptions) []string {
+	var out []string
+	for _, a := range args {
+		if a == "--test" || a == "-test" {
+			opts.TestMode = true
+			continue
+		}
+		out = append(out, a)
+	}
+	return out
+}
+
 // parseMemoryFlags parses action-specific flags from args and populates opts.
 func parseMemoryFlags(action string, args []string, opts *commands.MemoryCommandOptions) error {
+	args = peelMemoryGlobalTestArgs(args, opts)
 	switch action {
 	case "upload":
 		return parseMemoryUploadFlags(args, opts)
@@ -26,6 +43,8 @@ func parseMemoryFlags(action string, args []string, opts *commands.MemoryCommand
 		return parseMemorySearchFlags(args, opts)
 	case "cache-status":
 		return parseMemoryCacheStatusFlags(args, opts)
+	case "import":
+		return parseMemoryImportFlags(args, opts)
 	case "download":
 		return parseMemoryDownloadFlags(args, opts)
 	default:
@@ -161,6 +180,11 @@ func parseMemoryListFlags(args []string, opts *commands.MemoryCommandOptions) er
 func parseMemorySearchFlags(args []string, opts *commands.MemoryCommandOptions) error {
 	fs := flag.NewFlagSet("memory search", flag.ContinueOnError)
 	fs.SetOutput(io.Discard)
+	// Accept --query / --tag explicitly so the VS Code plugin (which always
+	// passes them as named flags) works.  A positional query is still
+	// supported as a fallback for shell users.
+	queryPtr := fs.String("query", "", "Search query (alternative to positional arg)")
+	tagPtr := fs.String("tag", "", "Filter by tag (e.g. memory)")
 	topKPtr := fs.Int("top-k", 5, "Number of results to return")
 	thresholdPtr := fs.Float64("threshold", 0.0, "Minimum similarity score threshold")
 	searchTypePtr := fs.String("search-type", "", "Search type: keyword|title|text|vector|hybrid")
@@ -168,13 +192,18 @@ func parseMemorySearchFlags(args []string, opts *commands.MemoryCommandOptions) 
 	if err := parseFlagSet(fs, args); err != nil {
 		return protocol.CLIError{Code: "INVALID_ARGS", Message: err.Error(), ExitCode: 1}
 	}
-	if fs.NArg() < 1 {
-		return protocol.CLIError{Code: "INVALID_ARGS", Message: "memory search requires a query argument.", ExitCode: 1}
+	query := strings.TrimSpace(*queryPtr)
+	if query == "" && fs.NArg() == 1 {
+		query = fs.Arg(0)
+	}
+	if query == "" {
+		return protocol.CLIError{Code: "INVALID_ARGS", Message: "memory search requires a query (use --query or a positional argument).", ExitCode: 1}
 	}
 	if fs.NArg() > 1 {
-		return protocol.CLIError{Code: "INVALID_ARGS", Message: "memory search accepts exactly one positional query argument.", ExitCode: 1}
+		return protocol.CLIError{Code: "INVALID_ARGS", Message: "memory search accepts at most one positional query argument.", ExitCode: 1}
 	}
-	opts.Query = fs.Arg(0)
+	opts.Query = query
+	opts.Tag = *tagPtr
 	opts.TopK = *topKPtr
 	opts.Threshold = *thresholdPtr
 	opts.SearchType = *searchTypePtr
@@ -194,6 +223,32 @@ func parseMemoryCacheStatusFlags(args []string, opts *commands.MemoryCommandOpti
 	if fs.NArg() == 1 {
 		opts.BaseDir = fs.Arg(0)
 	}
+	return nil
+}
+
+func parseMemoryImportFlags(args []string, opts *commands.MemoryCommandOptions) error {
+	fs := flag.NewFlagSet("memory import", flag.ContinueOnError)
+	fs.SetOutput(io.Discard)
+	sourceFilePtr := fs.String("source-file", "", "Path to the source JSON file (session content)")
+	metaFilePtr := fs.String("meta-file", "", "Path to the meta JSON file")
+	kbIndexPtr := fs.String("kb-index", "", "Knowledge base index (overrides BIBLE_MEMORY_KB_INDEX env and config)")
+	tagPtr := fs.String("tag", "memory", "Tag for the import")
+	vectorModelPtr := fs.String("vector-model", "", "Vector model override")
+
+	if err := parseFlagSet(fs, args); err != nil {
+		return protocol.CLIError{Code: "INVALID_ARGS", Message: err.Error(), ExitCode: 1}
+	}
+	if strings.TrimSpace(*sourceFilePtr) == "" {
+		return protocol.CLIError{Code: "INVALID_ARGS", Message: "--source-file is required for memory import.", ExitCode: 1}
+	}
+	if strings.TrimSpace(*metaFilePtr) == "" {
+		return protocol.CLIError{Code: "INVALID_ARGS", Message: "--meta-file is required for memory import.", ExitCode: 1}
+	}
+	opts.SourceFile = *sourceFilePtr
+	opts.MetaFile = *metaFilePtr
+	opts.KbIndex = *kbIndexPtr
+	opts.Tag = *tagPtr
+	opts.VectorModel = *vectorModelPtr
 	return nil
 }
 

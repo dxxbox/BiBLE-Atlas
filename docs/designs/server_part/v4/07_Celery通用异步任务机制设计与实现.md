@@ -681,7 +681,7 @@ class AsyncTaskService:
 1. 先执行 `stage_upload_files` + `build_parse_manifest`。
 2. 调用 `AsyncTaskService.submit(task_type="import.skill", payload=...)`。
 3. API 返回 `202 + task_id`。
-4. Worker 里 `ImportSkillExecutor.execute(...)` 调用 `SkillImportService.execute_task(...)`。
+4. Worker 里 `ImportSkillExecutor.execute(...)` 调用 `SkillUploadService.execute_task(...)`。
 
 执行器示例：
 
@@ -690,7 +690,7 @@ class ImportSkillExecutor:
     task_type = "import.skill"
 
     def execute(self, payload: dict, ctx: dict) -> dict:
-        return SkillImportService().execute_task(payload["task_payload"])
+        return SkillUploadService().execute_task(payload["task_payload"])
 
     def is_retryable(self, exc: Exception) -> bool:
         return isinstance(exc, (TimeoutError, ConnectionError))

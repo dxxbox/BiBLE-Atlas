@@ -5,6 +5,19 @@ import glob
 import os
 
 
+def resolve_hf_cache_dir(workspace_dir: str, hf_cache_dir: str | None = None) -> str:
+    """Return the absolute HuggingFace cache root and ensure it exists.
+
+    Priority: explicit ``hf_cache_dir`` > ``HF_HOME`` > ``workspace_dir/hf_cache``.
+    The returned path is the cache root; HuggingFace Hub snapshots live under
+    ``<cache_root>/hub``.
+    """
+    raw_dir = hf_cache_dir or os.environ.get("HF_HOME") or os.path.join(workspace_dir, "hf_cache")
+    cache_dir = os.path.abspath(os.path.expanduser(raw_dir))
+    os.makedirs(cache_dir, exist_ok=True)
+    return cache_dir
+
+
 def get_local_model_path(
     model_name: str,
     hf_cache_dir: str,
@@ -65,6 +78,10 @@ def download_lock_path(model_name: str, hf_cache_dir: str) -> str:
     The lock file is used with ``fcntl.LOCK_EX`` to guarantee that at most one
     process ever downloads a given model, even when the FastAPI server and the
     Celery worker start up simultaneously.
+
+    Lock files live at ``<hf_cache_dir>/hub/.locks/download-once``.
+    ``hf_cache_dir`` must be writable; ``resolve_hf_cache_dir`` guarantees this
+    by calling ``os.makedirs`` at construction time.
     """
     safe_name = model_name.replace("/", "--")
     locks_dir = os.path.join(hf_cache_dir, "hub", ".locks", "download-once")

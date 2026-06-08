@@ -153,11 +153,11 @@ export BIBLE_MOCK_INJECT=index_conflict   # 或 slow / task_failed / artifact_ex
 | Command                              | 用途                                                                                                |
 | ------------------------------------ | --------------------------------------------------------------------------------------------------- |
 | `Bible: Run Self-Check`              | 探测 CLI 是否可用 + 能力集                                                                          |
-| `Bible: Search Memory`               | 交互式 QuickPick：候选列表 ↔ 动作菜单（Preview summary / Load to @bible-memory）                  |
+| `Bible: Search Memory`               | 交互式 QuickPick：候选列表 ↔ 动作菜单（Preview summary / Load to @bible-memory：把 **message.json 原对话**填入 Copilot **输入框草稿**，不自动发送） |
 | `Bible: Save Current Chat as Memory` | 导出当前 Copilot Chat，LM 提炼 meta，CLI 提交                                                       |
 | `Bible: Show Task Status`            | 查看本插件已提交的异步任务（含 dry-run 下的虚拟任务）                                                |
 
-> Memory 体系里**没有面向用户的"下载"命令**。下载已被 `MemoryService.ensureLocalSource` 隐式化——`Bible: Search Memory` 里选 Load 时自动按需下载并复用缓存。LM Tool `bible_memory_download` 仍保留（LM 从 search 结果拿到合法 `storage_path` 后才会调）。
+> Memory 体系里**没有面向用户的"下载"命令**。下载已被 `MemoryService.ensureLocalSource` 隐式化——`Bible: Search Memory` 里选 Load 时自动按需下载 `message.json` 并复用缓存；随后打开 Chat 并把**原对话**填入输入框，由你自行编辑后点发送。
 
 ### 隐藏的 debug 命令（不在命令面板）
 
@@ -167,7 +167,7 @@ export BIBLE_MOCK_INJECT=index_conflict   # 或 slow / task_failed / artifact_ex
 | ----------------------------------- | -------------------------------------------------------------------------------------------- |
 | `bible.debug.toggleDryRun`          | 切换 `bible.debug.dryRun`，提示重启窗口                                                      |
 | `bible.debug.openMockProfile`       | 打开 / 初始化 `~/.bible-mock.json`，调整 mock-cli 的 search/task/artifact 行为              |
-| `bible.memory.showLastImportFiles`  | 列出最近一次 `Save Current Chat as Memory` 写出的 `source.json` / `meta.json` 并提供动作   |
+| `bible.memory.showLastImportFiles`  | 列出最近一次 Save 写出的 `message.json` / `meta.json` / `source.raw.json` 并提供动作   |
 
 需要打开任一项最简单的方式：`Ctrl/Cmd+Shift+P` → "Preferences: Open Keyboard Shortcuts (JSON)" → 加一条 `{ "key": "...", "command": "bible.debug.toggleDryRun" }`。
 
@@ -177,7 +177,7 @@ export BIBLE_MOCK_INJECT=index_conflict   # 或 slow / task_failed / artifact_ex
 2. 在 Copilot Chat 中和模型聊几句
 3. 命令面板 → **Bible: Save Current Chat as Memory**
 4. 打开 OutputChannel `Bible`：
-   - 找到 `memory.import.files` 行 → 拿到 `source_link` / `meta_link`（点击直接打开临时文件）
+   - 找到 `memory.import.files` 行 → `user_picked_json`（若从文件选择器导入）为你选的原始 JSON；`generated_source_for_cli` / `generated_meta_for_cli` 为插件生成、交给 `bible memory import` 的临时文件（点击可打开）
    - 再往下看 `[DRY-RUN] cli.invoke` 确认 `args` 是不是你预期的（`memory import --tag memory --kb-index memory_main --source-file /tmp/... --meta-file /tmp/... --vector-model ...`）
    - 紧跟的 `----- BEGIN source.json -----` 段就是真要发给 server 的源数据；`----- BEGIN meta.json -----` 段就是 LM 提取的结构化元数据
 

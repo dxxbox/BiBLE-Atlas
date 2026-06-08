@@ -20,6 +20,7 @@ const (
 // Meta represents the structure of meta.json for a memory import.
 type Meta struct {
 	MemoryID      string   `json:"memory_id"`
+	SessionID     string   `json:"session_id,omitempty"` // VS Code plugin meta often has this without memory_id
 	Title         string   `json:"title"`
 	Abstract      string   `json:"abstract"`
 	Overview      string   `json:"overview,omitempty"`
@@ -178,6 +179,65 @@ func LoadMetaJSON(sessionDir string) (*Meta, error) {
 		return nil, fmt.Errorf("invalid meta.json: %w", err)
 	}
 	return &m, nil
+}
+
+// PatchPluginMetaJSONForUpload adds memory_id and/or title to meta.json on disk when
+// missing (VS Code plugin MemoryMeta shape). The file is read and written as a
+// generic JSON object so keys not present on Meta (e.g. primary_request_intent)
+// are preserved for the multipart upload.
+func PatchPluginMetaJSONForUpload(sessionDir string, rawMessageJSON []byte) (bool, error) {
+	path := filepath.Join(sessionDir, "meta.json")
+	data, err := os.ReadFile(path)
+	if err != nil {
+		return false, err
+	}
+	var root map[string]any
+	if err := json.Unmarshal(data, &root); err != nil {
+		return false, fmt.Errorf("invalid meta.json: %w", err)
+	}
+	getStr := func(key string) string {
+		v, ok := root[key].(string)
+		if !ok {
+			return ""
+		}
+		return strings.TrimSpace(v)
+	}
+	changed := false
+	sid := getStr("session_id")
+	if sid == "" && len(rawMessageJSON) > 0 {
+		var probe struct {
+			SessionID string `json:"session_id"`
+		}
+		_ = json.Unmarshal(rawMessageJSON, &probe)
+		sid = strings.TrimSpace(probe.SessionID)
+	}
+	if getStr("memory_id") == "" {
+		if sid != "" {
+			root["memory_id"] = "mem_" + sid
+		} else {
+			root["memory_id"] = "mem_" + filepath.Base(sessionDir)
+		}
+		changed = true
+	}
+	if getStr("title") == "" {
+		ab := getStr("abstract")
+		if ab != "" {
+			root["title"] = truncate(ab, MaxTitleLen)
+		} else if sid != "" {
+			root["title"] = truncate(sid, MaxTitleLen)
+		} else {
+			root["title"] = truncate(filepath.Base(sessionDir), MaxTitleLen)
+		}
+		changed = true
+	}
+	if !changed {
+		return false, nil
+	}
+	out, err := json.MarshalIndent(root, "", "  ")
+	if err != nil {
+		return false, err
+	}
+	return true, os.WriteFile(path, out, 0o644)
 }
 
 // SessionMessages is a simplified input structure for session save.

@@ -131,6 +131,9 @@ __pypackages__/
 celerybeat-schedule
 celerybeat.pid
 
+# Claude Code
+CLAUDE.md
+
 # SageMath parsed files
 *.sage.py
 

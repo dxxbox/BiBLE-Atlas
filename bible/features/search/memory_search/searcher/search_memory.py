@@ -26,7 +26,7 @@ Important — hybrid profile completeness
 ----------------------------------------
 The MEMORY binding's ``search_profile_json["search_type_profile"]["hybrid"]``
 **must** include ``vector_field`` (e.g. ``"content_vector"``),
-``num_candidates_min``, ``num_candidates_multiplier``, and ``fields``.
+``num_candidates``, and ``fields``.
 The :class:`QueryProfileCompiler` raises :class:`SearchProfileInvalidError`
 if ``vector_field`` is absent.  See memory_search_v4_tasks.md §2 for the
 recommended complete profile.
@@ -34,9 +34,9 @@ recommended complete profile.
 
 from __future__ import annotations
 
-import logging
 from typing import Any
 
+from bible.common.logger import get_logger
 from bible.features.search.common.hit_mapper import map_hits as _map_hits_fn
 from bible.features.search.common.query_profile_compiler import (
     QueryProfileCompiler,
@@ -51,7 +51,7 @@ from bible.features.search.knowledge_base_search.searcher.search_knowledge_base 
 from bible.infrastructure.database.base import IDatabaseWriter
 from bible.infrastructure.vector.vector_tool import VectorTool
 
-logger = logging.getLogger(__name__)
+logger = get_logger(__name__)
 
 _VECTOR_TYPES = frozenset({"vector", "hybrid"})
 
@@ -136,6 +136,15 @@ class MemorySearcher:
             Wraps database or embedding failures.
             Maps to HTTP 500 at the API layer.
         """
+        logger.info(
+            "MEMORY searcher started index=%s search_type=%s top_k=%d vector_model=%s query_len=%d",
+            kb_index,
+            search_type,
+            top_k,
+            vector_model or "<none>",
+            len(query),
+        )
+
         # ── Step 1: vector embedding (vector / hybrid only) ───────────────
         query_vector: list[float] | None = None
         if search_type in _VECTOR_TYPES:
@@ -145,8 +154,15 @@ class MemorySearcher:
                     "MEMORY binding has no vector_model set." % search_type
                 )
             try:
+                logger.info("MEMORY searcher preparing query vector index=%s model=%s", kb_index, vector_model)
                 self._vector_tool.ensure_model_ready(vector_model)
                 query_vector = self._vector_tool.embed_query(query, vector_model)
+                logger.info(
+                    "MEMORY searcher query vector ready index=%s model=%s dims=%d",
+                    kb_index,
+                    vector_model,
+                    len(query_vector),
+                )
             except Exception as exc:
                 logger.error(
                     "MEMORY: failed to produce query vector for model '%s': %s",
@@ -159,6 +175,7 @@ class MemorySearcher:
 
         # ── Step 2: compile DSL ───────────────────────────────────────────
         # SearchProfileInvalidError propagates to the API layer → HTTP 422.
+        logger.info("MEMORY searcher compiling DSL index=%s search_type=%s", kb_index, search_type)
         dsl, response_fields = self._compiler.compile(
             search_type=search_type,
             query=query,
@@ -167,9 +184,16 @@ class MemorySearcher:
             vector_weight=vector_weight,
             query_vector=query_vector,
         )
+        logger.info(
+            "MEMORY searcher DSL compiled index=%s search_type=%s response_fields=%d",
+            kb_index,
+            search_type,
+            len(response_fields),
+        )
 
         # ── Step 3: execute search ────────────────────────────────────────
         try:
+            logger.info("MEMORY searcher querying database index=%s", kb_index)
             raw = self._db_writer.search_content_docs(index=kb_index, dsl=dsl)
         except Exception as exc:
             logger.error(
@@ -183,6 +207,13 @@ class MemorySearcher:
 
         # ── Step 4: map hits ──────────────────────────────────────────────
         items = _map_hits_fn(raw.get("hits", []), response_fields)
+        logger.info(
+            "MEMORY searcher mapped results index=%s total=%s raw_hits=%d items=%d",
+            kb_index,
+            raw.get("total"),
+            len(raw.get("hits", [])),
+            len(items),
+        )
         return {
             "kb_index": kb_index,
             "total": raw.get("total", len(items)),

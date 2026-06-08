@@ -3,7 +3,6 @@ from __future__ import annotations
 from fastapi.testclient import TestClient
 
 from bible.test_mode import app as test_mode_app
-from bible.test_mode import routes as test_mode_routes
 from bible.test_mode import server as test_mode_server
 from bible.test_mode.app import SERVICE_NAME, create_app
 from bible.test_mode.server import main
@@ -39,13 +38,13 @@ def test_test_mode_health() -> None:
 def test_test_mode_app_does_not_use_production_lifespan(monkeypatch) -> None:
     import bible.features
 
-    def fail_build_import_container(*args, **kwargs):  # noqa: ANN002, ANN003, ANN202
+    def fail_build_upload_container(*args, **kwargs):  # noqa: ANN002, ANN003, ANN202
         raise AssertionError("production import container must not be initialized")
 
     monkeypatch.setattr(
         bible.features,
-        "build_import_container",
-        fail_build_import_container,
+        "build_upload_container",
+        fail_build_upload_container,
         raising=False,
     )
 
@@ -58,6 +57,8 @@ def test_test_mode_app_does_not_use_production_lifespan(monkeypatch) -> None:
 def test_test_mode_logs_creation_and_health(monkeypatch) -> None:
     logger = CapturingLogger()
     monkeypatch.setattr(test_mode_app, "logger", logger)
+    import bible.test_mode.routes as test_mode_routes
+
     monkeypatch.setattr(test_mode_routes, "logger", logger)
 
     app = create_app()
@@ -87,7 +88,7 @@ def test_test_mode_unknown_route_uses_flat_error_shape() -> None:
 
 def test_test_mode_logs_unknown_route(monkeypatch) -> None:
     logger = CapturingLogger()
-    monkeypatch.setattr(test_mode_routes, "logger", logger)
+    monkeypatch.setattr(test_mode_app, "logger", logger)
 
     with TestClient(create_app()) as client:
         response = client.get("/missing")
@@ -100,9 +101,8 @@ def test_test_mode_logs_unknown_route(monkeypatch) -> None:
 
 
 def test_test_mode_server_main_passes_cli_options(monkeypatch, tmp_path) -> None:
-    import sys
-
     fixture_path = tmp_path / "fixture.json"
+    fixture_path.write_text('{"version": 1}', encoding="utf-8")
     captured = {}
     logger = CapturingLogger()
 
@@ -115,16 +115,25 @@ def test_test_mode_server_main_passes_cli_options(monkeypatch, tmp_path) -> None
     monkeypatch.setattr("bible.test_mode.server.uvicorn.run", fake_run)
     monkeypatch.setattr(test_mode_server, "logger", logger)
     monkeypatch.setattr(
-        sys, "argv",
-        ["bible-test-mode", "--addr", "0.0.0.0:8001", "--fixture", str(fixture_path), "--strict", "false"],
+        "sys.argv",
+        [
+            "bible-test-mode",
+            "--addr",
+            "0.0.0.0:8001",
+            "--fixture",
+            str(fixture_path),
+            "--strict",
+            "false",
+        ],
     )
-    fixture_path.write_text('{"version": 1}')
 
     main()
 
     assert captured["host"] == "0.0.0.0"
     assert captured["port"] == 8001
     assert captured["log_config"] is None
+    assert captured["app"].state.fixture_path == fixture_path
+    assert captured["app"].state.strict is False
     assert any(
         f"Starting Test Mode server host=0.0.0.0 port=8001 fixture={fixture_path} strict=False"
         in message

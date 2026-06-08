@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from copy import deepcopy
 from datetime import datetime, timezone
 from typing import TYPE_CHECKING, Any, Iterable
 
@@ -32,9 +33,20 @@ class ElasticsearchWriter(IDatabaseWriter):
         from elasticsearch.exceptions import NotFoundError, TransportError
 
         doc_id = self._binding_doc_id(domain, kb_index)
+        self._logger.info(
+            "Elasticsearch binding lookup by index started domain=%s kb_index=%s binding_index=%s",
+            domain,
+            kb_index,
+            self._binding_index,
+        )
         try:
             resp = self._client.get(index=self._binding_index, id=doc_id)
         except NotFoundError:
+            self._logger.info(
+                "Elasticsearch binding lookup by index miss domain=%s kb_index=%s",
+                domain,
+                kb_index,
+            )
             return None
         except TransportError as exc:
             raise DatabaseError(
@@ -45,12 +57,24 @@ class ElasticsearchWriter(IDatabaseWriter):
 
         source = resp.get("_source", {})
         if not source.get("is_active", True):
+            self._logger.info(
+                "Elasticsearch binding lookup by index found inactive binding domain=%s kb_index=%s",
+                domain,
+                kb_index,
+            )
             return None
+        self._logger.info("Elasticsearch binding lookup by index hit domain=%s kb_index=%s", domain, kb_index)
         return self._to_binding(source)
 
     def get_binding_by_domain_tag(self, domain: DomainType, tag: str) -> IndexBinding | None:
         from elasticsearch.exceptions import TransportError
 
+        self._logger.info(
+            "Elasticsearch binding lookup by tag started domain=%s tag=%s binding_index=%s",
+            domain,
+            tag,
+            self._binding_index,
+        )
         query = {
             "size": 2,
             "query": {
@@ -74,13 +98,22 @@ class ElasticsearchWriter(IDatabaseWriter):
 
         hits = (resp.get("hits") or {}).get("hits") or []
         if not hits:
+            self._logger.info("Elasticsearch binding lookup by tag miss domain=%s tag=%s", domain, tag)
             return None
         if len(hits) > 1:
-            self._logger.error(
+            self._logger.warning(
                 "Duplicated active bindings found for same domain/tag: domain=%s tag=%s count=%d",
                 domain, tag, len(hits),
             )
-        return self._to_binding(hits[0].get("_source", {}))
+        selected = hits[0].get("_source", {})
+        self._logger.info(
+            "Elasticsearch binding lookup by tag hit domain=%s tag=%s selected_kb_index=%s count=%d",
+            domain,
+            tag,
+            selected.get("kb_index"),
+            len(hits),
+        )
+        return self._to_binding(selected)
 
     def create_index_binding(self, binding_doc: dict[str, Any]) -> dict[str, Any]:
         from elasticsearch.exceptions import ConflictError, TransportError
@@ -171,11 +204,60 @@ class ElasticsearchWriter(IDatabaseWriter):
             ) from exc
         return {"updated": True, "_id": resp.get("_id", doc_id)}
 
+    def update_binding(
+        self,
+        domain: DomainType,
+        kb_index: str,
+        patch: dict[str, Any],
+    ) -> dict[str, Any]:
+        """Atomically update arbitrary fields on an existing binding document."""
+        from elasticsearch.exceptions import NotFoundError, TransportError
+
+        doc_id = self._binding_doc_id(domain, kb_index)
+        now = self._now_iso()
+        patch_with_ts = {**patch, "updated_at": now}
+        set_clauses = " ".join(
+            f"ctx._source.{k} = params.{k};" for k in patch_with_ts
+        )
+        script = {
+            "source": set_clauses,
+            "lang": "painless",
+            "params": patch_with_ts,
+        }
+        try:
+            resp = self._client.update(
+                index=self._binding_index,
+                id=doc_id,
+                body={"script": script},
+                refresh=self._refresh_policy,
+                request_timeout=self._request_timeout,
+            )
+        except NotFoundError as exc:
+            raise DatabaseError(
+                code="INDEX_NOT_BOUND",
+                message=f"Binding not found for {domain}::{kb_index}.",
+            ) from exc
+        except TransportError as exc:
+            raise DatabaseError(
+                code="DATABASE_BACKEND_UNAVAILABLE",
+                message="Failed to update index binding.",
+                details={"domain_type": domain, "kb_index": kb_index},
+            ) from exc
+        return {"updated": True, "_id": resp.get("_id", doc_id)}
+
     # ------------------------------------------------------------------
     # Bulk content / file-registry operations
     # ------------------------------------------------------------------
 
-    def bulk_upsert_content_docs(self, index: str, docs: list[dict[str, Any]]) -> BulkWriteResult:
+    def bulk_upsert_content_docs(
+        self,
+        index: str,
+        docs: list[dict[str, Any]],
+        *,
+        vector_options: dict[str, Any] | None = None,
+    ) -> BulkWriteResult:
+        del vector_options
+        self._ensure_vector_index_mapping(index, docs)
         return self._bulk(index=index, docs=docs)
 
     def bulk_upsert_file_registry(
@@ -184,6 +266,48 @@ class ElasticsearchWriter(IDatabaseWriter):
         file_records: list[dict[str, Any]],
     ) -> BulkWriteResult:
         return self._bulk(index=index, docs=file_records)
+
+    def search_content_docs(
+        self,
+        index: str,
+        dsl: dict[str, Any],
+    ) -> dict[str, Any]:
+        from elasticsearch.exceptions import TransportError
+
+        size = dsl.get("size") if isinstance(dsl, dict) else None
+        self._logger.info(
+            "Elasticsearch content search started index=%s size=%s",
+            index,
+            size if size is not None else "<unspecified>",
+        )
+        dsl = self._prepare_search_dsl(dsl)
+        try:
+            response = self._client.search(
+                index=index,
+                body=dsl,
+                request_timeout=self._request_timeout,
+            )
+        except TransportError as exc:
+            raise DatabaseError(
+                code="DATABASE_BACKEND_UNAVAILABLE",
+                message="Failed to search content documents.",
+                details={"index": index},
+            ) from exc
+
+        hits_obj = response.get("hits") or {}
+        total = hits_obj.get("total", 0)
+        total_value = int(total.get("value", 0)) if isinstance(total, dict) else int(total)
+        hits = hits_obj.get("hits") or []
+        self._logger.info(
+            "Elasticsearch content search completed index=%s total=%d hits=%d",
+            index,
+            total_value,
+            len(hits),
+        )
+        return {
+            "total": total_value,
+            "hits": hits,
+        }
 
     # ------------------------------------------------------------------
     # Async task operations
@@ -387,6 +511,136 @@ class ElasticsearchWriter(IDatabaseWriter):
                 result.errors[:5],
             )
         return result
+
+    def _ensure_vector_index_mapping(self, index: str, docs: list[dict[str, Any]]) -> None:
+        from elasticsearch.exceptions import TransportError
+
+        vector_dims = self._first_content_vector_dims(docs)
+        if vector_dims is None:
+            return
+
+        vector_mapping = {
+            "type": "dense_vector",
+            "dims": vector_dims,
+            "index": True,
+            "similarity": "cosine",
+        }
+        try:
+            if not self._client.indices.exists(index=index):
+                self._logger.info(
+                    "Creating Elasticsearch vector index index=%s dims=%d",
+                    index,
+                    vector_dims,
+                )
+                self._client.indices.create(
+                    index=index,
+                    body={
+                        "mappings": {"properties": {"content_vector": vector_mapping}},
+                    },
+                    request_timeout=self._request_timeout,
+                )
+                return
+
+            mapping_response = self._client.indices.get_mapping(index=index)
+            properties = self._mapping_properties(mapping_response, index)
+            existing = properties.get("content_vector")
+            if existing is None:
+                self._logger.info(
+                    "Adding Elasticsearch vector field mapping index=%s dims=%d",
+                    index,
+                    vector_dims,
+                )
+                self._client.indices.put_mapping(
+                    index=index,
+                    body={"properties": {"content_vector": vector_mapping}},
+                    request_timeout=self._request_timeout,
+                )
+            elif existing.get("type") != "dense_vector":
+                self._logger.warning(
+                    "Elasticsearch index %s has non-vector content_vector mapping: %s",
+                    index,
+                    existing,
+                )
+        except TransportError as exc:
+            raise DatabaseError(
+                code="DATABASE_BACKEND_UNAVAILABLE",
+                message="Failed to prepare vector index mapping.",
+                details={"index": index, "vector_dims": vector_dims},
+            ) from exc
+
+    @staticmethod
+    def _first_content_vector_dims(docs: list[dict[str, Any]]) -> int | None:
+        for doc in docs:
+            vector = doc.get("content_vector")
+            if isinstance(vector, list) and vector:
+                return len(vector)
+        return None
+
+    @staticmethod
+    def _mapping_properties(mapping_response: Any, index: str) -> dict[str, Any]:
+        if not isinstance(mapping_response, dict):
+            return {}
+        index_mapping = mapping_response.get(index)
+        if not isinstance(index_mapping, dict):
+            return {}
+        mappings = index_mapping.get("mappings")
+        if not isinstance(mappings, dict):
+            return {}
+        properties = mappings.get("properties")
+        return properties if isinstance(properties, dict) else {}
+
+    def _prepare_search_dsl(self, dsl: dict[str, Any]) -> dict[str, Any]:
+        """Translate backend-neutral kNN clauses to Elasticsearch DSL."""
+        prepared = deepcopy(dsl)
+        self._rewrite_knn_clauses(prepared, top_level=True)
+        return prepared
+
+    def _rewrite_knn_clauses(self, node: Any, *, top_level: bool = False) -> None:
+        if isinstance(node, dict):
+            query = node.get("query")
+            if top_level and isinstance(query, dict) and set(query) == {"knn"}:
+                converted = self._convert_knn_clause(query["knn"], include_k=True)
+                if converted is not None:
+                    node["knn"] = converted
+                    node.pop("query", None)
+                    return
+
+            for key, value in list(node.items()):
+                if key == "knn" and isinstance(value, dict):
+                    converted = self._convert_knn_clause(value, include_k=False)
+                    if converted is not None:
+                        node[key] = converted
+                        continue
+                self._rewrite_knn_clauses(value)
+        elif isinstance(node, list):
+            for item in node:
+                self._rewrite_knn_clauses(item)
+
+    @staticmethod
+    def _convert_knn_clause(
+        clause: dict[str, Any],
+        *,
+        include_k: bool,
+    ) -> dict[str, Any] | None:
+        if len(clause) != 1:
+            return None
+        field, body = next(iter(clause.items()))
+        if not isinstance(field, str) or not isinstance(body, dict):
+            return None
+
+        vector = body.get("vector")
+        if vector is None:
+            return None
+
+        converted: dict[str, Any] = {
+            "field": field,
+            "query_vector": vector,
+        }
+        if include_k and "k" in body:
+            converted["k"] = body["k"]
+        if "num_candidates" in body:
+            converted["num_candidates"] = body["num_candidates"]
+        return converted
 
     def _binding_doc_id(self, domain: DomainType, kb_index: str) -> str:
         return f"{domain}::{kb_index}"

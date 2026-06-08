@@ -38,6 +38,10 @@ class KBSearchRequest(BaseModel):
 
     query: str = Field(..., description="Query text (required, non-empty).")
     tag: str = Field(..., description="Knowledge-base tag (required).")
+    kb_index: str | None = Field(
+        default=None,
+        description="Optional exact knowledge-base index binding to search.",
+    )
     search_type: str | None = Field(
         default=None,
         description="keyword | title | text | vector | hybrid",
@@ -72,6 +76,13 @@ class KBSearchRequest(BaseModel):
             raise ValueError("'tag' must not be empty.")
         return v
 
+    @field_validator("kb_index")
+    @classmethod
+    def kb_index_non_empty(cls, v: str | None) -> str | None:
+        if v is not None and not v.strip():
+            raise ValueError("'kb_index' must not be empty when provided.")
+        return v
+
 
 # ── Route ──────────────────────────────────────────────────────────────────────
 
@@ -102,6 +113,7 @@ async def search_knowledge_base(
             top_k=body.top_k,
             vector_model=body.vector_model,
             vector_weight=body.vector_weight,
+            kb_index=body.kb_index,
         )
     except Exception as exc:
         if isinstance(exc, HTTPException):

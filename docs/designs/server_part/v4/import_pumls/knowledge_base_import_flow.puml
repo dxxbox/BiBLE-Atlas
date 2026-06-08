@@ -11,17 +11,17 @@ participant "ConfigManager\napp/config/config_manager.py" as CFG
 database "AppConfigYaml\napp/config/application.yaml" as CF
 participant "VectorModelPreloader\napp/infrastructure/vector/model_preloader.py" as VMP
 participant "VectorTool\napp/infrastructure/vector/vector_tool.py" as VEC
-participant "KnowledgeBaseImportAPI\napp/api/import/knowledge_base_import_api.py" as API
+participant "KnowledgeBaseUploadAPI\napp/api/upload/knowledge_base_upload_api.py" as API
 participant "AsyncTaskService\napp/features/async_task/service.py" as ATS
 database "AsyncTaskRepository\napp/features/async_task/repository.py" as ATR
 participant "CeleryBroker\nmemory:// / redis:// / amqp://" as BRK
 participant "CeleryWorker\ncelery worker process" as WRK
-participant "ImportTaskExecutor\napp/features/import/import_task_executor.py" as IEX
-participant "KnowledgeBaseImportService\napp/features/import/knowledge_base_import/knowledge_base_import_service.py" as SVC
-database "KBParsersDir\napp/features/import/knowledge_base_import/parsers/" as PSD
-participant "ASTGuard\napp/features/import/parser_runtime/ast_guard.py" as AST
-participant "SandboxRunner\napp/features/import/parser_runtime/sandbox_runner.py" as RUN
-participant "StoreKnowledgeBase\napp/features/import/knowledge_base_import/storage/store_knowledge_base.py" as STOR
+participant "UploadTaskExecutor\napp/features/upload/upload_task_executor.py" as IEX
+participant "KnowledgeBaseUploadService\napp/features/upload/knowledge_base_upload/knowledge_base_upload_service.py" as SVC
+database "KBParsersDir\napp/features/upload/knowledge_base_upload/parsers/" as PSD
+participant "ASTGuard\napp/features/upload/parser_runtime/ast_guard.py" as AST
+participant "SandboxRunner\napp/features/upload/parser_runtime/sandbox_runner.py" as RUN
+participant "StoreKnowledgeBase\napp/features/upload/knowledge_base_upload/storage/store_knowledge_base.py" as STOR
 participant "DatabaseFactory\napp/infrastructure/database/factory.py" as DBF
 participant "IDatabaseWriter\napp/infrastructure/database/base.py" as IDB
 participant "OpenSearchWriter\napp/infrastructure/database/opensearch/writer.py" as OSW
