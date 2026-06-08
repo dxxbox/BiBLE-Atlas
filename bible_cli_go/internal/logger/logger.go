@@ -21,8 +21,8 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"flag"
 	"sync"
-	"testing"
 	"time"
 )
 
@@ -84,7 +84,7 @@ func resolveLogPath() string {
 	if v := strings.TrimSpace(os.Getenv("BIBLE_CLI_LOG_FILE")); v != "" {
 		return v
 	}
-	if testing.Testing() {
+	if flag.Lookup("test.v") != nil {
 		return filepath.Join(os.TempDir(), fmt.Sprintf("bible-cli-go-test-%d.log", os.Getpid()))
 	}
 	home, err := os.UserHomeDir()
