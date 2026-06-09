@@ -222,3 +222,6 @@ docs/meditation/
 
 #build artifacts
 release/
+opensearch/
+redis/
+workspace/

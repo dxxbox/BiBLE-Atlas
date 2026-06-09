@@ -36,9 +36,18 @@ BASE_DATA_DIR="${OPENSEARCH_BASE_DIR:-$SCRIPT_DIR/opensearch}"
 normalize_registry_prefix() {
     local prefix="${BIBLE_DOCKER_REGISTRY_PREFIX:-}"
     if [ -n "$prefix" ]; then
+        prefix="${prefix#http://}"
+        prefix="${prefix#https://}"
         prefix="${prefix%/}/"
     fi
     echo "$prefix"
+}
+
+normalize_docker_image() {
+    local image=$1
+    image="${image#http://}"
+    image="${image#https://}"
+    echo "$image"
 }
 
 build_docker_image() {
@@ -47,7 +56,7 @@ build_docker_image() {
     local tag=$3
 
     if [ -n "$override" ]; then
-        echo "$override"
+        normalize_docker_image "$override"
     else
         echo "$(normalize_registry_prefix)${repository}:${tag}"
     fi
@@ -251,6 +260,10 @@ calculate_jvm_heap() {
 
     # JVM堆大小为总内存的40%，但不超过31GB
     local jvm_heap=$(echo "$memory_gb * 0.4 / 1" | bc)
+
+    if [ $jvm_heap -lt 1 ]; then
+        jvm_heap=1
+    fi
 
     if [ $jvm_heap -gt 31 ]; then
         jvm_heap=31
@@ -478,6 +491,13 @@ repair_instance_config() {
     local user_dir="$BASE_DATA_DIR/$user_name"
     local compose_file="$user_dir/docker-compose.yml"
     local info_file="$user_dir/instance.info"
+
+    if [ -f "$compose_file" ] && grep -q "^version:" "$compose_file"; then
+        log_warn "检测到过时的 Compose version 字段，自动移除: $compose_file"
+        local tmp_file="${compose_file}.tmp.$$"
+        sed '/^version:/d' "$compose_file" > "$tmp_file"
+        mv "$tmp_file" "$compose_file"
+    fi
 
     if [ -f "$compose_file" ] && grep -Eq "image: opensearchproject/opensearch(:latest)?$|image: opensearchproject/opensearch-dashboards(:latest)?$" "$compose_file"; then
         log_warn "检测到旧版固定镜像配置，自动改为可通过环境变量覆盖: $compose_file"

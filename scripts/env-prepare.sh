@@ -43,11 +43,15 @@ OS_HTTP_PORT=9800
 OS_DASH_PORT=5699
 DEFAULT_OS_CPU_CORES=4
 DEFAULT_OS_MEMORY_GB=12
+OPENSEARCH_DASHBOARDS_MEMORY_GB=2
 OS_CPU_CORES="${BIBLE_OPENSEARCH_CPU_CORES:-}"
 OS_MEMORY_GB="${BIBLE_OPENSEARCH_MEMORY_GB:-}"
 
 # Redis 端口（必须匹配 bible-atlas.yaml 默认值）
 REDIS_PORT=9880
+REDIS_MEMORY_MB=512
+REDIS_COMMANDER_MEMORY_MB=256
+REDIS_COMMANDER_ENABLED="${REDIS_COMMANDER_ENABLED:-}"
 
 # ── 颜色（$'...' ANSI-C quoting，直接内嵌转义字节，避免依赖 echo -e）─────
 BOLD=$'\033[1m'
@@ -125,8 +129,29 @@ ask_with_default() {
   echo "${answer:-$default}"
 }
 
+normalize_registry_prefix() {
+  local prefix=$1
+  prefix="${prefix#http://}"
+  prefix="${prefix#https://}"
+  prefix="${prefix%/}"
+  echo "$prefix"
+}
+
+bytes_to_gb_floor() {
+  local bytes=$1
+  is_positive_integer "$bytes" || return 1
+  echo $((bytes / 1024 / 1024 / 1024))
+}
+
+bytes_to_mb_floor() {
+  local bytes=$1
+  is_positive_integer "$bytes" || return 1
+  echo $((bytes / 1024 / 1024))
+}
+
 resolve_opensearch_resources() {
   local docker_cpus=${1:-}
+  local docker_memory_gb=${2:-}
   local suggested_cpu=$DEFAULT_OS_CPU_CORES
 
   if is_positive_integer "$docker_cpus" && [ "$docker_cpus" -lt "$suggested_cpu" ]; then
@@ -137,6 +162,15 @@ resolve_opensearch_resources() {
   if [ "$suggested_cpu" -le 2 ]; then
     suggested_memory=6
   fi
+  if is_positive_integer "$docker_memory_gb"; then
+    local available_opensearch_memory_gb=$((docker_memory_gb - OPENSEARCH_DASHBOARDS_MEMORY_GB))
+    if [ "$available_opensearch_memory_gb" -lt 1 ]; then
+      available_opensearch_memory_gb=1
+    fi
+    if [ "$available_opensearch_memory_gb" -lt "$suggested_memory" ]; then
+      suggested_memory=$available_opensearch_memory_gb
+    fi
+  fi
 
   if [ -z "$OS_CPU_CORES" ] && ! $FORCE && is_interactive; then
     info "Docker 可用 CPU: ${docker_cpus:-未知}"
@@ -144,6 +178,7 @@ resolve_opensearch_resources() {
   fi
 
   if [ -z "$OS_MEMORY_GB" ] && ! $FORCE && is_interactive; then
+    info "Docker 可用内存: ${docker_memory_gb:-未知} GB（Dashboards 预留 ${OPENSEARCH_DASHBOARDS_MEMORY_GB}GB）"
     OS_MEMORY_GB="$(ask_with_default "OpenSearch 内存 GB" "$suggested_memory")"
   fi
 
@@ -159,7 +194,39 @@ resolve_docker_registry_prefix() {
     DOCKER_REGISTRY_PREFIX="$(ask_with_default "Docker Hub 镜像前缀/镜像站（留空使用默认 Docker Hub）" "")"
   fi
 
+  DOCKER_REGISTRY_PREFIX="$(normalize_registry_prefix "$DOCKER_REGISTRY_PREFIX")"
   export BIBLE_DOCKER_REGISTRY_PREFIX="$DOCKER_REGISTRY_PREFIX"
+}
+
+resolve_redis_commander_config() {
+  local commander_image="${REDIS_COMMANDER_IMAGE:-}"
+
+  if [ "$REDIS_COMMANDER_ENABLED" = "true" ]; then
+    :
+  elif [ -z "$REDIS_COMMANDER_ENABLED" ] && [ -n "$commander_image" ]; then
+    REDIS_COMMANDER_ENABLED="true"
+  elif [ -z "$REDIS_COMMANDER_ENABLED" ] && ! $FORCE && is_interactive; then
+    if confirm "启用 Redis Commander 可选 Web UI？需要提供可访问的完整镜像名"; then
+      commander_image="$(ask_with_default "Redis Commander 完整镜像名" "")"
+      [ -n "$commander_image" ] || die "启用 Redis Commander 时必须提供完整镜像名"
+      REDIS_COMMANDER_ENABLED="true"
+    else
+      REDIS_COMMANDER_ENABLED="false"
+    fi
+  else
+    REDIS_COMMANDER_ENABLED="false"
+  fi
+
+  REDIS_COMMANDER_ENABLED="${REDIS_COMMANDER_ENABLED:-false}"
+
+  if [ "$REDIS_COMMANDER_ENABLED" = "true" ] && [ -z "$commander_image" ]; then
+    die "启用 Redis Commander 时必须设置 REDIS_COMMANDER_IMAGE 为完整镜像名"
+  fi
+
+  export REDIS_COMMANDER_ENABLED
+  if [ -n "$commander_image" ]; then
+    export REDIS_COMMANDER_IMAGE="$commander_image"
+  fi
 }
 
 remove_hermes_bible_config() {
@@ -184,6 +251,27 @@ wait_for_url() {
     sleep "$interval"
   done
   return 1
+}
+
+redis_ping() {
+  local port=${1:-$REDIS_PORT}
+  if check_cmd redis-cli; then
+    redis-cli -p "$port" ping &>/dev/null
+    return $?
+  fi
+
+  check_cmd python3 || return 1
+  python3 - "$port" <<'PY' &>/dev/null
+import socket
+import sys
+
+port = int(sys.argv[1])
+with socket.create_connection(("127.0.0.1", port), timeout=3) as sock:
+    sock.sendall(b"*1\r\n$4\r\nPING\r\n")
+    response = sock.recv(16)
+if response != b"+PONG\r\n":
+    raise SystemExit(1)
+PY
 }
 
 # ── 帮助 ──────────────────────────────────────────────────────────────────────
@@ -222,6 +310,8 @@ ${BOLD}镜像源环境变量:${NC}
   BIBLE_DOCKER_REGISTRY_PREFIX  Docker Hub 镜像前缀/镜像站（例如 docker.m.daocloud.io/）
   OPENSEARCH_IMAGE_TAG          OpenSearch 镜像标签（默认 latest）
   REDIS_IMAGE_TAG               Redis 镜像标签（默认 7-alpine）
+  REDIS_COMMANDER_ENABLED       是否启动 Redis Commander（仅 true 启用；其它值跳过）
+  REDIS_COMMANDER_IMAGE         Redis Commander 完整镜像名（启用时必填）
 
 ${BOLD}OpenSearch 资源环境变量:${NC}
   BIBLE_OPENSEARCH_CPU_CORES     OpenSearch CPU 核数（默认 ${DEFAULT_OS_CPU_CORES}）
@@ -347,11 +437,11 @@ preflight_setup() {
 
   require_cmd uv "安装: curl -LsSf https://astral.sh/uv/install.sh | sh"
 
-  local need_docker=false need_go=false need_node=false need_opensearch=false
+  local need_docker=false need_go=false need_node=false need_opensearch=false need_redis=false
   for c in "${COMPONENTS[@]}"; do
     case "$c" in
       opensearch)       need_docker=true; need_opensearch=true ;;
-      redis)            need_docker=true ;;
+      redis)            need_docker=true; need_redis=true ;;
       cli)              need_go=true ;;
       oc)               need_node=true ;;
     esac
@@ -359,12 +449,18 @@ preflight_setup() {
 
   if $need_docker; then
     local docker_cpus=""
+    local docker_memory_gb=""
+    local docker_memory_mb=""
     # 优先检测 docker，docker 不可用时回退到 podman
     local container_cmd=""
     if check_cmd docker; then
       if docker info &>/dev/null; then
         container_cmd="docker"
         docker_cpus="$(docker info --format '{{.NCPU}}' 2>/dev/null || true)"
+        local docker_memory_bytes
+        docker_memory_bytes="$(docker info --format '{{.MemTotal}}' 2>/dev/null || true)"
+        docker_memory_gb="$(bytes_to_gb_floor "$docker_memory_bytes" || true)"
+        docker_memory_mb="$(bytes_to_mb_floor "$docker_memory_bytes" || true)"
       elif check_cmd colima; then
         # Docker CLI 已安装但 daemon 未运行，尝试通过 Colima 启动
         if colima status 2>/dev/null | grep -q "Running"; then
@@ -376,6 +472,10 @@ preflight_setup() {
         ok "Colima 已启动，docker daemon 就绪"
         container_cmd="colima"
         docker_cpus="$(docker info --format '{{.NCPU}}' 2>/dev/null || true)"
+        local docker_memory_bytes
+        docker_memory_bytes="$(docker info --format '{{.MemTotal}}' 2>/dev/null || true)"
+        docker_memory_gb="$(bytes_to_gb_floor "$docker_memory_bytes" || true)"
+        docker_memory_mb="$(bytes_to_mb_floor "$docker_memory_bytes" || true)"
       else
         die "Docker 未运行，请启动 Docker Desktop、dockerd，或安装 Colima: brew install colima"
       fi
@@ -418,11 +518,36 @@ preflight_setup() {
       die "未找到 Docker 或 Podman。请安装其中之一:\n  Docker:  https://docs.docker.com/get-docker/\n  Podman: https://podman.io/docs/installation"
     fi
     resolve_docker_registry_prefix
+    $need_redis && resolve_redis_commander_config
     if $need_opensearch; then
-      resolve_opensearch_resources "$docker_cpus"
+      resolve_opensearch_resources "$docker_cpus" "$docker_memory_gb"
       if is_positive_integer "$docker_cpus" && [ "$docker_cpus" -lt "$OS_CPU_CORES" ]; then
         die "Docker 可用 CPU 为 ${docker_cpus}，OpenSearch 请求 ${OS_CPU_CORES}。请调低 BIBLE_OPENSEARCH_CPU_CORES，或增加 Docker/Colima CPU。"
       fi
+      local required_memory_gb=$((OS_MEMORY_GB + OPENSEARCH_DASHBOARDS_MEMORY_GB))
+      if is_positive_integer "$docker_memory_gb" && [ "$docker_memory_gb" -lt "$required_memory_gb" ]; then
+        die "Docker 可用内存为 ${docker_memory_gb}GB，OpenSearch 请求 ${OS_MEMORY_GB}GB，Dashboards 还需 ${OPENSEARCH_DASHBOARDS_MEMORY_GB}GB。请调低 BIBLE_OPENSEARCH_MEMORY_GB，或增加 Docker/Colima 内存。"
+      fi
+    fi
+    local required_docker_memory_mb=0
+    if $need_opensearch; then
+      required_docker_memory_mb=$((required_docker_memory_mb + (OS_MEMORY_GB + OPENSEARCH_DASHBOARDS_MEMORY_GB) * 1024))
+    fi
+    for c in "${COMPONENTS[@]}"; do
+      if [ "$c" = "redis" ]; then
+        required_docker_memory_mb=$((required_docker_memory_mb + REDIS_MEMORY_MB))
+        if [ "$REDIS_COMMANDER_ENABLED" = "true" ]; then
+          required_docker_memory_mb=$((required_docker_memory_mb + REDIS_COMMANDER_MEMORY_MB))
+        fi
+        break
+      fi
+    done
+    if is_positive_integer "$docker_memory_mb" && [ "$docker_memory_mb" -lt "$required_docker_memory_mb" ]; then
+      local redis_memory_detail="Redis ${REDIS_MEMORY_MB}MB"
+      if [ "$REDIS_COMMANDER_ENABLED" = "true" ]; then
+        redis_memory_detail="${redis_memory_detail} + Commander ${REDIS_COMMANDER_MEMORY_MB}MB"
+      fi
+      die "Docker 可用内存为 ${docker_memory_mb}MB，当前 Docker 组件请求约 ${required_docker_memory_mb}MB（${redis_memory_detail}）。请减少组件/内存，或增加 Docker/Colima 内存。"
     fi
     info "容器运行时: ${container_cmd}"
   fi
@@ -483,22 +608,22 @@ setup_redis() {
   step "Redis + Celery Worker — 部署"
 
   if ! port_free "$REDIS_PORT"; then
-    if redis-cli -p "$REDIS_PORT" ping &>/dev/null; then
+    if redis_ping "$REDIS_PORT"; then
       ok "Redis 已在运行 (复用 localhost:${REDIS_PORT})"
       return 0
     fi
     die "端口 ${REDIS_PORT} 被占用且无法连接，请排查"
   fi
 
-  info "创建实例 '${INSTANCE_NAME}' (端口 ${REDIS_PORT}, 512MB) ..."
-  bash "$REDIS_DEPLOY" redis create "$INSTANCE_NAME" "$REDIS_PORT" 512 \
+  info "创建实例 '${INSTANCE_NAME}' (端口 ${REDIS_PORT}, ${REDIS_MEMORY_MB}MB) ..."
+  bash "$REDIS_DEPLOY" redis create "$INSTANCE_NAME" "$REDIS_PORT" "$REDIS_MEMORY_MB" \
     || die "实例创建失败"
 
   info "启动 Redis ..."
   bash "$REDIS_DEPLOY" redis start "$INSTANCE_NAME" || die "Redis 启动失败"
 
   sleep 2
-  if redis-cli -p "$REDIS_PORT" ping &>/dev/null; then
+  if redis_ping "$REDIS_PORT"; then
     ok "Redis 就绪 → redis://localhost:${REDIS_PORT}"
   else
     die "Redis 启动失败。日志: bash $REDIS_DEPLOY redis logs $INSTANCE_NAME"
@@ -802,7 +927,7 @@ os_running() {
 }
 
 redis_running() {
-  redis-cli -p "$REDIS_PORT" ping &>/dev/null 2>&1
+  redis_ping "$REDIS_PORT"
 }
 
 server_running() {

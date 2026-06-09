@@ -15,7 +15,11 @@ STUB
 cat > "$TMP_DIR/bin/docker" <<'STUB'
 #!/bin/sh
 if [ "${1:-}" = "info" ] && [ "${2:-}" = "--format" ]; then
-  echo "2"
+  case "${3:-}" in
+    "{{.NCPU}}") echo "2" ;;
+    "{{.MemTotal}}") echo "17179869184" ;;
+    *) echo "2" ;;
+  esac
   exit 0
 fi
 if [ "${1:-}" = "info" ]; then
@@ -61,6 +65,96 @@ if ! echo "$OUTPUT" | grep -q "Docker 可用 CPU.*2.*OpenSearch 请求.*4"; then
   exit 1
 fi
 
+cat > "$TMP_DIR/bin/docker" <<'STUB'
+#!/bin/sh
+if [ "${1:-}" = "info" ] && [ "${2:-}" = "--format" ]; then
+  case "${3:-}" in
+    "{{.NCPU}}") echo "8" ;;
+    "{{.MemTotal}}") echo "6442450944" ;;
+    *) echo "8" ;;
+  esac
+  exit 0
+fi
+if [ "${1:-}" = "info" ]; then
+  exit 0
+fi
+exit 0
+STUB
+chmod +x "$TMP_DIR/bin/docker"
+
+set +e
+OUTPUT="$(
+  PATH="$TMP_DIR/bin:$PATH" \
+  BIBLE_INSTANCE_NAME=test-memory-guard \
+  BIBLE_OPENSEARCH_CPU_CORES=2 \
+  BIBLE_OPENSEARCH_MEMORY_GB=6 \
+  /bin/bash "$ROOT_DIR/scripts/env-prepare.sh" setup --full opensearch --force 2>&1
+)"
+STATUS=$?
+set -e
+
+if [ "$STATUS" -eq 0 ]; then
+  echo "expected setup to fail when Docker memory cannot fit OpenSearch and Dashboards" >&2
+  echo "$OUTPUT" >&2
+  exit 1
+fi
+
+if echo "$OUTPUT" | grep -q "deploy script should not be invoked"; then
+  echo "expected memory failure during preflight, before invoking deploy script" >&2
+  echo "$OUTPUT" >&2
+  exit 1
+fi
+
+if ! echo "$OUTPUT" | grep -q "Docker 可用内存.*6GB.*OpenSearch 请求.*6GB.*Dashboards.*2GB"; then
+  echo "expected error to report available memory and requested OpenSearch/Dashboards memory" >&2
+  echo "$OUTPUT" >&2
+  exit 1
+fi
+
+cat > "$TMP_DIR/bin/docker" <<'STUB'
+#!/bin/sh
+if [ "${1:-}" = "info" ] && [ "${2:-}" = "--format" ]; then
+  case "${3:-}" in
+    "{{.NCPU}}") echo "8" ;;
+    "{{.MemTotal}}") echo "268435456" ;;
+    *) echo "8" ;;
+  esac
+  exit 0
+fi
+if [ "${1:-}" = "info" ]; then
+  exit 0
+fi
+exit 0
+STUB
+chmod +x "$TMP_DIR/bin/docker"
+
+set +e
+OUTPUT="$(
+  PATH="$TMP_DIR/bin:$PATH" \
+  BIBLE_INSTANCE_NAME=test-redis-memory-guard \
+  /bin/bash "$ROOT_DIR/scripts/env-prepare.sh" setup --full redis --force 2>&1
+)"
+STATUS=$?
+set -e
+
+if [ "$STATUS" -eq 0 ]; then
+  echo "expected setup to fail when Docker memory cannot fit Redis" >&2
+  echo "$OUTPUT" >&2
+  exit 1
+fi
+
+if echo "$OUTPUT" | grep -q "deploy script should not be invoked"; then
+  echo "expected Redis memory failure during preflight, before invoking deploy script" >&2
+  echo "$OUTPUT" >&2
+  exit 1
+fi
+
+if ! echo "$OUTPUT" | grep -q "Docker 可用内存.*256MB.*组件请求约 512MB.*Redis 512MB"; then
+  echo "expected error to report Redis memory requirement" >&2
+  echo "$OUTPUT" >&2
+  exit 1
+fi
+
 rm -rf "$TMP_DIR/bin"
 mkdir -p "$TMP_DIR/bin"
 
@@ -72,7 +166,11 @@ STUB
 cat > "$TMP_DIR/bin/docker" <<'STUB'
 #!/bin/sh
 if [ "${1:-}" = "info" ] && [ "${2:-}" = "--format" ]; then
-  echo "8"
+  case "${3:-}" in
+    "{{.NCPU}}") echo "8" ;;
+    "{{.MemTotal}}") echo "17179869184" ;;
+    *) echo "8" ;;
+  esac
   exit 0
 fi
 if [ "${1:-}" = "info" ]; then
@@ -130,7 +228,11 @@ STUB
 cat > "$TMP_DIR/bin/docker" <<'STUB'
 #!/bin/sh
 if [ "${1:-}" = "info" ] && [ "${2:-}" = "--format" ]; then
-  echo "2"
+  case "${3:-}" in
+    "{{.NCPU}}") echo "2" ;;
+    "{{.MemTotal}}") echo "6442450944" ;;
+    *) echo "2" ;;
+  esac
   exit 0
 fi
 if [ "${1:-}" = "info" ]; then
@@ -240,14 +342,14 @@ if proc.returncode != 0:
     raise SystemExit(proc.returncode)
 PY
 
-if ! grep -q "opensearch_deploy/deploy.sh create test-interactive 9800 5699 2 6" "$CALL_LOG"; then
+if ! grep -q "opensearch_deploy/deploy.sh create test-interactive 9800 5699 2 4" "$CALL_LOG"; then
   echo "expected interactive defaults to pass detected-safe CPU and memory to OpenSearch deploy" >&2
   cat "$OUTPUT_LOG" >&2
   cat "$CALL_LOG" >&2
   exit 1
 fi
 
-if ! grep -q "registry=docker.m.daocloud.io/ command=.*opensearch_deploy/deploy.sh create test-interactive" "$CALL_LOG"; then
+if ! grep -q "registry=docker.m.daocloud.io command=.*opensearch_deploy/deploy.sh create test-interactive" "$CALL_LOG"; then
   echo "expected interactive Docker registry prefix to be exported to OpenSearch deploy" >&2
   cat "$OUTPUT_LOG" >&2
   cat "$CALL_LOG" >&2

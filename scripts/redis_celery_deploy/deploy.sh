@@ -37,9 +37,18 @@ PROJECT_ROOT="${BIBLE_PROJECT_ROOT:-$(cd "$SCRIPT_DIR/../.." && pwd)}"
 normalize_registry_prefix() {
     local prefix="${BIBLE_DOCKER_REGISTRY_PREFIX:-}"
     if [ -n "$prefix" ]; then
+        prefix="${prefix#http://}"
+        prefix="${prefix#https://}"
         prefix="${prefix%/}/"
     fi
     echo "$prefix"
+}
+
+normalize_docker_image() {
+    local image=$1
+    image="${image#http://}"
+    image="${image#https://}"
+    echo "$image"
 }
 
 build_docker_image() {
@@ -48,7 +57,7 @@ build_docker_image() {
     local tag=$3
 
     if [ -n "$override" ]; then
-        echo "$override"
+        normalize_docker_image "$override"
     else
         echo "$(normalize_registry_prefix)${repository}:${tag}"
     fi
@@ -57,6 +66,11 @@ build_docker_image() {
 configure_docker_images() {
     export REDIS_IMAGE
     export REDIS_COMMANDER_IMAGE
+    export REDIS_COMMANDER_ENABLED="${REDIS_COMMANDER_ENABLED:-true}"
+
+    if [ "$REDIS_COMMANDER_ENABLED" != "true" ]; then
+        REDIS_COMMANDER_ENABLED=false
+    fi
 
     REDIS_IMAGE="$(build_docker_image \
         "${REDIS_IMAGE:-}" \
@@ -167,6 +181,7 @@ ${YELLOW}环境变量：${NC}
     BIBLE_DOCKER_REGISTRY_PREFIX  Docker Hub 镜像前缀/镜像站（例如 docker.m.daocloud.io/）
     REDIS_IMAGE / REDIS_COMMANDER_IMAGE  完整镜像名覆盖
     REDIS_IMAGE_TAG / REDIS_COMMANDER_IMAGE_TAG  镜像标签覆盖
+    REDIS_COMMANDER_ENABLED  是否启动 Redis Commander（仅 true 启用，其它值跳过；默认 true）
 
 ${YELLOW}快速开始：${NC}
     # 1. 创建 Redis 实例
@@ -453,6 +468,7 @@ redis_start() {
     require_instance "$instance_name"
     configure_docker_images
     repair_instance_config "$instance_name"
+    load_instance_info "$instance_name"
     local instance_dir
     instance_dir="$(instance_dir_of "$instance_name")"
 
@@ -467,13 +483,30 @@ redis_start() {
         docker-compose pull redis
     fi
 
-    docker-compose up -d
+    docker-compose up -d redis
+
+    local commander_started=false
+    if [ "${REDIS_COMMANDER_ENABLED:-true}" = "false" ]; then
+        log_warn "Redis Commander 已按配置跳过"
+    elif [ "${COMMANDER_PORT:-0}" -gt 0 ] 2>/dev/null; then
+        if docker-compose up -d redis-commander; then
+            commander_started=true
+        else
+            log_warn "Redis Commander 启动失败，已跳过。Redis 实例仍可正常使用。"
+            log_warn "如需 Commander，请设置 REDIS_COMMANDER_IMAGE 为可访问的完整镜像名后重试。"
+        fi
+    else
+        log_warn "Redis Commander 未配置，跳过启动"
+    fi
 
     log_info "${GREEN}Redis 已启动${NC}"
     log_info ""
-    load_instance_info "$instance_name"
     log_info "  连接地址: redis://localhost:${REDIS_PORT}"
-    log_info "  Commander: http://localhost:${COMMANDER_PORT}  (admin/admin)"
+    if [ "$commander_started" = true ]; then
+        log_info "  Commander: http://localhost:${COMMANDER_PORT}  (admin/admin)"
+    else
+        log_info "  Commander: 跳过"
+    fi
     log_info ""
     log_info "验证连接: redis-cli -p ${REDIS_PORT} ping"
 }
