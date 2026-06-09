@@ -219,3 +219,6 @@ __marimo__/
 
 # Local notes and drafts
 docs/meditation/
+
+#build artifacts
+release/

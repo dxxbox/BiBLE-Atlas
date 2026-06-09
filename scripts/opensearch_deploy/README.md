@@ -119,6 +119,23 @@ http://localhost:5602
 
 > 注：使用 `latest` 标签会自动获取最新稳定版本（目前为 3.x 系列）
 
+如所在地区访问 Docker Hub 不稳定，可通过环境变量切换镜像站：
+
+```bash
+# 使用 Docker Hub 镜像站拉取
+BIBLE_DOCKER_REGISTRY_PREFIX=docker.m.daocloud.io/ ./deploy.sh pull
+
+# 使用镜像站并固定 OpenSearch 版本
+BIBLE_DOCKER_REGISTRY_PREFIX=docker.m.daocloud.io/ \
+OPENSEARCH_IMAGE_TAG=3.0.0 \
+./deploy.sh pull
+
+# 完整覆盖镜像名（适合私有仓库）
+OPENSEARCH_IMAGE=registry.example.com/opensearch:3.0.0 \
+OPENSEARCH_DASHBOARDS_IMAGE=registry.example.com/opensearch-dashboards:3.0.0 \
+./deploy.sh pull
+```
+
 ### 镜像管理命令
 
 ```bash
@@ -128,6 +145,9 @@ docker images | grep opensearch
 # 手动拉取最新镜像
 docker pull opensearchproject/opensearch:latest
 docker pull opensearchproject/opensearch-dashboards:latest
+
+# 通过镜像站拉取
+BIBLE_DOCKER_REGISTRY_PREFIX=docker.m.daocloud.io/ ./deploy.sh pull
 
 # 或拉取特定版本（如果需要）
 # docker pull opensearchproject/opensearch:3.0.0
@@ -244,6 +264,30 @@ export OPENSEARCH_BASE_DIR=/data/opensearch
 # 或者一次性指定：
 OPENSEARCH_BASE_DIR=/data/opensearch ./deploy.sh create user1 9201 5602 6 20
 ```
+
+### 修改 Docker 镜像来源
+
+```bash
+# 为所有默认 Docker Hub 镜像添加镜像站前缀
+export BIBLE_DOCKER_REGISTRY_PREFIX=docker.m.daocloud.io/
+
+# 可选：固定版本
+export OPENSEARCH_IMAGE_TAG=3.0.0
+export OPENSEARCH_DASHBOARDS_IMAGE_TAG=3.0.0
+
+./deploy.sh pull
+./deploy.sh start user1
+```
+
+可用变量：
+
+| 变量 | 说明 | 默认值 |
+|------|------|--------|
+| `BIBLE_DOCKER_REGISTRY_PREFIX` | Docker Hub 镜像前缀/镜像站 | 空 |
+| `OPENSEARCH_IMAGE` | OpenSearch 完整镜像名覆盖 | `opensearchproject/opensearch:<tag>` |
+| `OPENSEARCH_DASHBOARDS_IMAGE` | Dashboards 完整镜像名覆盖 | `opensearchproject/opensearch-dashboards:<tag>` |
+| `OPENSEARCH_IMAGE_TAG` | OpenSearch 标签 | `latest` |
+| `OPENSEARCH_DASHBOARDS_IMAGE_TAG` | Dashboards 标签 | `OPENSEARCH_IMAGE_TAG` 或 `latest` |
 
 ### 修改实例配置
 

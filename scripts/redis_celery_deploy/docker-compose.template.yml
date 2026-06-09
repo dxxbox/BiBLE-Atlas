@@ -1,6 +1,6 @@
 services:
   redis:
-    image: redis:7-alpine
+    image: ${REDIS_IMAGE:-redis:7-alpine}
     container_name: redis-${INSTANCE_NAME}
     hostname: redis-${INSTANCE_NAME}
     command: redis-server /etc/redis/redis.conf
@@ -27,7 +27,7 @@ services:
     restart: unless-stopped
 
   redis-commander:
-    image: rediscommander/redis-commander:latest
+    image: ${REDIS_COMMANDER_IMAGE:-rediscommander/redis-commander:latest}
     container_name: redis-commander-${INSTANCE_NAME}
     environment:
       - REDIS_HOSTS=local:redis-${INSTANCE_NAME}:6379

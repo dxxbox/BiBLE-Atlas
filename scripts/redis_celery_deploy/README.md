@@ -139,11 +139,29 @@ celery:
 |------|------|--------|
 | `REDIS_BASE_DIR` | Redis 实例数据根目录 | `脚本目录/redis` |
 | `BIBLE_PROJECT_ROOT` | 项目根目录（用于 Worker） | `脚本向上两级` |
+| `BIBLE_DOCKER_REGISTRY_PREFIX` | Docker Hub 镜像前缀/镜像站 | 空 |
+| `REDIS_IMAGE` | Redis 完整镜像名覆盖 | `redis:<tag>` |
+| `REDIS_COMMANDER_IMAGE` | Redis Commander 完整镜像名覆盖 | `rediscommander/redis-commander:<tag>` |
+| `REDIS_IMAGE_TAG` | Redis 镜像标签 | `7-alpine` |
+| `REDIS_COMMANDER_IMAGE_TAG` | Redis Commander 镜像标签 | `latest` |
 
 示例：
 
 ```bash
 REDIS_BASE_DIR=/data/redis ./deploy.sh redis create myredis 6379
+
+# 使用 Docker Hub 镜像站启动（适合网络受限地区）
+BIBLE_DOCKER_REGISTRY_PREFIX=docker.m.daocloud.io/ ./deploy.sh redis start myredis
+
+# 固定 Redis 版本
+BIBLE_DOCKER_REGISTRY_PREFIX=docker.m.daocloud.io/ \
+REDIS_IMAGE_TAG=7.2-alpine \
+./deploy.sh redis start myredis
+
+# 使用私有仓库完整镜像名
+REDIS_IMAGE=registry.example.com/redis:7.2-alpine \
+REDIS_COMMANDER_IMAGE=registry.example.com/redis-commander:latest \
+./deploy.sh redis start myredis
 ```
 
 ## 🔍 故障排查

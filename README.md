@@ -100,7 +100,7 @@ All imports are asynchronous. The API returns `202` immediately. Clients poll ta
 | [uv](https://docs.astral.sh/uv/) | latest | Package & venv management |
 | Go | 1.20+ | CLI (optional) |
 | Node.js | 20+ | VS Code / OC plugin (optional) |
-| Docker | 20+ | OpenSearch & Redis |
+| Docker or Podman | 20+ / 4+ | OpenSearch & Redis (optional, not needed for Test Mode) |
 
 ### 1. Clone & Install / 克隆并安装
 
@@ -112,13 +112,41 @@ source .venv/bin/activate
 
 ### 2. Start Infrastructure / 启动基础设施
 
-```bash
-# OpenSearch
-cd scripts/opensearch_deploy && ./quickstart.sh && cd ../..
+Use `env-prepare.sh` as the entry point — it runs pre-flight checks (Docker availability, required CLIs, Python venv) before touching any service.
 
-# Redis (for Celery)
-cd scripts/redis_celery_deploy && ./quickstart.sh && cd ../..
+使用 `env-prepare.sh` 作为入口——它会先执行前置检查（Docker 可用性、所需 CLI、Python 虚拟环境），再操作服务。
+
+```bash
+# Test Mode (lightweight, no Docker needed / 轻量模式，无需 Docker)
+./scripts/env-prepare.sh setup
+
+# Full backend (OpenSearch + Redis + Celery, requires Docker running / 完整后端，需要 Docker 运行)
+./scripts/env-prepare.sh setup --full
 ```
+
+In interactive full-backend mode, `env-prepare.sh` asks for a Docker registry mirror and OpenSearch CPU/memory, using Docker-aware defaults. For automation, set the same values through environment variables:
+
+完整后端交互模式会询问 Docker 镜像站和 OpenSearch CPU/内存，并根据 Docker 可用资源给出默认值。自动化场景可通过环境变量指定：
+
+```bash
+BIBLE_DOCKER_REGISTRY_PREFIX=docker.m.daocloud.io/ \
+BIBLE_OPENSEARCH_CPU_CORES=2 \
+BIBLE_OPENSEARCH_MEMORY_GB=6 \
+./scripts/env-prepare.sh setup --full opensearch
+```
+
+Teardown is conservative by default: it stops services and removes local build artifacts, but preserves user-level config/plugin state and repo runtime data. Use explicit purge flags when you really want to remove those:
+
+默认清理偏保守：停止服务并删除本地构建产物，但保留用户级配置/插件状态和项目运行时数据。如需删除这些内容，需要显式加 purge 参数：
+
+```bash
+./scripts/env-prepare.sh teardown --force
+./scripts/env-prepare.sh teardown --force --purge-workspace --purge-config --uninstall-plugins
+```
+
+For manual control, the underlying deploy scripts are at `scripts/opensearch_deploy/deploy.sh` and `scripts/redis_celery_deploy/deploy.sh` — but note they do **not** perform pre-flight checks.
+
+如需手动控制，底层部署脚本位于 `scripts/opensearch_deploy/deploy.sh` 和 `scripts/redis_celery_deploy/deploy.sh`——但注意它们**不**做前置检查。
 
 ### 3. Configure & Run / 配置并运行
 

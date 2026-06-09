@@ -33,6 +33,40 @@ TEMPLATE_DIR="$SCRIPT_DIR"
 # 基础数据目录（使用脚本所在目录下的 opensearch 子目录）
 BASE_DATA_DIR="${OPENSEARCH_BASE_DIR:-$SCRIPT_DIR/opensearch}"
 
+normalize_registry_prefix() {
+    local prefix="${BIBLE_DOCKER_REGISTRY_PREFIX:-}"
+    if [ -n "$prefix" ]; then
+        prefix="${prefix%/}/"
+    fi
+    echo "$prefix"
+}
+
+build_docker_image() {
+    local override=$1
+    local repository=$2
+    local tag=$3
+
+    if [ -n "$override" ]; then
+        echo "$override"
+    else
+        echo "$(normalize_registry_prefix)${repository}:${tag}"
+    fi
+}
+
+configure_docker_images() {
+    export OPENSEARCH_IMAGE
+    export OPENSEARCH_DASHBOARDS_IMAGE
+
+    OPENSEARCH_IMAGE="$(build_docker_image \
+        "${OPENSEARCH_IMAGE:-}" \
+        "opensearchproject/opensearch" \
+        "${OPENSEARCH_IMAGE_TAG:-latest}")"
+    OPENSEARCH_DASHBOARDS_IMAGE="$(build_docker_image \
+        "${OPENSEARCH_DASHBOARDS_IMAGE:-}" \
+        "opensearchproject/opensearch-dashboards" \
+        "${OPENSEARCH_DASHBOARDS_IMAGE_TAG:-${OPENSEARCH_IMAGE_TAG:-latest}}")"
+}
+
 # 日志函数
 log_info() {
     echo -e "${GREEN}[INFO]${NC} $1"
@@ -118,10 +152,16 @@ ${YELLOW}端口规划建议：${NC}
 
 ${YELLOW}环境变量：${NC}
     OPENSEARCH_BASE_DIR: 数据存储基础目录（默认: 脚本目录/opensearch）
+    BIBLE_DOCKER_REGISTRY_PREFIX: Docker Hub 镜像前缀/镜像站（例如 docker.m.daocloud.io/）
+    OPENSEARCH_IMAGE / OPENSEARCH_DASHBOARDS_IMAGE: 完整镜像名覆盖
+    OPENSEARCH_IMAGE_TAG / OPENSEARCH_DASHBOARDS_IMAGE_TAG: 镜像标签覆盖
 
 ${YELLOW}示例：${NC}
     # 预先拉取镜像（可选，推荐首次使用前执行）
     $0 pull
+
+    # 使用 Docker Hub 镜像站（适合网络受限地区）
+    BIBLE_DOCKER_REGISTRY_PREFIX=docker.m.daocloud.io/ $0 pull
 
     # 创建用户1的实例（中型配置）
     $0 create user1 9201 5602 6 20
@@ -363,6 +403,7 @@ EOF
 # 拉取镜像
 pull_images() {
     local user_name=$1
+    configure_docker_images
 
     if [ -n "$user_name" ]; then
         # 拉取指定用户实例的镜像
@@ -374,13 +415,16 @@ pull_images() {
         fi
 
         log_step "拉取用户 ${user_name} 的 Docker 镜像..."
+        repair_instance_config "$user_name"
         cd "$user_dir"
         docker-compose pull
     else
         # 拉取默认镜像
-        log_step "拉取 OpenSearch Docker 镜像（最新版本）..."
-        docker pull opensearchproject/opensearch:latest
-        docker pull opensearchproject/opensearch-dashboards:latest
+        log_step "拉取 OpenSearch Docker 镜像..."
+        log_info "OpenSearch 镜像: $OPENSEARCH_IMAGE"
+        log_info "Dashboards 镜像: $OPENSEARCH_DASHBOARDS_IMAGE"
+        docker pull "$OPENSEARCH_IMAGE"
+        docker pull "$OPENSEARCH_DASHBOARDS_IMAGE"
     fi
 
     log_info "${GREEN}镜像拉取完成！${NC}"
@@ -397,19 +441,20 @@ start_instance() {
     fi
 
     log_step "启动用户 ${user_name} 的 OpenSearch 实例..."
+    configure_docker_images
     repair_instance_config "$user_name"
     prepare_volume_permissions "$user_dir"
 
     cd "$user_dir"
 
     # 检查镜像是否存在，如果不存在则拉取
-    if ! docker images | grep -q "opensearchproject/opensearch"; then
-        log_info "本地未找到 OpenSearch 镜像，开始拉取..."
+    if ! docker images --format "{{.Repository}}:{{.Tag}}" | grep -Fxq "$OPENSEARCH_IMAGE"; then
+        log_info "本地未找到 OpenSearch 镜像 ${OPENSEARCH_IMAGE}，开始拉取..."
         docker-compose pull opensearch
     fi
 
-    if ! docker images | grep -q "opensearchproject/opensearch-dashboards"; then
-        log_info "本地未找到 OpenSearch Dashboards 镜像，开始拉取..."
+    if ! docker images --format "{{.Repository}}:{{.Tag}}" | grep -Fxq "$OPENSEARCH_DASHBOARDS_IMAGE"; then
+        log_info "本地未找到 OpenSearch Dashboards 镜像 ${OPENSEARCH_DASHBOARDS_IMAGE}，开始拉取..."
         docker-compose pull opensearch-dashboards
     fi
 
@@ -433,6 +478,18 @@ repair_instance_config() {
     local user_dir="$BASE_DATA_DIR/$user_name"
     local compose_file="$user_dir/docker-compose.yml"
     local info_file="$user_dir/instance.info"
+
+    if [ -f "$compose_file" ] && grep -Eq "image: opensearchproject/opensearch(:latest)?$|image: opensearchproject/opensearch-dashboards(:latest)?$" "$compose_file"; then
+        log_warn "检测到旧版固定镜像配置，自动改为可通过环境变量覆盖: $compose_file"
+        local tmp_file="${compose_file}.tmp.$$"
+        sed \
+            -e 's|^\([[:space:]]*image: \)opensearchproject/opensearch$|\1${OPENSEARCH_IMAGE:-opensearchproject/opensearch:latest}|g' \
+            -e 's|image: opensearchproject/opensearch:latest|image: ${OPENSEARCH_IMAGE:-opensearchproject/opensearch:latest}|g' \
+            -e 's|^\([[:space:]]*image: \)opensearchproject/opensearch-dashboards$|\1${OPENSEARCH_DASHBOARDS_IMAGE:-opensearchproject/opensearch-dashboards:latest}|g' \
+            -e 's|image: opensearchproject/opensearch-dashboards:latest|image: ${OPENSEARCH_DASHBOARDS_IMAGE:-opensearchproject/opensearch-dashboards:latest}|g' \
+            "$compose_file" > "$tmp_file"
+        mv "$tmp_file" "$compose_file"
+    fi
 
     if [ -f "$compose_file" ] && grep -q "knn.algo_param.index_thread_qty=0" "$compose_file"; then
         log_warn "检测到非法 k-NN 线程配置，自动修复为 1: $compose_file"

@@ -34,6 +34,40 @@ BASE_DATA_DIR="${REDIS_BASE_DIR:-$SCRIPT_DIR/redis}"
 # 项目根目录（脚本位于 scripts/redis_celery_deploy/，向上两级）
 PROJECT_ROOT="${BIBLE_PROJECT_ROOT:-$(cd "$SCRIPT_DIR/../.." && pwd)}"
 
+normalize_registry_prefix() {
+    local prefix="${BIBLE_DOCKER_REGISTRY_PREFIX:-}"
+    if [ -n "$prefix" ]; then
+        prefix="${prefix%/}/"
+    fi
+    echo "$prefix"
+}
+
+build_docker_image() {
+    local override=$1
+    local repository=$2
+    local tag=$3
+
+    if [ -n "$override" ]; then
+        echo "$override"
+    else
+        echo "$(normalize_registry_prefix)${repository}:${tag}"
+    fi
+}
+
+configure_docker_images() {
+    export REDIS_IMAGE
+    export REDIS_COMMANDER_IMAGE
+
+    REDIS_IMAGE="$(build_docker_image \
+        "${REDIS_IMAGE:-}" \
+        "redis" \
+        "${REDIS_IMAGE_TAG:-7-alpine}")"
+    REDIS_COMMANDER_IMAGE="$(build_docker_image \
+        "${REDIS_COMMANDER_IMAGE:-}" \
+        "rediscommander/redis-commander" \
+        "${REDIS_COMMANDER_IMAGE_TAG:-latest}")"
+}
+
 # ── 日志函数 ──────────────────────────────────────────────────────────────────
 log_info()  { echo -e "${GREEN}[INFO]${NC} $1"; }
 log_warn()  { echo -e "${YELLOW}[WARN]${NC} $1"; }
@@ -130,6 +164,9 @@ ${YELLOW}全局命令：${NC}
 ${YELLOW}环境变量：${NC}
     REDIS_BASE_DIR       Redis 实例数据根目录（默认: 脚本目录/redis）
     BIBLE_PROJECT_ROOT   项目根目录（默认: 脚本向上两级）
+    BIBLE_DOCKER_REGISTRY_PREFIX  Docker Hub 镜像前缀/镜像站（例如 docker.m.daocloud.io/）
+    REDIS_IMAGE / REDIS_COMMANDER_IMAGE  完整镜像名覆盖
+    REDIS_IMAGE_TAG / REDIS_COMMANDER_IMAGE_TAG  镜像标签覆盖
 
 ${YELLOW}快速开始：${NC}
     # 1. 创建 Redis 实例
@@ -137,6 +174,9 @@ ${YELLOW}快速开始：${NC}
 
     # 2. 启动 Redis
     $0 redis start myredis
+
+    # 使用 Docker Hub 镜像站启动（适合网络受限地区）
+    BIBLE_DOCKER_REGISTRY_PREFIX=docker.m.daocloud.io/ $0 redis start myredis
 
     # 3. 启动 Celery Worker
     $0 worker start myredis
@@ -167,6 +207,22 @@ require_instance() {
     if [ ! -d "$instance_dir" ] || [ ! -f "$instance_dir/instance.info" ]; then
         log_error "Redis 实例 '${instance_name}' 不存在，请先执行: $0 redis create $instance_name <端口>"
         exit 1
+    fi
+}
+
+repair_instance_config() {
+    local instance_name=$1
+    local instance_dir="$BASE_DATA_DIR/$instance_name"
+    local compose_file="$instance_dir/docker-compose.yml"
+
+    if [ -f "$compose_file" ] && grep -Eq "image: redis:7-alpine$|image: rediscommander/redis-commander:latest$" "$compose_file"; then
+        log_warn "检测到旧版固定镜像配置，自动改为可通过环境变量覆盖: $compose_file"
+        local tmp_file="${compose_file}.tmp.$$"
+        sed \
+            -e 's|image: redis:7-alpine|image: ${REDIS_IMAGE:-redis:7-alpine}|g' \
+            -e 's|image: rediscommander/redis-commander:latest|image: ${REDIS_COMMANDER_IMAGE:-rediscommander/redis-commander:latest}|g' \
+            "$compose_file" > "$tmp_file"
+        mv "$tmp_file" "$compose_file"
     fi
 }
 
@@ -395,6 +451,8 @@ EOF
 redis_start() {
     local instance_name=$1
     require_instance "$instance_name"
+    configure_docker_images
+    repair_instance_config "$instance_name"
     local instance_dir
     instance_dir="$(instance_dir_of "$instance_name")"
 
@@ -404,8 +462,8 @@ redis_start() {
 
     # docker images outputs REPOSITORY and TAG in separate columns; use --format
     # to get "repo:tag" strings so the grep works correctly.
-    if ! docker images --format "{{.Repository}}:{{.Tag}}" | grep -q "redis:7"; then
-        log_info "本地未找到 redis:7 镜像，开始拉取..."
+    if ! docker images --format "{{.Repository}}:{{.Tag}}" | grep -Fxq "$REDIS_IMAGE"; then
+        log_info "本地未找到 Redis 镜像 ${REDIS_IMAGE}，开始拉取..."
         docker-compose pull redis
     fi
 

@@ -2,7 +2,7 @@ version: '3.8'
 
 services:
   opensearch:
-    image: opensearchproject/opensearch:latest
+    image: ${OPENSEARCH_IMAGE:-opensearchproject/opensearch:latest}
     container_name: opensearch-${USER_NAME}
     hostname: opensearch-${USER_NAME}
     # rootless Podman 会把宿主用户拥有的 bind mount 映射成容器内 root:root。
@@ -103,7 +103,7 @@ services:
     restart: unless-stopped
 
   opensearch-dashboards:
-    image: opensearchproject/opensearch-dashboards:latest
+    image: ${OPENSEARCH_DASHBOARDS_IMAGE:-opensearchproject/opensearch-dashboards:latest}
     container_name: opensearch-dashboards-${USER_NAME}
     ports:
       - "${DASHBOARD_PORT}:5601"
