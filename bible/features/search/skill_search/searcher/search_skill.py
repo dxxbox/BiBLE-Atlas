@@ -58,6 +58,12 @@ from bible.infrastructure.vector.vector_tool import VectorTool
 logger = get_logger(__name__)
 
 _VECTOR_TYPES = frozenset({"vector", "hybrid"})
+_SEARCH_RESULT_FIELDS = ("doc_id", "name", "description")
+
+
+def _compact_search_result(item: dict[str, Any]) -> dict[str, Any]:
+    """Return only the fields intended for SKILL search result display."""
+    return {field: item[field] for field in _SEARCH_RESULT_FIELDS if field in item}
 
 
 def _parse_field_boost(spec: str) -> dict[str, Any]:
@@ -342,7 +348,10 @@ class SkillSearcher:
             ) from exc
 
         # ── Step 4: map hits ──────────────────────────────────────────────
-        items = _map_hits_fn(raw.get("hits", []), response_fields)
+        items = [
+            _compact_search_result(item)
+            for item in _map_hits_fn(raw.get("hits", []), response_fields)
+        ]
         logger.info(
             "SKILL searcher mapped results index=%s total=%s raw_hits=%d items=%d",
             kb_index,

@@ -359,11 +359,11 @@ class TestReturnStructure:
 
 
 class TestMapHits:
-    def test_score_from_underscore_score(self) -> None:
+    def test_search_results_do_not_return_score(self) -> None:
         srch, _, _, _ = make_searcher()
         r = _search(srch)
-        assert r["items"][0]["score"] == pytest.approx(0.91)
-        assert r["items"][1]["score"] == pytest.approx(0.71)
+        assert "score" not in r["items"][0]
+        assert "score" not in r["items"][1]
 
     def test_chunk_id_excluded(self) -> None:
         srch, _, _, _ = make_searcher()
@@ -387,18 +387,17 @@ class TestMapHits:
         r = _search(srch)
         assert r["items"][0]["description"] == "Clean stale k8s logs safely."
 
-    def test_body_in_result(self) -> None:
+    def test_body_and_content_not_in_result(self) -> None:
         srch, _, _, _ = make_searcher()
         r = _search(srch)
-        assert r["items"][0]["body"] == "## Usage\nRun the cleaner script."
+        assert "body" not in r["items"][0]
+        assert "content" not in r["items"][0]
 
-    def test_related_storage_paths_flattened(self) -> None:
-        """metadata.related_storage_paths → top-level key 'related_storage_paths'."""
+    def test_related_storage_paths_not_in_search_result(self) -> None:
         srch, _, _, _ = make_searcher()
         r = _search(srch)
         item0 = r["items"][0]
-        assert "related_storage_paths" in item0
-        assert item0["related_storage_paths"] == ["/mnt/skill/2026/05/demo.png"]
+        assert "related_storage_paths" not in item0
 
     def test_missing_related_storage_paths_skipped(self) -> None:
         """Hit with empty metadata dict must not raise."""
@@ -407,7 +406,7 @@ class TestMapHits:
         item1 = r["items"][1]
         assert "related_storage_paths" not in item1
 
-    def test_related_storage_paths_empty_list_included(self) -> None:
+    def test_related_storage_paths_empty_list_not_included(self) -> None:
         hits = {
             "total": 1,
             "hits": [
@@ -424,26 +423,26 @@ class TestMapHits:
         db = FakeDBWriter(hits=hits)
         srch, _, _, _ = make_searcher(db_writer=db)
         r = _search(srch)
-        assert "related_storage_paths" in r["items"][0]
-        assert r["items"][0]["related_storage_paths"] == []
+        assert "related_storage_paths" not in r["items"][0]
 
-    def test_response_fields_filter_applied(self) -> None:
+    def test_response_fields_are_compacted_for_search_results(self) -> None:
         cmp = FakeCompiler(response_fields=["doc_id", "name", "score"])
         srch, _, _, _ = make_searcher(compiler=cmp)
         r = _search(srch)
-        assert set(r["items"][0].keys()) == {"doc_id", "name", "score"}
+        assert set(r["items"][0].keys()) == {"doc_id", "name"}
 
-    def test_empty_response_fields_returns_all_source_fields(self) -> None:
+    def test_empty_response_fields_still_returns_compact_search_result(self) -> None:
         cmp = FakeCompiler(response_fields=[])
         srch, _, _, _ = make_searcher(compiler=cmp)
         r = _search(srch)
         item = r["items"][0]
         assert "name" in item
         assert "description" in item
-        assert "body" in item
+        assert "body" not in item
+        assert "content" not in item
         assert "chunk_id" not in item
         assert "took_ms" not in item
-        assert "score" in item
+        assert "score" not in item
 
     def test_metadata_not_dict_does_not_raise(self) -> None:
         hits = {

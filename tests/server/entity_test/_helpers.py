@@ -335,7 +335,7 @@ def skill_zip_bytes(skill_name: str, skills_md_content: str) -> bytes:
     """Return the bytes of a minimal valid .skill ZIP file."""
     buf = io.BytesIO()
     with zipfile.ZipFile(buf, "w", compression=zipfile.ZIP_DEFLATED) as zf:
-        zf.writestr(f"{skill_name}/SKILLS.md", skills_md_content)
+        zf.writestr(f"{skill_name}/SKILL.md", skills_md_content)
     return buf.getvalue()
 
 

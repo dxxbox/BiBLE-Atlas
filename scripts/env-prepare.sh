@@ -3,8 +3,8 @@
 # env-prepare.sh — BiBLE Atlas 测试环境一站式管理脚本
 #
 # 用法:
-#   ./scripts/env-prepare.sh setup                     # 一键搭建（Test Mode + 全部客户端）
-#   ./scripts/env-prepare.sh setup --full              # 完整后端模式（含 OpenSearch/Redis）
+#   ./scripts/env-prepare.sh setup                     # 一键搭建（完整后端 + 全部客户端）
+#   ./scripts/env-prepare.sh setup --test-mode         # Test Mode（轻量，无需 Docker）
 #   ./scripts/env-prepare.sh setup cli hermes          # 只搭建指定组件
 #   ./scripts/env-prepare.sh teardown                  # 一键清理
 #   ./scripts/env-prepare.sh teardown --full           # 清理含 Docker 容器删除
@@ -28,7 +28,7 @@ OC_DIR="$REPO_ROOT/bible-oc-plugin"
 HERMES_DIR="$REPO_ROOT/bible-hermes-plugin"
 
 # ── 默认值 ────────────────────────────────────────────────────────────────────
-MODE="test"              # test | full
+MODE="full"              # test | full
 BASE_URL="http://127.0.0.1:5555"
 SKIP_TEST=false
 FORCE=false
@@ -295,8 +295,8 @@ ${BOLD}组件（可多个，默认 all）:${NC}
 
 ${BOLD}选项:${NC}
   -n, --instance-name <name>  实例名称（默认: ${INSTANCE_NAME}，覆盖 \$BIBLE_INSTANCE_NAME）
-  --test-mode                  使用 Test Mode（默认，无需 Docker）
-  --full                       完整后端模式（OpenSearch + Redis + Server）
+  --test-mode                  使用 Test Mode（轻量，无需 Docker）
+  --full                       完整后端模式（默认，OpenSearch + Redis + Server）
   --base-url <url>             Bible Server 地址（默认: ${BASE_URL}）
   --skip-test                  跳过组件自检
   --force                      跳过确认提示
@@ -318,11 +318,11 @@ ${BOLD}OpenSearch 资源环境变量:${NC}
   BIBLE_OPENSEARCH_MEMORY_GB     OpenSearch 内存 GB（默认 ${DEFAULT_OS_MEMORY_GB}）
 
 ${BOLD}常用示例:${NC}
-  # 一键搭建（Test Mode + 全部客户端，日常首选）
+  # 一键搭建（完整后端 + 全部客户端）
   $0 setup
 
-  # 完整后端（含 OpenSearch / Redis / Celery Worker）
-  $0 setup --full
+  # Test Mode（轻量，无需 Docker）
+  $0 setup --test-mode
 
   # 网络受限地区使用 Docker Hub 镜像站
   BIBLE_DOCKER_REGISTRY_PREFIX=docker.m.daocloud.io/ $0 setup --full
@@ -643,7 +643,17 @@ setup_redis() {
 setup_server() {
   step "Bible Server — 启动"
 
-  local server_port="${BASE_URL##*:}"
+  local server_addr="${BASE_URL#http://}"
+  server_addr="${server_addr#https://}"
+  server_addr="${server_addr%%/*}"
+  local server_host server_port
+  if [[ "$server_addr" == *:* ]]; then
+    server_host="${server_addr%:*}"
+    server_port="${server_addr##*:}"
+  else
+    server_host="$server_addr"
+    server_port="5555"
+  fi
   require_env
 
   # 如果端口已占用且 health 可通，复用
@@ -678,13 +688,14 @@ setup_server() {
     info "启动生产模式 (${BASE_URL}) ..."
     cd "$SCRIPT_DIR/server_deploy"
 
-    bash "$SERVER_DEPLOY" start || true
+    bash "$SERVER_DEPLOY" start --host "$server_host" --port "$server_port" \
+      || die "Server 启动失败。日志: bash $SERVER_DEPLOY logs server 80"
 
     if wait_for_url "${BASE_URL}/health" 30; then
       ok "Bible Server 已启动 (${BASE_URL})"
       bash "$SERVER_DEPLOY" status 2>/dev/null || true
     else
-      warn "Server 启动中（/health 尚未就绪），如持续失败请查看日志"
+      die "Server 启动超时（/health 未就绪）。日志: bash $SERVER_DEPLOY logs server 80"
     fi
   fi
 }

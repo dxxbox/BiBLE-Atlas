@@ -156,10 +156,10 @@ v4 不是 v3 的“参数兼容版”，而是按 `KNOWLEDGE_BASE/SKILL/MEMORY` 
 - `tag` 必须为 `skill`
 - `files[]` 中 `.skill` 包必须且仅有一个（ZIP 改后缀）
 - `.skill` 解压后必须且只能包含一个顶层目录 `<skill-name>/`
-- 顶层目录下必须存在固定清单文件 `<skill-name>/SKILLS.md`
+- 顶层目录下必须存在固定清单文件 `<skill-name>/SKILL.md`
 - 脚本和附件必须位于同一个 `<skill-name>/` 顶层目录内，便于多个 skill 解压到 `.skills/` 后共存
-- 允许携带其他文件类型；这些文件在 `parse_skill.py` 中统一分类处理，语义解析以 `.skill`/`<skill-name>/SKILLS.md` 为主
-- `parse_skill.py` 是 SKILL 唯一解析总入口：`.skill` 个数校验、顶层目录校验、非 `.skill` 分类与 `SKILLS.md` 解析均在脚本内完成
+- 允许携带其他文件类型；这些文件在 `parse_skill.py` 中统一分类处理，语义解析以 `.skill`/`<skill-name>/SKILL.md` 为主
+- `parse_skill.py` 是 SKILL 唯一解析总入口：`.skill` 个数校验、顶层目录校验、非 `.skill` 分类与 `SKILL.md` 解析均在脚本内完成
 - 脚本选择规则：上传脚本先在任务临时目录执行，导入成功后才原子覆盖保存到 `custom_parsers_dir/parse_skill.py`；未上传时优先使用 custom parser，再回退到 `parsers_dir/parse_skill.py` 和 `parsers_dir/parse_default.py`
 - 若请求携带 `vector_model`，同样走 `infrastructure/vector/vector_tool.py` 的“本地检查 -> 缺失下载 -> 向量化”流程
 
@@ -233,7 +233,7 @@ v4 不是 v3 的“参数兼容版”，而是按 `KNOWLEDGE_BASE/SKILL/MEMORY` 
 - `query` 与 `tag` 必填
 - `tag` 必须为 `skill`
 - 若请求携带 `kb_index`，服务端按 `kb_index` 精确加载绑定；否则按 `skill` 绑定关系加载 `kb_index` 与 `search_profile`
-- `SKILLS.md` 的 `name/description/正文` 都参与检索：
+- `SKILL.md` 的 `name/description/正文` 都参与检索：
   - `search_type=keyword`：主要匹配 `name`
   - `search_type=text`：匹配 `name/description/正文`
   - `search_type=vector`：向量源为 `name/description/正文`

@@ -117,11 +117,11 @@ Use `env-prepare.sh` as the entry point — it runs pre-flight checks (Docker av
 使用 `env-prepare.sh` 作为入口——它会先执行前置检查（Docker 可用性、所需 CLI、Python 虚拟环境），再操作服务。
 
 ```bash
-# Test Mode (lightweight, no Docker needed / 轻量模式，无需 Docker)
+# Full backend (OpenSearch + Redis + Celery, requires Docker running / 完整后端，需要 Docker 运行)
 ./scripts/env-prepare.sh setup
 
-# Full backend (OpenSearch + Redis + Celery, requires Docker running / 完整后端，需要 Docker 运行)
-./scripts/env-prepare.sh setup --full
+# Test Mode (lightweight, no Docker needed / 轻量模式，无需 Docker)
+./scripts/env-prepare.sh setup --test-mode
 ```
 
 In interactive full-backend mode, `env-prepare.sh` asks for a Docker registry mirror and OpenSearch CPU/memory, using Docker-aware defaults. For automation, set the same values through environment variables:

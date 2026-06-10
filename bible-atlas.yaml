@@ -323,7 +323,7 @@ copilot_config:
 # 是否启用 Rerank（默认false，用于对比评估效果）
 rerank:
   enable: true
-  preload_on_startup: true   # 启动时预加载 rerank 模型到内存（与 vector.preload_on_startup 同步）
+  preload_on_startup: false   # 启动时预加载 rerank 模型到内存（与 vector.preload_on_startup 同步）
 
   # HuggingFace 缓存目录（与向量模型共用同一目录）
   hf_cache_dir: ./workspace/hf_cache
@@ -379,7 +379,7 @@ rerank:
 # name 为 HuggingFace / sentence-transformers 模型 id（启动预加载与 ensure_model_ready 使用）。
 vector:
   # 是否在启动时预加载所有模型（预加载列表为各条目的 name）
-  preload_on_startup: true
+  preload_on_startup: false
 
   # HuggingFace 缓存目录（模型权重，体积较大，独立于业务数据目录）
   hf_cache_dir: ./workspace/hf_cache

@@ -1,13 +1,13 @@
-"""SKILLS.md locator — stdlib only (runs inside sandbox subprocess)."""
+"""SKILL.md locator — stdlib only (runs inside sandbox subprocess)."""
 from __future__ import annotations
 
 import os
 
 
 def locate_skills_md(extract_dir: str, skill_name: str) -> str:
-    """Return absolute path to <skill-name>/SKILLS.md.
+    """Return absolute path to <skill-name>/SKILL.md.
 
-    Case-sensitive match for SKILLS.md.
+    Case-sensitive match for SKILL.md.
 
     Raises ValueError with code SKILL_MD_NOT_FOUND or SKILL_MD_MULTIPLE.
     """
@@ -19,18 +19,18 @@ def locate_skills_md(extract_dir: str, skill_name: str) -> str:
 
     matches = [
         entry for entry in os.listdir(skill_dir)
-        if entry == "SKILLS.md" and os.path.isfile(os.path.join(skill_dir, entry))
+        if entry == "SKILL.md" and os.path.isfile(os.path.join(skill_dir, entry))
     ]
 
     if len(matches) == 0:
         raise ValueError(
-            f"SKILL_MD_NOT_FOUND: SKILLS.md not found in '{skill_name}/'. "
-            "The .skill package must contain a SKILLS.md file."
+            f"SKILL_MD_NOT_FOUND: SKILL.md not found in '{skill_name}/'. "
+            "The .skill package must contain a SKILL.md file."
         )
 
     if len(matches) > 1:
         raise ValueError(
-            f"SKILL_MD_MULTIPLE: Multiple SKILLS.md files found in '{skill_name}/'."
+            f"SKILL_MD_MULTIPLE: Multiple SKILL.md files found in '{skill_name}/'."
         )
 
     return os.path.join(skill_dir, matches[0])

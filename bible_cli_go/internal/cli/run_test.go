@@ -68,7 +68,7 @@ func standardSkillPackage(t *testing.T, skillName string) []byte {
 
 	var buf bytes.Buffer
 	zw := zip.NewWriter(&buf)
-	manifest, err := zw.Create(skillName + "/SKILLS.md")
+	manifest, err := zw.Create(skillName + "/SKILL.md")
 	if err != nil {
 		t.Fatalf("failed to create skill manifest: %v", err)
 	}
@@ -274,14 +274,52 @@ func TestRunSkillsListPassesPageAndFilterTag(t *testing.T) {
 	}
 }
 
+func TestRunSkillsSearchUsesTextSearch(t *testing.T) {
+	server := httptest.NewServer(nethttp.HandlerFunc(func(w nethttp.ResponseWriter, r *nethttp.Request) {
+		if r.URL.Path != "/api/search/skill" {
+			w.WriteHeader(nethttp.StatusNotFound)
+			return
+		}
+		var body map[string]any
+		_ = json.NewDecoder(r.Body).Decode(&body)
+		if body["query"] != "comic" {
+			t.Fatalf("expected query comic, got %v", body["query"])
+		}
+		if body["search_type"] != "text" {
+			t.Fatalf("expected search_type=text for skills search, got %v", body["search_type"])
+		}
+		_ = json.NewEncoder(w).Encode(map[string]any{
+			"success":  true,
+			"domain":   "SKILL",
+			"kb_index": "kb_skill_main",
+			"tag":      "skill",
+			"total":    0,
+			"results":  map[string]any{"skill": []any{}},
+		})
+	}))
+	defer server.Close()
+	t.Setenv("BIBLE_CLI_BASE_URL", server.URL)
+
+	var out bytes.Buffer
+	var err bytes.Buffer
+	exitCode := Run([]string{"skills", "search", "comic"}, &out, &err)
+	if exitCode != 0 {
+		t.Fatalf("expected exit code 0, got %d: %s", exitCode, out.String())
+	}
+	response := decodeRunResponse(t, out.String())
+	if !response.OK {
+		t.Fatalf("expected ok=true, got %q", out.String())
+	}
+}
+
 func TestRunSkillsUploadPackagesDirectory(t *testing.T) {
 	tmpDir := t.TempDir()
 	skillDir := filepath.Join(tmpDir, "code-reviewer")
 	if err := os.MkdirAll(filepath.Join(skillDir, "examples"), 0o755); err != nil {
 		t.Fatalf("failed to create skill directory: %v", err)
 	}
-	if err := os.WriteFile(filepath.Join(skillDir, "SKILLS.md"), []byte("# Code Reviewer\n"), 0o644); err != nil {
-		t.Fatalf("failed to write SKILLS.md: %v", err)
+	if err := os.WriteFile(filepath.Join(skillDir, "SKILL.md"), []byte("# Code Reviewer\n"), 0o644); err != nil {
+		t.Fatalf("failed to write SKILL.md: %v", err)
 	}
 	if err := os.WriteFile(filepath.Join(skillDir, "examples", "note.md"), []byte("example"), 0o644); err != nil {
 		t.Fatalf("failed to write nested skill file: %v", err)
@@ -330,8 +368,8 @@ func TestRunSkillsUploadPackagesDirectory(t *testing.T) {
 		for _, f := range zr.File {
 			entries[f.Name] = true
 		}
-		if !entries["code-reviewer/SKILLS.md"] {
-			t.Fatalf("expected zip to contain code-reviewer/SKILLS.md, got %v", entries)
+		if !entries["code-reviewer/SKILL.md"] {
+			t.Fatalf("expected zip to contain code-reviewer/SKILL.md, got %v", entries)
 		}
 		if !entries["code-reviewer/examples/note.md"] {
 			t.Fatalf("expected zip to contain nested skill file, got %v", entries)
@@ -773,7 +811,7 @@ func TestRunSkillsDownloadAcceptsFlagsAfterName(t *testing.T) {
 	if filepath.Base(outputPath) != "sct-reviewer" {
 		t.Fatalf("expected sct-reviewer output directory, got %q", outputPath)
 	}
-	content, readErr := os.ReadFile(filepath.Join(outputPath, "SKILLS.md"))
+	content, readErr := os.ReadFile(filepath.Join(outputPath, "SKILL.md"))
 	if readErr != nil {
 		t.Fatalf("failed to read downloaded skill manifest: %v", readErr)
 	}

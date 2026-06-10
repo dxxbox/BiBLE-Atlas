@@ -6,7 +6,9 @@ from pathlib import Path
 from typing import Any
 
 from bible.common.errors import DomainError, ErrorCode
-from bible.features.upload.memory_upload.parsers.memory_parser.file_classifier import split_meta_and_attachments
+from bible.features.upload.memory_upload.parsers.memory_parser.file_classifier import (
+    split_meta_and_attachments,
+)
 from bible.features.upload.memory_upload.parsers.memory_parser.meta_parser import parse_meta
 from bible.features.upload.memory_upload.parsers.memory_parser.schemas import UploadedFile
 from bible.features.upload.parser_runtime.ast_guard import ASTGuard
@@ -95,7 +97,7 @@ def _validate_skill(files: list[UploadFileRef]) -> dict[str, Any]:
     if not top_level_dirs:
         raise DomainError(
             ErrorCode.INVALID_ARGUMENT,
-            "skill package must contain a top-level directory containing SKILLS.md; "
+            "skill package must contain a top-level directory containing SKILL.md; "
             "found only root-level files",
         )
     if len(top_level_dirs) > 1:
@@ -106,10 +108,10 @@ def _validate_skill(files: list[UploadFileRef]) -> dict[str, Any]:
         )
 
     skill_name = next(iter(top_level_dirs))
-    if f"{skill_name}/SKILLS.md" not in names:
+    if f"{skill_name}/SKILL.md" not in names:
         raise DomainError(
             ErrorCode.INVALID_ARGUMENT,
-            f"skill package '{skill_file.filename}' must contain SKILLS.md inside "
+            f"skill package '{skill_file.filename}' must contain SKILL.md inside "
             f"'{skill_name}/', but it was not found",
         )
 

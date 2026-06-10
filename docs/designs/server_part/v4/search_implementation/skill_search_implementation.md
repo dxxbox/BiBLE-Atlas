@@ -14,7 +14,7 @@
 
 - 仅覆盖 `POST /api/search/skill`。
 - 请求体字段沿用 `02_API接口文档.md`（`query/tag/kb_index/search_type/top_k/vector_model/vector_weight`）。
-- `tag` 固定为 `skill`，检索目标数据来自 SKILL 导入产物（`SKILLS.md` 解析出的 `name/description/body/content`）。
+- `tag` 固定为 `skill`，检索目标数据来自 SKILL 导入产物（`SKILL.md` 解析出的 `name/description/body/content`）。
 - `kb_index` 可选；提供时按 `domain=SKILL + kb_index` 精确查找绑定，未提供时按 `domain=SKILL + tag=skill` 查找 active binding。
 
 ---

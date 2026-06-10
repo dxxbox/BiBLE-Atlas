@@ -90,7 +90,7 @@ func skillsSearch(client *clienthttp.Client, opts SkillsCommandOptions) (map[str
 		Query:      opts.Query,
 		TopK:       topK,
 		Threshold:  opts.Threshold,
-		SearchType: "keyword",
+		SearchType: "text",
 		Tag:        opts.Tag,
 	}
 	return client.SkillSearch(req)
@@ -183,7 +183,7 @@ func prepareSkillUploadFile(path string) (clienthttp.MemoryFile, func(), error) 
 	if !strings.HasSuffix(strings.ToLower(path), ".skill") {
 		return clienthttp.MemoryFile{}, func() {}, protocol.CLIError{
 			Code:     "INVALID_ARGS",
-			Message:  "Invalid skill package: provide a .skill file or a directory containing SKILLS.md.",
+			Message:  "Invalid skill package: provide a .skill file or a directory containing SKILL.md.",
 			ExitCode: 1,
 		}
 	}
@@ -199,17 +199,17 @@ func prepareSkillUploadFile(path string) (clienthttp.MemoryFile, func(), error) 
 }
 
 func packageSkillDirectory(dir string) (clienthttp.MemoryFile, func(), error) {
-	manifestPath := filepath.Join(dir, "SKILLS.md")
+	manifestPath := filepath.Join(dir, "SKILL.md")
 	if info, err := os.Stat(manifestPath); os.IsNotExist(err) {
 		return clienthttp.MemoryFile{}, func() {}, protocol.CLIError{
 			Code:     "INVALID_ARGS",
-			Message:  "Invalid skill directory: SKILLS.md is required at the directory root.",
+			Message:  "Invalid skill directory: SKILL.md is required at the directory root.",
 			ExitCode: 1,
 		}
 	} else if err != nil {
-		return clienthttp.MemoryFile{}, func() {}, protocol.CLIError{Code: "INVALID_ARGS", Message: fmt.Sprintf("Cannot access SKILLS.md: %v", err), ExitCode: 1}
+		return clienthttp.MemoryFile{}, func() {}, protocol.CLIError{Code: "INVALID_ARGS", Message: fmt.Sprintf("Cannot access SKILL.md: %v", err), ExitCode: 1}
 	} else if info.IsDir() {
-		return clienthttp.MemoryFile{}, func() {}, protocol.CLIError{Code: "INVALID_ARGS", Message: "Invalid skill directory: SKILLS.md must be a file.", ExitCode: 1}
+		return clienthttp.MemoryFile{}, func() {}, protocol.CLIError{Code: "INVALID_ARGS", Message: "Invalid skill directory: SKILL.md must be a file.", ExitCode: 1}
 	}
 
 	baseName := filepath.Base(filepath.Clean(dir))
@@ -341,7 +341,7 @@ func validateSkillPackageEntries(files []*zip.File) (string, error) {
 			return "", protocol.CLIError{Code: "INVALID_ARGS", Message: "Invalid skill package: files must live under a single top-level directory.", ExitCode: 1}
 		}
 		topDirs[parts[0]] = struct{}{}
-		if len(parts) == 2 && parts[1] == "SKILLS.md" && !file.FileInfo().IsDir() {
+		if len(parts) == 2 && parts[1] == "SKILL.md" && !file.FileInfo().IsDir() {
 			hasManifest = true
 		}
 		if file.FileInfo().Mode()&os.ModeSymlink != 0 {
@@ -357,7 +357,7 @@ func validateSkillPackageEntries(files []*zip.File) (string, error) {
 		topDir = dir
 	}
 	if !hasManifest {
-		return "", protocol.CLIError{Code: "INVALID_ARGS", Message: "Invalid skill package: package must contain <skill-name>/SKILLS.md.", ExitCode: 1}
+		return "", protocol.CLIError{Code: "INVALID_ARGS", Message: "Invalid skill package: package must contain <skill-name>/SKILL.md.", ExitCode: 1}
 	}
 	return topDir, nil
 }

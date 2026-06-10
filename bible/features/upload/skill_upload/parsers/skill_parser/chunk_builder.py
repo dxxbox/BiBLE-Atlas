@@ -11,7 +11,7 @@ def build_chunks(
     file_refs: list[str] | None = None,
     skill_name: str = "",
 ) -> list[dict]:
-    """Build chunk list from parsed SKILLS.md doc."""
+    """Build chunk list from parsed SKILL.md doc."""
     name: str = skill_doc["name"]
     description: str = skill_doc["description"]
     body: str = skill_doc.get("body", "")
@@ -26,8 +26,8 @@ def build_chunks(
     doc_id_src = f"{package_sha256}::{name}"
     doc_id = hashlib.sha256(doc_id_src.encode("utf-8")).hexdigest()
 
-    # source_file points to the canonical SKILLS.md location inside the package
-    source_file = f"{skill_name}/SKILLS.md" if skill_name else package_filename
+    # source_file points to the canonical SKILL.md location inside the package
+    source_file = f"{skill_name}/SKILL.md" if skill_name else package_filename
 
     chunk: dict = {
         "doc_id": doc_id,

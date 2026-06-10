@@ -6,7 +6,7 @@
 
 - `knowledge_base_import_implementation.md`
 - `skill_import_implementation.md`
-- `skill_package_parser_implementation.md`（SKILL 专用 `.skill`/`SKILLS.md` 解析实现）
+- `skill_package_parser_implementation.md`（SKILL 专用 `.skill`/`SKILL.md` 解析实现）
 - `memory_import_implementation.md`
 - `memory_meta_parser_implementation.md`（MEMORY 专用 `meta.json` 解析实现）
 

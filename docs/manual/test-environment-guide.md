@@ -28,7 +28,7 @@
 `scripts/env-prepare.sh` 是本指南的终极武器——一条命令完成全部搭建或清理。
 
 ```bash
-# 一键搭建（Test Mode + Go CLI + Hermes + OC 插件）
+# 一键搭建（完整后端 + Go CLI + Hermes + OC 插件）
 ./scripts/env-prepare.sh setup
 
 # 一键清理
@@ -41,7 +41,7 @@
 **按需选择组件：**
 
 ```bash
-./scripts/env-prepare.sh setup --full                    # 完整后端（含 Docker）
+./scripts/env-prepare.sh setup --test-mode               # Test Mode（轻量，无需 Docker）
 ./scripts/env-prepare.sh setup cli                       # 只搭 Go CLI
 ./scripts/env-prepare.sh setup --full opensearch redis   # 只搭基础设施
 ./scripts/env-prepare.sh teardown hermes oc              # 只清理插件
@@ -901,8 +901,8 @@ rm -rf bible-hermes-plugin/.venv bible-hermes-plugin/__pycache__
 
 | 命令 | 说明 |
 |---|---|
-| `./scripts/env-prepare.sh setup` | 一键搭建（Test Mode + 全部客户端） |
-| `./scripts/env-prepare.sh setup --full` | 完整后端（OpenSearch + Redis + Server + 全部客户端） |
+| `./scripts/env-prepare.sh setup` | 一键搭建（完整后端 + 全部客户端） |
+| `./scripts/env-prepare.sh setup --test-mode` | Test Mode（轻量，无需 Docker + 全部客户端） |
 | `./scripts/env-prepare.sh setup <c1> <c2>` | 只搭建指定组件 |
 | `./scripts/env-prepare.sh teardown` | 一键清理（停止进程、删除本地构建产物，默认保留用户级配置/插件） |
 | `./scripts/env-prepare.sh teardown --full` | 完整清理（额外删除 Docker 容器和数据） |

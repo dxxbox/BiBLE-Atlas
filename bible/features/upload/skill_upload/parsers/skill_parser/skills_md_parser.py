@@ -1,13 +1,11 @@
-"""SKILLS.md parser — stdlib only (runs inside sandbox subprocess)."""
+"""SKILL.md parser — stdlib only (runs inside sandbox subprocess)."""
 from __future__ import annotations
-
-import re
 
 
 def parse_standard_skills_md(md_path: str) -> dict:
-    """Parse SKILLS.md to extract name, description, and body.
+    """Parse SKILL.md to extract name, description, and body.
 
-    SKILLS.md format convention:
+    SKILL.md format convention:
     - First H1 heading (# ...) → name
     - First paragraph (non-heading, non-empty text after the H1) → description
     - Everything after the description paragraph → body (raw markdown)
@@ -20,10 +18,10 @@ def parse_standard_skills_md(md_path: str) -> dict:
         with open(md_path, "r", encoding="utf-8") as f:
             content = f.read()
     except OSError as exc:
-        raise ValueError(f"SKILL_MD_PARSE_INVALID: Cannot read SKILLS.md: {exc}")
+        raise ValueError(f"SKILL_MD_PARSE_INVALID: Cannot read SKILL.md: {exc}")
 
     if not content.strip():
-        raise ValueError("SKILL_MD_PARSE_INVALID: SKILLS.md is empty.")
+        raise ValueError("SKILL_MD_PARSE_INVALID: SKILL.md is empty.")
 
     lines = content.splitlines()
 
@@ -39,13 +37,13 @@ def parse_standard_skills_md(md_path: str) -> dict:
 
     if name is None:
         raise ValueError(
-            "SKILL_MD_REQUIRED_FIELD_MISSING: SKILLS.md must contain an H1 heading (# ...) "
+            "SKILL_MD_REQUIRED_FIELD_MISSING: SKILL.md must contain an H1 heading (# ...) "
             "for the skill name."
         )
 
     if not name:
         raise ValueError(
-            "SKILL_MD_REQUIRED_FIELD_MISSING: SKILLS.md H1 heading is empty — skill name is required."
+            "SKILL_MD_REQUIRED_FIELD_MISSING: SKILL.md H1 heading is empty — skill name is required."
         )
 
     # Find the first non-empty, non-heading paragraph after the H1
@@ -71,7 +69,7 @@ def parse_standard_skills_md(md_path: str) -> dict:
 
     if not description:
         raise ValueError(
-            "SKILL_MD_REQUIRED_FIELD_MISSING: SKILLS.md must contain a description paragraph "
+            "SKILL_MD_REQUIRED_FIELD_MISSING: SKILL.md must contain a description paragraph "
             "after the H1 heading."
         )
 

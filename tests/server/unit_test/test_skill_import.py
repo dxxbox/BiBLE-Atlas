@@ -352,14 +352,14 @@ def make_skill_zip(
     """Create a real .skill ZIP file with proper structure.
 
     Structure:
-        <skill_name>/SKILLS.md  <- skills_md_content
+        <skill_name>/SKILL.md  <- skills_md_content
         <skill_name>/<fname>    <- for each extra_file
 
     Returns path to the created .skill file.
     """
     skill_dir = tmp_path / skill_name
     skill_dir.mkdir(parents=True, exist_ok=True)
-    (skill_dir / "SKILLS.md").write_text(skills_md_content, encoding="utf-8")
+    (skill_dir / "SKILL.md").write_text(skills_md_content, encoding="utf-8")
     if extra_files:
         for fname, content in extra_files.items():
             (skill_dir / fname).write_bytes(content)
@@ -620,7 +620,7 @@ class TestZipSafeExtractor:
         extract_dir = tmp_path / "extracted"
         extract_dir.mkdir()
         self._mod.safe_extract(str(skill_file), str(extract_dir))
-        assert (extract_dir / "my-skill" / "SKILLS.md").exists()
+        assert (extract_dir / "my-skill" / "SKILL.md").exists()
 
     def test_zip_slip_path_traversal_rejected(self, tmp_path):
         """Entry with ../../ path component must be rejected."""
@@ -772,6 +772,20 @@ class TestSearchProfileBuilder:
         hybrid = profile.get("hybrid", {})
         assert hybrid  # non-empty dict
 
+    def test_response_fields_keep_full_skill_fields_for_storage_profile(self):
+        """Import builds the storage/search profile; search output is compacted later."""
+        profile = self._mod.build_search_profile({})
+        response_fields = profile.get("response_fields", [])
+        assert response_fields == [
+            "doc_id",
+            "name",
+            "description",
+            "body",
+            "content",
+            "metadata.related_storage_paths",
+            "score",
+        ]
+
 
 # ---------------------------------------------------------------------------
 # TestChunkBuilder
@@ -832,6 +846,16 @@ class TestChunkBuilder:
         chunk = self._build()
         version = chunk.get("metadata", {}).get("parser_version")
         assert version == "v4-skill-package-1"
+
+    def test_metadata_source_file_points_to_skill_md(self):
+        """metadata.source_file must point to the canonical SKILL.md manifest."""
+        skill_doc = {
+            "name": "my-skill",
+            "description": "My description.",
+            "body": "My body.",
+        }
+        chunks = self._mod.build_chunks(skill_doc, {}, {}, skill_name="my-skill")
+        assert chunks[0]["metadata"]["source_file"] == "my-skill/SKILL.md"
 
 
 # ===========================================================================

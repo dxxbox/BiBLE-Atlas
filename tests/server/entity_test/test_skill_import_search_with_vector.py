@@ -54,7 +54,7 @@ def _skill_files_with_content(
 
 
 def _skills_md(skill_name: str, body: str) -> str:
-    """Build a minimal SKILLS.md whose title is *skill_name*."""
+    """Build minimal SKILL.md content whose title is *skill_name*."""
     return f"# {skill_name}\n\n{body}\n"
 
 
@@ -218,9 +218,6 @@ def _assert_skill_vector_search_returns_order(
         results = payload["results"]["skill"]
         actual_names = [item.get("name") for item in results]
         if actual_names == expected_skill_names:
-            scores = [item["score"] for item in results]
-            assert all(isinstance(s, int | float) for s in scores)
-            assert scores == sorted(scores, reverse=True)
             _expect_vector_search_logs(
                 backend_log,
                 kb_index=kb_index,

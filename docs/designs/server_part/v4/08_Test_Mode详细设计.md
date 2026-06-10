@@ -360,7 +360,7 @@ Import 校验分为两层：
 | 域 | 可复用真实校验 | 不执行的真实行为 |
 |---|---|---|
 | KNOWLEDGE_BASE | 文件数量、文件类型、`parser_context` JSON、`parser_script` 类型和 AST 安全检查 | 解析脚本执行、chunk 生成、向量化、写库 |
-| SKILL | `.skill` 数量、压缩包结构、单一顶层目录 `<skill-name>/`、`<skill-name>/SKILLS.md` 是否存在、附带文件基础分类 | 技能解析入库、向量化、文件归档 |
+| SKILL | `.skill` 数量、压缩包结构、单一顶层目录 `<skill-name>/`、`<skill-name>/SKILL.md` 是否存在、附带文件基础分类 | 技能解析入库、向量化、文件归档 |
 | MEMORY | `message.json`、`meta.json` 等输入文件存在性与 JSON schema 基础校验 | 记忆抽取、向量化、写库、归档 |
 
 preflight 校验失败时，应在 Import 提交阶段直接返回错误响应，不创建任务，也不进入 fixture 匹配。preflight 校验成功后：

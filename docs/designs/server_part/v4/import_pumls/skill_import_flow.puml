@@ -158,8 +158,8 @@ group parse_skill.py 内部（SKILL 专项）
   RUN -> RUN: classify non-skill files
   RUN -> RUN: unzip ".skill" safely\n(path traversal / size limit / entry count)
   RUN -> RUN: validate single top-level directory\n<skill-name>/
-  RUN -> RUN: locate "<skill-name>/SKILLS.md"
-  RUN -> RUN: parse SKILLS.md -> name/description/body
+  RUN -> RUN: locate "<skill-name>/SKILL.md"
+  RUN -> RUN: parse SKILL.md -> name/description/body
   RUN -> RUN: build chunks + search_profile + local_file_storage_plan
 end
 RUN --> SVC: parse_result\n{chunks, search_profile, local_file_storage_plan}

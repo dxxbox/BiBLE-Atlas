@@ -216,6 +216,7 @@ __marimo__/
 
 #vscode
 .vscode
+.DS_Store
 
 # Local notes and drafts
 docs/meditation/

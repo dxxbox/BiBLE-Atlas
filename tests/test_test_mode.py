@@ -54,11 +54,11 @@ def make_meta_json(**overrides: object) -> str:
     return json.dumps(data)
 
 
-def skill_package(has_skills_md: bool = True, skill_name: str = "test-skill") -> bytes:
+def skill_package(has_skill_md: bool = True, skill_name: str = "test-skill") -> bytes:
     bio = io.BytesIO()
     with zipfile.ZipFile(bio, "w") as zf:
-        if has_skills_md:
-            zf.writestr(f"{skill_name}/SKILLS.md", "# Test Skill\n")
+        if has_skill_md:
+            zf.writestr(f"{skill_name}/SKILL.md", "# Test Skill\n")
         zf.writestr(f"{skill_name}/api.py", "def run():\n    return 'ok'\n")
     return bio.getvalue()
 
@@ -335,7 +335,23 @@ def test_skill_import_preflight_validates_skill_package():
         files={"files": ("test.skill", skill_package(False), "application/zip")},
     )
     assert response.status_code == 400
-    assert "SKILLS.md" in response.json()["message"]
+    assert "SKILL.md" in response.json()["message"]
+
+
+def test_skill_import_preflight_rejects_legacy_skills_manifest_only():
+    legacy_package = io.BytesIO()
+    with zipfile.ZipFile(legacy_package, "w") as zf:
+        zf.writestr("legacy-skill/SKILLS.md", "# Legacy Skill\n")
+        zf.writestr("legacy-skill/api.py", "def run():\n    return 'ok'\n")
+
+    response = client().post(
+        "/api/import/skill",
+        data={"kb_index": "kb_skill_test", "tag": "skill"},
+        files={"files": ("legacy.skill", legacy_package.getvalue(), "application/zip")},
+    )
+
+    assert response.status_code == 400
+    assert "SKILL.md" in response.json()["message"]
 
 
 def test_skill_import_preflight_accepts_standard_skill_package():
@@ -559,7 +575,7 @@ def test_skill_download_artifact_is_valid_skill_zip():
     assert artifact.status_code == 200
     assert artifact.headers["content-disposition"] == 'attachment; filename="skill-standard.skill"'
     with zipfile.ZipFile(io.BytesIO(artifact.content)) as zf:
-        assert "skill-standard/SKILLS.md" in zf.namelist()
+        assert "skill-standard/SKILL.md" in zf.namelist()
         assert "skill-standard/api.py" in zf.namelist()
 
 

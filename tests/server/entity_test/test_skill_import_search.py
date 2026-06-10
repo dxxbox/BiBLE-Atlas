@@ -43,7 +43,7 @@ DEFAULT_VECTOR_MODEL = os.environ.get(
 def _skill_files(skill_name: str = "test-skill") -> list[tuple[str, tuple[str, bytes, str]]]:
     """Return multipart file tuples for a minimal .skill archive.
 
-    The SKILLS.md title line is set to *skill_name* so keyword search on the
+    The SKILL.md title line is set to *skill_name* so keyword search on the
     ``name.keyword`` field can uniquely identify the imported document.
     """
     skills_md = (

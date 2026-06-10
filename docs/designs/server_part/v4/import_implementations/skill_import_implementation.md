@@ -12,7 +12,7 @@
   - 启动阶段向量模型预加载
   - 导入阶段脚本解析
   - `.skill` 包上传约束与解压安全校验
-  - `SKILLS.md` 结构化解析（`name/description/正文` 等）
+  - `SKILL.md` 结构化解析（`name/description/正文` 等）
   - 原始文件落盘
   - 绑定写入
   - 可选向量化 + 内容入库
@@ -196,7 +196,7 @@ def cleanup_staged_workspace(self, task_id: str, keep_failed_workspace: bool) ->
    - 校验 `.skill` 文件必须且仅有一个（允许其他类型文件共存）
    - 对 `.skill` 执行标准 ZIP 解压（防 Zip Slip、解压炸弹、软链接穿越）
    - 校验解压后必须且只能包含一个顶层目录 `<skill-name>/`
-   - 定位并解析固定文件 `<skill-name>/SKILLS.md`（提取 `name/description/正文`）
+   - 定位并解析固定文件 `<skill-name>/SKILL.md`（提取 `name/description/正文`）
    - 构建 `chunks/search_profile/local_file_storage_plan`
 7. 调用 `validate_parse_result_schema(...)`（校验 `chunks/search_profile/local_file_storage_plan`）
 8. 调用 `StoreSkill.store(...)`（执行本地存储计划、回填存储位置、绑定/向量化/写库/文件注册）
@@ -207,8 +207,8 @@ def cleanup_staged_workspace(self, task_id: str, keep_failed_workspace: bool) ->
 - SKILL 文件落盘失败应直接终止任务，不继续解析。
 - 解析输入建议统一使用 manifest（全量上传文件），避免在服务层提前做 `.skill` / 非 `.skill` 分流。
 - `.skill` 是业务包扩展名，本质 ZIP；实现上应按 ZIP 标准解析，不建议自研解压格式。
-- `<skill-name>/SKILLS.md` 为必需文件；缺失、重复或不可解析都应作为明确业务错误返回。
-- root-level `SKILLS.md` 与多个顶层目录均视为非法包结构，避免多个 skill 解压到 `.skills/` 时发生覆盖。
+- `<skill-name>/SKILL.md` 为必需文件；缺失、重复或不可解析都应作为明确业务错误返回。
+- root-level `SKILL.md` 与多个顶层目录均视为非法包结构，避免多个 skill 解压到 `.skills/` 时发生覆盖。
 - 非 `.skill` 文件也由 `parse_skill.py` 统一处理与分类；它们不生成语义 chunk，但应进入 `local_file_storage_plan`。
 - 上传脚本 ASTGuard 失败、Sandbox 失败、ParseResult schema 校验失败或后续 store 失败时，不得覆盖已有 custom parser。
 - custom parser 保存目标固定为 `custom_parsers_dir/parse_skill.py`，不保留上传文件原名；覆盖应使用原子替换。
@@ -217,7 +217,7 @@ def cleanup_staged_workspace(self, task_id: str, keep_failed_workspace: bool) ->
 - 清理目标建议为 `<import_work_root>/<task_id>/`（如包含 `staged/`、中间清单文件，也应一并删除）。
 - 默认成功/失败都清理；支持 `import.skill.staging.keep_failed_workspace=true` 保留失败现场用于排障。
 - 需要配置 TTL 兜底清理任务，定期删除超期遗留任务目录（例如 24h）。
-- `.skill`/`<skill-name>/SKILLS.md` 的全量解析实现建议见：
+- `.skill`/`<skill-name>/SKILL.md` 的全量解析实现建议见：
   - `doc/new_framework_python/v4/import_implementations/skill_package_parser_implementation.md`
 
 ---
@@ -277,7 +277,7 @@ def sweep_expired_task_workspaces(self, ttl_hours: int, limit: int = 1000) -> in
 补充约束：
 - `local_file_storage_plan` 应覆盖全部上传文件（包含非 `.skill` 文件）。
 - `bulk_upsert_file_registry(...)` 应记录 `storage_path` 等存储位置信息。
-- 语义内容只来自 `.skill` -> `SKILLS.md`，非 `.skill` 文件不生成语义 chunk，但其 `storage_path` 需可回填到语义文档（`metadata.related_storage_paths`）。
+- 语义内容只来自 `.skill` -> `SKILL.md`，非 `.skill` 文件不生成语义 chunk，但其 `storage_path` 需可回填到语义文档（`metadata.related_storage_paths`）。
 - `chunks` 建议保留 `name/description/body` 三字段，并同步 `title=name`、`content=name+description+body` 便于兼容展示与检索。
 - `search_profile` 建议固定规则：
   - `keyword`：匹配 `name`
@@ -339,8 +339,8 @@ def sweep_expired_task_workspaces(self, ttl_hours: int, limit: int = 1000) -> in
 6. 脚本三段选择链路（upload/dir_discovery/default）
 7. 原始文件落盘成功并可用于后续解析
 8. `.skill` 解压安全校验（路径穿越/解压炸弹）有效
-9. 解压后缺少 `SKILLS.md` 时失败
-10. `SKILLS.md` 解析出 `name/description/正文` 并生成有效 `chunks/search_profile`
+9. 解压后缺少 `SKILL.md` 时失败
+10. `SKILL.md` 解析出 `name/description/正文` 并生成有效 `chunks/search_profile`
 11. `keyword` 检索命中 `name`
 12. `text` 检索命中 `name/description/正文`
 13. `vector` 检索使用 `name/description/正文` 向量
