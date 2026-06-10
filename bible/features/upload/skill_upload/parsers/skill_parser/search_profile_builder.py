@@ -20,7 +20,7 @@ def build_search_profile(skill_doc: dict) -> dict:
         },
         "hybrid":  {"default_vector_weight": 0.5},
         "response_fields": [
-            "doc_id", "name", "description", "body", "content",
+            "doc_id", "name", "description",
             "metadata.related_storage_paths", "score"
         ]
     }
@@ -39,8 +39,6 @@ def build_search_profile(skill_doc: dict) -> dict:
             "doc_id",
             "name",
             "description",
-            "body",
-            "content",
             "metadata.related_storage_paths",
             "score",
         ],

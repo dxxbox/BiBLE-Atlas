@@ -93,8 +93,9 @@ def map_hits(
       name** (``"related_storage_paths"``).
     * :data:`EXCLUDED_FIELDS` (``chunk_id``, ``took_ms``) are always
       omitted, even when listed in *response_fields*.
-    * ``score`` is always sourced from the hit's ``_score`` field — never
-      from ``_source`` — and is written last so it cannot be overridden.
+    * ``score`` is sourced from the hit's ``_score`` field — never from
+      ``_source``. It is included when ``response_fields`` is empty, or when
+      explicit ``response_fields`` includes ``"score"``.
 
     Parameters
     ----------
@@ -131,7 +132,8 @@ def map_hits(
         else:
             item = {k: v for k, v in source.items() if k not in EXCLUDED_FIELDS}
 
-        item[SCORE_FIELD] = score
+        if not response_fields or SCORE_FIELD in response_fields:
+            item[SCORE_FIELD] = score
         result.append(item)
 
     return result

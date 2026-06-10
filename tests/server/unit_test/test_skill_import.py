@@ -772,19 +772,19 @@ class TestSearchProfileBuilder:
         hybrid = profile.get("hybrid", {})
         assert hybrid  # non-empty dict
 
-    def test_response_fields_keep_full_skill_fields_for_storage_profile(self):
-        """Import builds the storage/search profile; search output is compacted later."""
+    def test_response_fields_exclude_full_skill_body_content(self):
+        """Generated search profiles omit full SKILL.md fields from search results."""
         profile = self._mod.build_search_profile({})
         response_fields = profile.get("response_fields", [])
         assert response_fields == [
             "doc_id",
             "name",
             "description",
-            "body",
-            "content",
             "metadata.related_storage_paths",
             "score",
         ]
+        assert "body" not in response_fields
+        assert "content" not in response_fields
 
 
 # ---------------------------------------------------------------------------

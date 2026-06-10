@@ -16,8 +16,8 @@ What these tests catch that unit tests cannot
   flow all the way through to the DSL actually sent to the DB).
 - Real QueryProfileCompiler rules applied to SKILL-specific profiles
   (single-field keyword → term, multi-field text → multi_match, title → match on name).
-- Search result compaction (only doc_id / name / description returned even
-  when storage profiles include full SKILL.md fields).
+- Profile-driven result projection (full body/content omitted when the SKILL
+  search profile excludes those fields).
 - Error propagation without any exception-swallowing along the chain.
 - Tag validation: tag != "skill" → 400 TAG_INVALID before reaching the service.
 """
@@ -85,7 +85,7 @@ FULL_PROFILE: dict[str, Any] = {
         },
     },
     "response_fields": [
-        "doc_id", "name", "description", "body", "content",
+        "doc_id", "name", "description",
         "metadata.related_storage_paths", "score",
     ],
 }
@@ -301,11 +301,11 @@ class TestSuccessResponseShape:
         body = client.post("/api/search/skill", json=BASE_BODY).json()
         assert len(body["results"]["skill"]) == 2
 
-    def test_score_not_returned_in_search_response(self) -> None:
+    def test_score_wired_from_underscore_score(self) -> None:
         client, _, _ = make_client()
         items = client.post("/api/search/skill", json=BASE_BODY).json()["results"]["skill"]
-        assert "score" not in items[0]
-        assert "score" not in items[1]
+        assert items[0]["score"] == pytest.approx(0.91)
+        assert items[1]["score"] == pytest.approx(0.71)
 
     def test_chunk_id_never_in_response(self) -> None:
         client, _, _ = make_client()
@@ -328,11 +328,11 @@ class TestSuccessResponseShape:
         assert "description" in item
         assert "body" not in item
         assert "content" not in item
-        assert "related_storage_paths" not in item
-        assert "score" not in item
+        assert "related_storage_paths" in item
+        assert "score" in item
 
     def test_flat_upload_profile_still_returns_compact_search_results(self) -> None:
-        """Real upload-generated profiles include full fields, but search output is compact."""
+        """Real upload-generated profiles search full content but omit body/content."""
         binding = IndexBinding(
             domain_type="SKILL",
             kb_index=KB_INDEX,
@@ -346,13 +346,19 @@ class TestSuccessResponseShape:
         )
         client, _, _ = make_client(db_writer=FakeDBWriter(binding=binding))
         item = client.post("/api/search/skill", json=BASE_BODY).json()["results"]["skill"][0]
-        assert set(item) == {"doc_id", "name", "description"}
+        assert set(item) == {
+            "doc_id",
+            "name",
+            "description",
+            "related_storage_paths",
+            "score",
+        }
 
-    def test_dot_path_metadata_related_storage_paths_not_returned(self) -> None:
-        """Skill search response exposes only doc_id, name, and description."""
+    def test_dot_path_metadata_related_storage_paths_flattened(self) -> None:
+        """metadata.related_storage_paths must be stored under leaf key."""
         client, _, _ = make_client()
         item = client.post("/api/search/skill", json=BASE_BODY).json()["results"]["skill"][0]
-        assert "related_storage_paths" not in item
+        assert item["related_storage_paths"] == ["/mnt/skill/2026/05/demo.png"]
 
     def test_metadata_dict_not_in_response(self) -> None:
         """The nested 'metadata' dict itself must not appear — only flattened leaf."""
@@ -729,15 +735,18 @@ class TestDslCorrectness:
 
 
 class TestRelatedStoragePaths:
-    def test_paths_not_returned_in_search_response(self) -> None:
+    def test_paths_present_flattened_to_top_level(self) -> None:
         client, _, _ = make_client()
         items = client.post("/api/search/skill", json=BASE_BODY).json()["results"]["skill"]
-        assert "related_storage_paths" not in items[0]
+        assert "related_storage_paths" in items[0]
+        assert items[0]["related_storage_paths"] == ["/mnt/skill/2026/05/demo.png"]
 
-    def test_empty_paths_list_not_returned_in_search_response(self) -> None:
+    def test_empty_paths_list_included(self) -> None:
+        """Empty list is a valid value and must appear in the result."""
         client, _, _ = make_client()
         items = client.post("/api/search/skill", json=BASE_BODY).json()["results"]["skill"]
-        assert "related_storage_paths" not in items[1]
+        assert "related_storage_paths" in items[1]
+        assert items[1]["related_storage_paths"] == []
 
     def test_missing_metadata_field_does_not_raise(self) -> None:
         """Hit with no 'metadata' key must not cause a 500."""
