@@ -39,6 +39,9 @@ jobs:
   oc-plugin:
     uses: ./.github/workflows/_oc_plugin.yml
 
+  cc-plugin:
+    uses: ./.github/workflows/_cc_plugin.yml
+
   check-dependencies:
     runs-on: ubuntu-24.04
     steps:
