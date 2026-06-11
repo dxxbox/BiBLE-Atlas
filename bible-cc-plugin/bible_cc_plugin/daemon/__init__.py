@@ -1,1 +1,0 @@
-"""BiBLE CC Plugin — daemon components."""

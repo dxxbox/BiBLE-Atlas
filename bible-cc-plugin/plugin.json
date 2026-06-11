@@ -1,8 +1,0 @@
-{
-  "name": "bible-cc-plugin",
-  "version": "0.1.0",
-  "description": "BiBLE Atlas memory + knowledge broker for Claude Code",
-  "author": { "name": "BiBLE Atlas Team" },
-  "repository": "https://github.com/NousResearch/bible-atlas",
-  "license": "MIT"
-}
