@@ -345,29 +345,8 @@ rerank:
       params: '278M'
       languages: ['中文', '英文']
       speed: '~200 对/秒'
-      
-    - id: 'bge-reranker-large'
-      name: 'BAAI/bge-reranker-large'
-      description: '中文最高精度'
-      params: '326M'
-      languages: ['中文', '英文']
-      speed: '~100 对/秒'
-      
-    - id: 'bge-reranker-v2-m3'
-      name: 'BAAI/bge-reranker-v2-m3'
-      description: '多语言，支持超长文本（8K tokens）'
-      params: '568M'
-      languages: ['100+ 语言']
-      speed: '~50 对/秒'
     
-    # 英文场景备选
-    - id: 'ms-marco-MiniLM'
-      name: 'cross-encoder/ms-marco-MiniLM-L-6-v2'
-      description: '轻量快速，英文为主'
-      params: '23M'
-      languages: ['英文']
-      speed: '~800 对/秒'
-      
+    # 英文场景备选      
     - id: 'ms-marco-electra-base'
       name: 'cross-encoder/ms-marco-electra-base'
       description: '英文场景，速度与精度平衡'
@@ -389,26 +368,12 @@ vector:
 
   # 可用的向量模型列表
   available_models:
-    - id: 'mini'
-      name: 'paraphrase-multilingual-MiniLM-L12-v2'
-      description: '多语言，轻量快速'
-      params: '118M'
-      dims: 384
-      languages: ['多语言']
-
     - id: 'mpnet'
       name: 'paraphrase-multilingual-mpnet-base-v2'
       description: '多语言，平衡性好'
       params: '278M'
       dims: 768
       languages: ['多语言']
-
-    - id: 'bge-base'
-      name: 'BAAI/bge-base-zh-v1.5'
-      description: '中文优化，基础版'
-      params: '102M'
-      dims: 768
-      languages: ['中文', '英文']
 
     - id: 'bge-large'
       name: 'BAAI/bge-large-zh-v1.5'
@@ -417,16 +382,3 @@ vector:
       dims: 1024
       languages: ['中文', '英文']
 
-    - id: 'bge-m3'
-      name: 'BAAI/bge-m3'
-      description: '多语言，支持长文本'
-      params: '568M'
-      dims: 1024
-      languages: ['100+ 语言']
-
-    - id: 'e5-large'
-      name: 'intfloat/multilingual-e5-large'
-      description: '多语言，高性能'
-      params: '560M'
-      dims: 1024
-      languages: ['多语言']

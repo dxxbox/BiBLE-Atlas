@@ -22,6 +22,7 @@ OS_DEPLOY="$SCRIPT_DIR/opensearch_deploy/deploy.sh"
 REDIS_DEPLOY="$SCRIPT_DIR/redis_celery_deploy/deploy.sh"
 SERVER_DEPLOY="$SCRIPT_DIR/server_deploy/deploy.sh"
 HERMES_DEPLOY="$REPO_ROOT/bible-hermes-plugin/deploy.sh"
+MODEL_PULLER="$REPO_ROOT/tools/model_puller/main.py"
 
 CLI_DIR="$REPO_ROOT/bible_cli_go"
 OC_DIR="$REPO_ROOT/bible-oc-plugin"
@@ -37,6 +38,10 @@ PURGE_WORKSPACE=false
 UNINSTALL_PLUGINS=false
 INSTANCE_NAME="${BIBLE_INSTANCE_NAME:-bibletest}"
 DOCKER_REGISTRY_PREFIX="${BIBLE_DOCKER_REGISTRY_PREFIX:-}"
+CONFIG_PATH="${BIBLE_ATLAS_CONFIG_PATH:-$REPO_ROOT/bible-atlas.yaml}"
+MODEL_PULL_TYPE="all"
+MODEL_PULL_FILTER=""
+MODEL_PULL_DRY_RUN=false
 
 # OpenSearch 端口（必须匹配 bible-atlas.yaml 默认值）
 OS_HTTP_PORT=9800
@@ -274,6 +279,98 @@ if response != b"+PONG\r\n":
 PY
 }
 
+yaml_section_bool() {
+  local config_file=$1
+  local section=$2
+  local key=$3
+
+  [ -f "$config_file" ] || return 1
+  awk -v section="$section" -v key="$key" '
+    /^[^[:space:]#][^:]*:/ {
+      current = $1
+      sub(/:$/, "", current)
+    }
+    current == section && $1 == key ":" {
+      value = $2
+      gsub(/["'\''[:space:]]/, "", value)
+      if (value ~ /^\$\{[A-Za-z_][A-Za-z0-9_]*\}$/) {
+        env_key = value
+        sub(/^\$\{/, "", env_key)
+        sub(/\}$/, "", env_key)
+        value = ENVIRON[env_key]
+      } else if (value ~ /^\$[A-Za-z_][A-Za-z0-9_]*$/) {
+        env_key = value
+        sub(/^\$/, "", env_key)
+        value = ENVIRON[env_key]
+      }
+      print value
+      exit
+    }
+  ' "$config_file" | grep -qi '^true$'
+}
+
+model_auto_pull_enabled() {
+  yaml_section_bool "$CONFIG_PATH" vector preload_on_startup ||
+    yaml_section_bool "$CONFIG_PATH" rerank preload_on_startup
+}
+
+model_auto_pull_type() {
+  local vector_enabled=false
+  local rerank_enabled=false
+  yaml_section_bool "$CONFIG_PATH" vector preload_on_startup && vector_enabled=true
+  yaml_section_bool "$CONFIG_PATH" rerank preload_on_startup && rerank_enabled=true
+
+  if $vector_enabled && $rerank_enabled; then
+    echo "all"
+  elif $vector_enabled; then
+    echo "vector"
+  elif $rerank_enabled; then
+    echo "rerank"
+  else
+    echo "none"
+  fi
+}
+
+pull_models() {
+  step "HuggingFace Models — 拉取"
+  require_cmd uv "安装: curl -LsSf https://astral.sh/uv/install.sh | sh"
+
+  [ -f "$CONFIG_PATH" ] || die "配置文件不存在: $CONFIG_PATH"
+  [ -f "$MODEL_PULLER" ] || die "模型拉取工具不存在: $MODEL_PULLER"
+
+  info "配置文件: $CONFIG_PATH"
+  info "模型工具: $MODEL_PULLER"
+  local pull_args=(pull --config "$CONFIG_PATH" --repo-root "$REPO_ROOT" --type "$MODEL_PULL_TYPE")
+  if [ -n "$MODEL_PULL_FILTER" ]; then
+    pull_args+=(--model "$MODEL_PULL_FILTER")
+  fi
+  if $MODEL_PULL_DRY_RUN; then
+    pull_args+=(--dry-run)
+  fi
+  (
+    cd "$REPO_ROOT"
+    uv run python "$MODEL_PULLER" "${pull_args[@]}"
+  )
+}
+
+maybe_pull_models_before_server() {
+  [ "$MODE" = "full" ] || return 0
+
+  if model_auto_pull_enabled; then
+    local MODEL_PULL_TYPE
+    MODEL_PULL_TYPE="$(model_auto_pull_type)"
+    local MODEL_PULL_FILTER=""
+    local MODEL_PULL_DRY_RUN=false
+    if pull_models; then
+      ok "模型预拉取完成"
+    else
+      warn "模型预拉取失败，继续启动 Server；现有 Server 逻辑会在需要时尝试拉取模型"
+    fi
+  else
+    warn "模型未预拉取：preload_on_startup=false。可稍后执行: $0 pull-models --config $CONFIG_PATH"
+  fi
+}
+
 # ── 帮助 ──────────────────────────────────────────────────────────────────────
 usage() {
   cat <<EOF
@@ -283,6 +380,7 @@ ${BOLD}命令:${NC}
   $0 ${CYAN}setup${NC}    [选项] [组件...]   从零搭建测试环境
   $0 ${CYAN}teardown${NC} [选项] [组件...]   清理测试环境
   $0 ${CYAN}status${NC}   [选项]             查看组件状态
+  $0 ${CYAN}pull-models${NC} [选项]          独立拉取 HuggingFace 模型
 
 ${BOLD}组件（可多个，默认 all）:${NC}
   opensearch     OpenSearch 容器
@@ -298,6 +396,10 @@ ${BOLD}选项:${NC}
   --test-mode                  使用 Test Mode（轻量，无需 Docker）
   --full                       完整后端模式（默认，OpenSearch + Redis + Server）
   --base-url <url>             Bible Server 地址（默认: ${BASE_URL}）
+  --config <path>              bible-atlas.yaml 路径（默认: ${CONFIG_PATH}）
+  --type <vector|rerank|all>   pull-models 模型类型（默认: all）
+  --model <id-or-name>         pull-models 指定模型 id 或 HuggingFace name
+  --dry-run                    pull-models 只列出将处理的模型，不下载
   --skip-test                  跳过组件自检
   --force                      跳过确认提示
   --purge-config               清理用户级 BiBLE 配置（如 ~/.bible/config.json）
@@ -346,6 +448,9 @@ ${BOLD}常用示例:${NC}
   $0 status
   $0 status --json
 
+  # 独立拉取 vector/rerank 模型（无需部署 Server）
+  $0 pull-models
+
 ${BOLD}环境变量:${NC}
   BIBLE_INSTANCE_NAME     实例名称（默认: bibletest，可被 --instance-name 覆盖）
   BIBLE_ATLAS_BASE_URL    服务地址（插件使用，可被 --base-url 覆盖）
@@ -361,13 +466,17 @@ parse_args() {
 
   while [[ $# -gt 0 ]]; do
     case "$1" in
-      setup|teardown|status)
+      setup|teardown|status|pull-models)
         COMMAND="$1"
         ;;
       --test-mode) MODE="test" ;;
       -n|--instance-name)  shift; INSTANCE_NAME="$1" ;;
       --full)      MODE="full" ;;
       --base-url)  shift; BASE_URL="$1" ;;
+      --config)    shift; CONFIG_PATH="$1" ;;
+      --type)      shift; MODEL_PULL_TYPE="$1" ;;
+      --model)     shift; MODEL_PULL_FILTER="$1" ;;
+      --dry-run)   MODEL_PULL_DRY_RUN=true ;;
       --skip-test) SKIP_TEST=true ;;
       --force)     FORCE=true ;;
       --purge-config) PURGE_CONFIG=true ;;
@@ -386,7 +495,12 @@ parse_args() {
   done
 
   if [ -z "$COMMAND" ]; then
-    die "缺少命令。请指定 setup、teardown 或 status。（使用 --help 查看帮助）"
+    die "缺少命令。请指定 setup、teardown、status 或 pull-models。（使用 --help 查看帮助）"
+  fi
+
+  if [ "$COMMAND" = "pull-models" ]; then
+    COMPONENTS=()
+    return 0
   fi
 
   # 默认全部
@@ -665,6 +779,8 @@ setup_server() {
     die "端口 ${server_port} 被占用且 /health 无响应，请排查"
   fi
 
+  maybe_pull_models_before_server
+
   if [ "$MODE" = "test" ]; then
     info "启动 Test Mode (${BASE_URL}) ..."
     cd "$REPO_ROOT"
@@ -688,7 +804,7 @@ setup_server() {
     info "启动生产模式 (${BASE_URL}) ..."
     cd "$SCRIPT_DIR/server_deploy"
 
-    bash "$SERVER_DEPLOY" start --host "$server_host" --port "$server_port" \
+    bash "$SERVER_DEPLOY" start --host "$server_host" --port "$server_port" --config "$CONFIG_PATH" \
       || die "Server 启动失败。日志: bash $SERVER_DEPLOY logs server 80"
 
     if wait_for_url "${BASE_URL}/health" 30; then
@@ -1033,6 +1149,10 @@ main() {
   parse_args "$@"
 
   case "$COMMAND" in
+    pull-models)
+      pull_models
+      ;;
+
     setup)
       preflight_setup
 

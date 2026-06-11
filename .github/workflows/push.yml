@@ -42,6 +42,9 @@ jobs:
   cc-plugin:
     uses: ./.github/workflows/_cc_plugin.yml
 
+  hermes-plugin:
+    uses: ./.github/workflows/_hermes_plugin.yml
+
   check-dependencies:
     runs-on: ubuntu-24.04
     steps:
