@@ -15,6 +15,12 @@ bible-cc-daemon = "bible_cc_plugin.cli:daemon_main"
 bible-cc-hook = "bible_cc_plugin.cli:hook_main"
 bible-cc = "bible_cc_plugin.cli:setup_main"
 
+[tool.setuptools.packages.find]
+include = ["bible_cc_plugin*"]
+
+[tool.setuptools.package-data]
+bible_cc_plugin = ["py.typed"]
+
 [build-system]
 requires = ["setuptools>=68.0"]
 build-backend = "setuptools.build_meta"
