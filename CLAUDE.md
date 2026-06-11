@@ -1,86 +1,153 @@
 # CLAUDE.md
 
-This file provides MUST follow rules to Claude Code (claude.ai/code) when working with code in this repository unless explicitly overridden.
+This file provides guidance to Claude Code (claude.ai/code) when working with code in this repository.
 
-Project specific guidence please follow [CLAUDE_local](CLAUDE_local.md)
+## Project Overview
 
-**Tradeoff:** Below guidelines bias toward caution over speed. For trivial tasks, use judgment.
+BiBLE Atlas is an agent-native context management database. A Python FastAPI server (backed by OpenSearch) provides semantic search over three knowledge domains — **KNOWLEDGE_BASE**, **SKILL**, **MEMORY** — through a unified REST API. Agent plugins for OpenClaw, Hermes, and VSCode consume that API to auto-recall relevant context before each LLM turn, capture conversation turns as persistent memory, and expose domain tools to agents.
 
-## 1. Think Before Coding
+## Build, Test, and Lint Commands
 
-**Don't assume. Don't hide confusion. Surface tradeoffs.**
+### Server (`bible/`)
 
-Before implementing:
+```bash
+uv sync --all-extras          # install all deps including vector models
+source .venv/bin/activate
 
-- State your assumptions explicitly. If uncertain, ask.
-- If multiple interpretations exist, present them - don't pick silently.
-- If a simpler approach exists, say so. Push back when warranted.
-- If something is unclear, stop. Name what's confusing. Ask.
+# Run the server
+uv run python -m bible.main
 
-## 2. Simplicity First
+# Test mode server (fixture-driven, no real OpenSearch/Celery needed)
+uv run python -m bible.test_mode.server --port 5555
 
-**Minimum code that solves the problem. Nothing speculative.**
+# Tests
+uv run pytest tests/ -v                          # all tests
+uv run pytest tests/server/test_memory_search_service.py -v -k "test_search"  # single test
+BIBLE_ATLAS_CONFIG=bible-atlas.yaml uv run pytest tests/ -v   # with real config
 
-- No features beyond what was asked.
-- No abstractions for single-use code.
-- No "flexibility" or "configurability" that wasn't requested.
-- No error handling for impossible scenarios.
-- If you write 200 lines and it could be 50, rewrite it.
-
-Ask yourself: "Would a senior engineer say this is overcomplicated?" If yes, simplify.
-
-## 3. Surgical Changes
-
-**Touch only what you must. Clean up only your own mess.**
-
-When editing existing code:
-
-- Don't "improve" adjacent code, comments, or formatting.
-- Don't refactor things that aren't broken.
-- Match existing style, even if you'd do it differently.
-- If you notice unrelated dead code, mention it - don't delete it.
-
-When your changes create orphans:
-
-- Remove imports/variables/functions that YOUR changes made unused.
-- Don't remove pre-existing dead code unless asked.
-
-The test: Every changed line should trace directly to the user's request.
-
-## 4. Goal-Driven Execution
-
-**Define success criteria. Loop until verified.**
-
-Transform tasks into verifiable goals:
-
-- "Add validation" → "Write tests for invalid inputs, then make them pass"
-- "Fix the bug" → "Write a test that reproduces it, then make it pass"
-- "Refactor X" → "Ensure tests pass before and after"
-
-For multi-step tasks, state a brief plan:
-
-```
-1. [Step] → verify: [check]
-2. [Step] → verify: [check]
-3. [Step] → verify: [check]
+# Lint & type-check
+uv run ruff check bible/
+uv run ruff format bible/
+uv run mypy bible/
 ```
 
-Strong success criteria let you loop independently. Weak criteria ("make it work") require constant clarification.
+### Go CLI (`bible_cli_go/`)
 
-## 5. Surface conflicts
+```bash
+go build -o ./target/bible ./cmd/bible-cli/   # build
+go test ./...                                  # all tests (self-contained, http mocks)
+go test ./... -race                            # recommended for PRs
+go test ./internal/cli/... -v -run TestRunHealth  # single test
+go vet ./...
+```
 
-If two patterns contradict, pick one more recent or more tested, explain why, flag the other for cleanup. Don't blend conflicting patterns.
+### Hermes Plugin (`bible-hermes-plugin/`)
 
-## 6. Tests verify intent not just behavior
+```bash
+make check       # ruff lint + basedpyright type-check
+make fix         # auto-fix lint/format
+make test        # pytest with coverage
+make typecheck   # basedpyright only
+# Single test:
+uv run pytest tests/ -v -k "test_recall"
+```
 
-- Tests must encode WHY behavior matters, not just WHAT it does.
-- A Test is wrong if it cannot fail when business logic changes.
+### OC Plugin (`bible-oc-plugin/`)
 
-## 7. Checkpoint after every significant step
+```bash
+npm install
+npm run typecheck    # tsc --noEmit
+npm test             # vitest
+npm run build        # tsc compile → dist/
+```
 
-Summarize what was done, what's verified, what's left. Do not continue from a state you cannot describe back.
+### VSCode Extension (`bible_vscode/`)
 
-## 8. Fail loud
+```bash
+npm install
+npm run compile      # tsc check + esbuild
+npm run watch        # dev mode
+npm run vsix         # package .vsix for local install
+```
 
-- "Completed" is wrong if anything was skipped silently.
-- "Tests Pass" is wrong if any were skipped.
+## Architecture
+
+### Three-Domain Model
+
+All data belongs to one of three domains, each with its own import/search/download pipelines:
+
+| Domain | Import endpoint | Search endpoint | Download |
+|---|---|---|---|
+| `KNOWLEDGE_BASE` | `POST /api/import/knowledge-base` | `POST /api/search/knowledge-base` | none |
+| `SKILL` | `POST /api/import/skill` | `POST /api/search/skill` | `POST /api/download/skill/...` |
+| `MEMORY` | `POST /api/import/memory` | `POST /api/search/memory` | `POST /api/download/memory/...` |
+
+Knowledge bases are organized by `tag` → index mapping (configured in `bible-atlas.yaml`). Skills are `.skill` packages for agent invocation. Memory is conversation context persisted across sessions.
+
+### Server Layering (`bible/`)
+
+```
+api/          → FastAPI route definitions (thin — delegates to features)
+features/     → Business logic: import, search, async_task (Celery)
+  import/       → memory_import/ (parser sandboxing + storage), parser_runtime/ (AST guard + sandbox runner)
+  search/       → memory_search/, knowledge_base_search/, skill_search/ + common/ (hit mapping, query compilation)
+  async_task/   → Celery app, dispatcher, worker, Redis repository
+infrastructure/ → database/ (OpenSearch, Elasticsearch, Postgres), file_system/ (local, MinIO, S3), vector/ (embedding + rerank models)
+config/        → YAML config loader (bible-atlas.yaml, hot-reload capable)
+test_mode/     → Fixture-driven test server — replays recorded HTTP responses, no real backend needed
+```
+
+**Async import flow**: API returns `202 {task_id}` → Celery worker picks up task → parser runs in sandboxed subprocess (AST-checked first) → chunks written to OpenSearch + files to storage → task status queryable via `GET /api/control/admin/tasks/{id}`.
+
+### Plugin Architecture
+
+Both plugins (`bible-oc-plugin` and `bible-hermes-plugin`) are **feature-symmetric** — they provide the same capabilities on different agent platforms:
+
+1. **Auto-recall pipeline**: Before each LLM turn, query BiBLE Atlas for relevant memories/skills/knowledge → deduplicate → score-filter → token-budget-truncate → inject as `<relevant-memories>` context block.
+2. **Session capture**: After each turn, buffer the exchange. Flush to BiBLE Atlas memory import at configurable thresholds (turn count or character count).
+3. **7 agent tools**: `bible_memory_search/save/get`, `bible_knowledge_search/list`, `bible_skill_search/get`.
+4. **CLI**: `setup --base-url <url> [--write]` and `status` commands.
+5. **Graceful degradation**: If unconfigured (no `base_url`), only the CLI command registers; all hooks and tools skip.
+
+The OC plugin implements this as a `context-engine` kind (with `assemble`/`afterTurn`/`compact` lifecycle methods). The Hermes plugin uses hook-based registration (`pre_llm_call`, `post_llm_call`, `on_session_start/end/reset`).
+
+### Configuration Resolution (Plugins)
+
+Both plugins share the same config schema with different naming conventions:
+- **Hermes**: `snake_case` in `~/.hermes/config.yaml` under `bible:` key
+- **OC**: `camelCase` in `~/.openclaw/openclaw.json` under `plugins.entries.bible-oc-plugin.config`
+
+Key settings: `baseUrl`/`base_url` (required), `enableMemoryRecall`, `enableSkillRecall`, `enableKnowledgeRecall`, `recallTopK`, `recallMinScore`, `injectionTokenBudget`, `captureEnabled`, `bypassSessionPatterns`. OC plugin adds `forceInjection`/`forceCapture`; Hermes adds `force_injection`/`force_capture`.
+
+Priority: environment variables (`BIBLE_ATLAS_BASE_URL`) > config file.
+
+## Key Conventions
+
+### JSON Envelope (Go CLI — non-negotiable)
+
+All Go CLI stdout output must use the envelope format:
+```json
+{"ok":true,"data":{...}}
+{"ok":false,"error":{"code":"INVALID_ARGS","message":"..."}}
+```
+Use `protocol.PrintSuccess`/`protocol.PrintFailure`. Never `fmt.Println` to stdout. Exit codes: 0 = success, 1 = error, 3 = not implemented.
+
+### Test Mode
+
+The server has a built-in test mode (`bible/test_mode/`) that serves a fixture-driven HTTP API without OpenSearch, Celery, or real file storage. Fixtures define request→response mappings. Use it for integration tests and plugin development when the real server isn't available.
+
+### Bypass Patterns
+
+Both plugins support `bypassSessionPatterns` — regex patterns that match session IDs. Matching sessions skip recall and capture entirely. This is the standard way to exclude scratch/test sessions from memory pollution.
+
+### Parser Sandboxing
+
+Custom knowledge-base parsers run in sandboxed subprocesses. Before execution, the parser script is AST-checked (`ast_guard.py`) to block dangerous imports/operations. Timeout and resource limits are enforced by `sandbox_runner.py`.
+
+## Cross-Cutting Patterns
+
+- **Import is always async**: Import endpoints return `202` immediately. Check task status via `GET /api/control/admin/tasks/{id}`. CLI `--wait` flag polls until completion.
+- **Plugin tools are HTTP wrappers**: Agent tools in both plugins are thin wrappers around BiBLE Atlas HTTP API calls — they don't contain search logic themselves.
+- **Config is pushed to the edge**: Server config lives in `bible-atlas.yaml`. CLI config merges env vars + `~/.bible/config.json`. Plugin config merges env vars + host config file. Nothing reads config from multiple layers deep in business logic.
+- **Go CLI error types**: `protocol.CLIError{Code, Message, ExitCode}` — used throughout. `protocol.NotImplemented("action")` for unimplemented commands. `protocol.WrapAsCLIError(err)` for wrapping unexpected errors.
+- **Hermes plugin uses in-process Python**: The plugin is installed into Hermes Agent's venv (`~/.hermes/hermes-agent/venv/`). A local `.venv` in the plugin directory is invisible to Hermes.
