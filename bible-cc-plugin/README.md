@@ -19,6 +19,7 @@ BiBLE Atlas plugin for [Claude Code](https://claude.ai/code) — memory + knowle
 ## Quick start
 
 ```bash
+# from BiBLE-Atlas project root
 cd bible-cc-plugin
 
 # 1. Deploy
@@ -38,6 +39,7 @@ After setup, BiBLE Atlas integration is active. Open any Claude Code session —
 ### Via deploy script (recommended)
 
 ```bash
+# from BiBLE-Atlas project root
 cd bible-cc-plugin
 ./deploy.sh
 ```
@@ -54,6 +56,7 @@ This syncs source files to `~/.claude/plugins/bible-cc-plugin/`, installs with `
 ### Manual install
 
 ```bash
+# from BiBLE-Atlas project root
 cd bible-cc-plugin
 uv pip install .
 ```
