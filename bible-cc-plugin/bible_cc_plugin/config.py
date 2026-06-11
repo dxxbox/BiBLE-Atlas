@@ -6,12 +6,15 @@ Reads from ~/.bible-cc/config.yaml with env var overrides.
 from __future__ import annotations
 
 from dataclasses import dataclass, field
+import logging
 import os
 import re
 from pathlib import Path
 from typing import Any
 
 import yaml
+
+logger = logging.getLogger(__name__)
 
 
 @dataclass
@@ -123,7 +126,12 @@ def _build_config(file_cfg: dict) -> BibleCCConfig:
 
 def _bool(section: dict, key: str, fallback: bool) -> bool:
     val = section.get(key)
-    return fallback if val is None else bool(val)
+    if val is None:
+        return fallback
+    if not isinstance(val, bool):
+        logger.warning("config '%s' must be a boolean, got %s — using default %s", key, type(val).__name__, fallback)
+        return fallback
+    return val
 
 
 def _int(section: dict, key: str, lo: int, hi: int | None, fallback: int) -> int:
@@ -131,10 +139,13 @@ def _int(section: dict, key: str, lo: int, hi: int | None, fallback: int) -> int
     if val is None:
         return fallback
     if not isinstance(val, int) or isinstance(val, bool):
+        logger.warning("config '%s' must be an integer, got %s — using default %s", key, type(val).__name__, fallback)
         return fallback
     if val < lo:
+        logger.warning("config '%s' value %s < min %s — using default %s", key, val, lo, fallback)
         return fallback
     if hi is not None and val > hi:
+        logger.warning("config '%s' value %s > max %s — using default %s", key, val, hi, fallback)
         return fallback
     return val
 
@@ -144,8 +155,10 @@ def _float(section: dict, key: str, lo: float, hi: float, fallback: float) -> fl
     if val is None:
         return fallback
     if not isinstance(val, (int, float)) or isinstance(val, bool):
+        logger.warning("config '%s' must be a number, got %s — using default %s", key, type(val).__name__, fallback)
         return fallback
     if val < lo or val > hi:
+        logger.warning("config '%s' value %s outside [%s, %s] — using default %s", key, val, lo, hi, fallback)
         return fallback
     return float(val)
 

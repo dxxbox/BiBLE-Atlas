@@ -1,10 +1,8 @@
-"""BiBLE Hermes Plugin — structured action logging with secret redaction.
+"""BiBLE CC Plugin — structured action logging with secret redaction.
 
-Mirrors src/logging.ts from the OpenClaw plugin.
+Mirrors logging_utils.py from bible-hermes-plugin.
 
-Logging output goes to $HERMES_HOME/logs/bible-hermes-plugin.log (for
-``hermes logs -f`` compatibility when the session itself is the tail target,
-and for ``tail -f`` on the dedicated file otherwise).
+Logging output goes to ~/.bible-cc/logs/bible-cc-plugin.log.
 A FileHandler is attached to the plugin's logger at module import time if no
 handler is already present, with the level inherited from the root logger
 (defaulting to DEBUG when the root logger is unconfigured).
@@ -19,7 +17,7 @@ import time
 from pathlib import Path
 from typing import Any
 
-_PLUGIN_ID = "bible-hermes-plugin"
+_PLUGIN_ID = "bible-cc-plugin"
 _SECRET_PATTERN = frozenset(["token", "authorization", "api_key", "apikey", "api-key", "secret", "password"])
 
 logger = logging.getLogger(__name__)
@@ -27,15 +25,14 @@ logger = logging.getLogger(__name__)
 # ── ensure file-based log output ───────────────────────────────────────────────
 
 def _ensure_log_handler() -> None:
-    """Attach a FileHandler writing to $HERMES_HOME/logs/bible-hermes-plugin.log.
+    """Attach a FileHandler writing to ~/.bible-cc/logs/bible-cc-plugin.log.
 
     The handler inherits the root logger's effective level. If the root logger
     is completely unconfigured (no handlers), we default to DEBUG so that all
-    bible-hermes-plugin log messages are visible during development/debugging.
+    bible-cc-plugin log messages are visible during development/debugging.
 
-    Logs go to a dedicated file so they never pollute the Hermes session window.
-    Use ``tail -f $HERMES_HOME/logs/bible-hermes-plugin.log`` or
-    ``hermes logs -f`` to watch them.
+    Logs go to a dedicated file so they never pollute the Claude Code session.
+    Use ``tail -f ~/.bible-cc/logs/bible-cc-plugin.log`` to watch them.
     """
     if logger.handlers:
         return
@@ -55,11 +52,11 @@ def _ensure_log_handler() -> None:
         # are visible during development / log-file debugging.
         effective_level = logging.DEBUG
 
-    hermes_home = os.environ.get("HERMES_HOME", str(Path.home() / ".hermes"))
-    logs_dir = Path(hermes_home) / "logs"
+    cc_home = os.environ.get("BIBLE_CC_HOME", str(Path.home() / ".bible-cc"))
+    logs_dir = Path(cc_home) / "logs"
     logs_dir.mkdir(parents=True, exist_ok=True)
 
-    log_file = logs_dir / "bible-hermes-plugin.log"
+    log_file = logs_dir / "bible-cc-plugin.log"
     handler = logging.FileHandler(str(log_file))
     handler.setLevel(effective_level)
     handler.setFormatter(logging.Formatter(
