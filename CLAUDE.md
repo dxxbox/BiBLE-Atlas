@@ -2,9 +2,19 @@
 
 This file provides guidance to Claude Code (claude.ai/code) when working with code in this repository.
 
+## Pre-Action Checklist
+
+Before any edit/write, ask:
+
+1. Was this explicitly asked for? (If not, stop.)
+2. Am I assuming or do I know? (If assuming, ask.)
+3. Is this the simplest approach? (If over 3 steps, reconsider.)
+4. Will this change pass verification? (If not sure, flag it.)
+5. Never, ever change standard to get `Pass`
+
 ## Project Overview
 
-BiBLE Atlas is an agent-native context management database. A Python FastAPI server (backed by OpenSearch) provides semantic search over three knowledge domains — **KNOWLEDGE_BASE**, **SKILL**, **MEMORY** — through a unified REST API. Agent plugins for OpenClaw, Hermes, and VSCode consume that API to auto-recall relevant context before each LLM turn, capture conversation turns as persistent memory, and expose domain tools to agents.
+BiBLE Atlas is an agent-native context management database. A Python FastAPI server (backed by OpenSearch) provides semantic search over three knowledge domains — **KNOWLEDGE_BASE**, **SKILL**, **MEMORY** — through a unified REST API. Agent plugins for OpenClaw and VSCode consume that API to auto-recall relevant context before each LLM turn, capture conversation turns as persistent memory, and expose domain tools to agents.
 
 ## Build, Test, and Lint Commands
 
@@ -43,15 +53,7 @@ go vet ./...
 
 ### Hermes Plugin (`bible-hermes-plugin/`)
 
-```bash
-make check       # ruff lint + basedpyright type-check
-make fix         # auto-fix lint/format
-make test        # pytest with coverage
-make typecheck   # basedpyright only
-# Single test:
-uv run pytest tests/ -v -k "test_recall"
-```
-
+> **Split into standalone repo.** See [bible-hermes-plugin](https://github.com/dxxbox/bible-hermes-plugin) for build/test commands and architecture.
 ### OC Plugin (`bible-oc-plugin/`)
 
 ```bash
@@ -101,7 +103,7 @@ test_mode/     → Fixture-driven test server — replays recorded HTTP response
 
 ### Plugin Architecture
 
-Both plugins (`bible-oc-plugin` and `bible-hermes-plugin`) are **feature-symmetric** — they provide the same capabilities on different agent platforms:
+The OC plugin (`bible-oc-plugin`) is **feature-symmetric** — they provide the same capabilities on different agent platforms:
 
 1. **Auto-recall pipeline**: Before each LLM turn, query BiBLE Atlas for relevant memories/skills/knowledge → deduplicate → score-filter → token-budget-truncate → inject as `<relevant-memories>` context block.
 2. **Session capture**: After each turn, buffer the exchange. Flush to BiBLE Atlas memory import at configurable thresholds (turn count or character count).
@@ -109,15 +111,14 @@ Both plugins (`bible-oc-plugin` and `bible-hermes-plugin`) are **feature-symmetr
 4. **CLI**: `setup --base-url <url> [--write]` and `status` commands.
 5. **Graceful degradation**: If unconfigured (no `base_url`), only the CLI command registers; all hooks and tools skip.
 
-The OC plugin implements this as a `context-engine` kind (with `assemble`/`afterTurn`/`compact` lifecycle methods). The Hermes plugin uses hook-based registration (`pre_llm_call`, `post_llm_call`, `on_session_start/end/reset`).
+The OC plugin implements this as a `context-engine` kind (with `assemble`/`afterTurn`/`compact` lifecycle methods).
 
 ### Configuration Resolution (Plugins)
 
 Both plugins share the same config schema with different naming conventions:
-- **Hermes**: `snake_case` in `~/.hermes/config.yaml` under `bible:` key
 - **OC**: `camelCase` in `~/.openclaw/openclaw.json` under `plugins.entries.bible-oc-plugin.config`
 
-Key settings: `baseUrl`/`base_url` (required), `enableMemoryRecall`, `enableSkillRecall`, `enableKnowledgeRecall`, `recallTopK`, `recallMinScore`, `injectionTokenBudget`, `captureEnabled`, `bypassSessionPatterns`. OC plugin adds `forceInjection`/`forceCapture`; Hermes adds `force_injection`/`force_capture`.
+Key settings: `baseUrl`/`base_url` (required), `enableMemoryRecall`, `enableSkillRecall`, `enableKnowledgeRecall`, `recallTopK`, `recallMinScore`, `injectionTokenBudget`, `captureEnabled`, `bypassSessionPatterns`. OC plugin adds `forceInjection`/`forceCapture`
 
 Priority: environment variables (`BIBLE_ATLAS_BASE_URL`) > config file.
 
@@ -150,4 +151,3 @@ Custom knowledge-base parsers run in sandboxed subprocesses. Before execution, t
 - **Plugin tools are HTTP wrappers**: Agent tools in both plugins are thin wrappers around BiBLE Atlas HTTP API calls — they don't contain search logic themselves.
 - **Config is pushed to the edge**: Server config lives in `bible-atlas.yaml`. CLI config merges env vars + `~/.bible/config.json`. Plugin config merges env vars + host config file. Nothing reads config from multiple layers deep in business logic.
 - **Go CLI error types**: `protocol.CLIError{Code, Message, ExitCode}` — used throughout. `protocol.NotImplemented("action")` for unimplemented commands. `protocol.WrapAsCLIError(err)` for wrapping unexpected errors.
-- **Hermes plugin uses in-process Python**: The plugin is installed into Hermes Agent's venv (`~/.hermes/hermes-agent/venv/`). A local `.venv` in the plugin directory is invisible to Hermes.

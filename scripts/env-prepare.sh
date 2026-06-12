@@ -5,12 +5,12 @@
 # 用法:
 #   ./scripts/env-prepare.sh setup                     # 一键搭建（完整后端 + 全部客户端）
 #   ./scripts/env-prepare.sh setup --test-mode         # Test Mode（轻量，无需 Docker）
-#   ./scripts/env-prepare.sh setup cli hermes          # 只搭建指定组件
+#   ./scripts/env-prepare.sh setup cli oc          # 只搭建指定组件
 #   ./scripts/env-prepare.sh teardown                  # 一键清理
 #   ./scripts/env-prepare.sh teardown --full           # 清理含 Docker 容器删除
 #   ./scripts/env-prepare.sh status                    # 查看所有组件状态
 #
-# 组件: opensearch | redis | server | cli | hermes | oc | all
+# 组件: opensearch | redis | server | cli | oc | all
 # =============================================================================
 set -euo pipefail
 
@@ -21,12 +21,10 @@ REPO_ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"
 OS_DEPLOY="$SCRIPT_DIR/opensearch_deploy/deploy.sh"
 REDIS_DEPLOY="$SCRIPT_DIR/redis_celery_deploy/deploy.sh"
 SERVER_DEPLOY="$SCRIPT_DIR/server_deploy/deploy.sh"
-HERMES_DEPLOY="$REPO_ROOT/bible-hermes-plugin/deploy.sh"
 MODEL_PULLER="$REPO_ROOT/tools/model_puller/main.py"
 
 CLI_DIR="$REPO_ROOT/bible_cli_go"
 OC_DIR="$REPO_ROOT/bible-oc-plugin"
-HERMES_DIR="$REPO_ROOT/bible-hermes-plugin"
 
 # ── 默认值 ────────────────────────────────────────────────────────────────────
 MODE="full"              # test | full
@@ -234,18 +232,6 @@ resolve_redis_commander_config() {
   fi
 }
 
-remove_hermes_bible_config() {
-  local config_file="$HOME/.hermes/config.yaml"
-  [ -f "$config_file" ] || return 0
-
-  local tmp_file="${config_file}.tmp.$$"
-  awk '
-    /^bible:[[:space:]]*$/ { skip = 1; next }
-    skip && /^[^[:space:]#][^:]*:/ { skip = 0 }
-    !skip { print }
-  ' "$config_file" > "$tmp_file"
-  mv "$tmp_file" "$config_file"
-}
 
 wait_for_url() {
   local url=$1
@@ -387,7 +373,6 @@ ${BOLD}组件（可多个，默认 all）:${NC}
   redis          Redis 容器 + Celery Worker
   server         Bible Server
   cli            Go CLI 构建
-  hermes         Hermes 插件部署
   oc             OpenClaw 插件构建 + 安装
   all            全部组件（默认值）
 
@@ -404,7 +389,7 @@ ${BOLD}选项:${NC}
   --force                      跳过确认提示
   --purge-config               清理用户级 BiBLE 配置（如 ~/.bible/config.json）
   --purge-workspace            删除项目 workspace/ 运行时数据
-  --uninstall-plugins          卸载/移除 Hermes 与 OpenClaw 用户级插件配置
+  --uninstall-plugins          卸载/移除 OpenClaw 用户级插件配置
   --json                       status 命令输出 JSON
   -h, --help                   显示本帮助
 
@@ -430,7 +415,7 @@ ${BOLD}常用示例:${NC}
   BIBLE_DOCKER_REGISTRY_PREFIX=docker.m.daocloud.io/ $0 setup --full
 
   # 已有服务端，只搭客户端
-  $0 setup cli hermes oc
+  $0 setup cli oc
 
   # 只搭 OpenSearch + Redis，指定实例名
   $0 setup --full opensearch redis -n mytest
@@ -442,7 +427,7 @@ ${BOLD}常用示例:${NC}
   $0 teardown --full --force
 
   # 只清理插件
-  $0 teardown hermes oc
+  $0 teardown oc
 
   # 查看状态
   $0 status
@@ -513,9 +498,9 @@ parse_args() {
   for c in "${COMPONENTS[@]}"; do
     if [ "$c" = "all" ]; then
       if [ "$MODE" = "full" ]; then
-        expanded+=(opensearch redis server cli hermes oc)
+        expanded+=(opensearch redis server cli oc)
       else
-        expanded+=(server cli hermes oc)
+        expanded+=(server cli oc)
       fi
     else
       expanded+=("$c")
@@ -533,8 +518,8 @@ parse_args() {
   # 校验组件名
   for c in "${COMPONENTS[@]}"; do
     case "$c" in
-      opensearch|redis|server|cli|hermes|oc) ;;
-      *) die "未知组件: $c（有效值: opensearch, redis, server, cli, hermes, oc, all）" ;;
+      opensearch|redis|server|cli|oc) ;;
+      *) die "未知组件: $c（有效值: opensearch, redis, server, cli, oc, all）" ;;
     esac
   done
 }
@@ -841,46 +826,6 @@ setup_cli() {
   fi
 }
 
-setup_hermes() {
-  step "Hermes Plugin — 部署"
-
-  if ! check_cmd hermes; then
-    warn "hermes CLI 不可用，跳过 Hermes 插件部署"
-    detail "请先安装 Hermes Agent: https://hermes-agent.nousresearch.com"
-    return 0
-  fi
-
-  cd "$HERMES_DIR"
-
-  if [ ! -f "$HERMES_DEPLOY" ]; then
-    die "未找到 deploy.sh: $HERMES_DEPLOY"
-  fi
-
-  info "执行 deploy.sh ..."
-  bash "$HERMES_DEPLOY" || die "部署失败"
-  ok "插件已部署"
-
-  hermes plugins enable bible-hermes-plugin 2>/dev/null && ok "插件已启用" || true
-
-  export BIBLE_ATLAS_BASE_URL="${BASE_URL}"
-  info "执行 setup --write ..."
-  if hermes bible setup --base-url "${BASE_URL}" --write 2>/dev/null; then
-    ok "setup --write 完成"
-  else
-    warn "setup 失败（可能已配置或 Hermes 未运行）"
-  fi
-
-  # 验证
-  hermes bible status 2>/dev/null || warn "无法获取状态（Hermes 可能未运行）"
-
-  if ! $SKIP_TEST; then
-    info "运行测试 ..."
-    cd "$HERMES_DIR"
-    uv run pytest tests/ -q 2>/dev/null && ok "pytest 通过" || warn "测试有失败（不影响搭建）"
-  fi
-
-  info "下一步: 重启 Hermes (会话中 /reset 或 hermes server restart)"
-}
 
 setup_oc() {
   step "OpenClaw Plugin — 构建与安装"
@@ -1012,20 +957,6 @@ teardown_cli() {
   fi
 }
 
-teardown_hermes() {
-  step "Hermes Plugin — 清理"
-  if $UNINSTALL_PLUGINS; then
-    hermes plugins disable bible-hermes-plugin 2>/dev/null && ok "插件已禁用" || true
-    rm -rf "$HOME/.hermes/plugins/bible-hermes-plugin" && ok "插件文件已删除" || true
-    remove_hermes_bible_config
-    ok "Hermes bible 配置段已移除"
-  else
-    skip "Hermes 用户级插件保留（使用 --uninstall-plugins 卸载）"
-  fi
-  rm -rf "$HERMES_DIR/.venv" 2>/dev/null || true
-  find "$HERMES_DIR" -type d -name '__pycache__' -exec rm -rf {} + 2>/dev/null || true
-  ok "本地构建产物已清理"
-}
 
 teardown_oc() {
   step "OpenClaw Plugin — 清理"
@@ -1065,9 +996,6 @@ cli_built() {
   [ -f "$CLI_DIR/target/bible" ]
 }
 
-hermes_installed() {
-  [ -d "$HOME/.hermes/plugins/bible-hermes-plugin" ]
-}
 
 oc_installed() {
   [ -d "$HOME/.openclaw/extensions/bible-oc-plugin" ]
@@ -1081,7 +1009,6 @@ status_all() {
   "opensearch": { "status": "$(os_running && echo running || echo down)", "port": ${OS_HTTP_PORT} },
   "redis":     { "status": "$(redis_running && echo running || echo down)", "port": ${REDIS_PORT} },
   "cli":       { "status": "$(cli_built && echo built || echo not_built)" },
-  "hermes":    { "status": "$(hermes_installed && echo installed || echo not_installed)" },
   "oc":        { "status": "$(oc_installed && echo installed || echo not_installed)" }
 }
 JSONEOF
@@ -1119,11 +1046,6 @@ JSONEOF
     echo "  Go CLI:      ${DIM}○${NC} 未构建"
   fi
 
-  if hermes_installed; then
-    echo "  Hermes:      ${GREEN}●${NC} 已安装    — ~/.hermes/plugins/bible-hermes-plugin"
-  else
-    echo "  Hermes:      ${DIM}○${NC} 未安装"
-  fi
 
   if oc_installed; then
     echo "  OC Plugin:   ${GREEN}●${NC} 已安装    — ~/.openclaw/extensions/bible-oc-plugin"
@@ -1168,7 +1090,6 @@ main() {
           redis)      setup_redis ;;
           server)     setup_server ;;
           cli)        setup_cli ;;
-          hermes)     setup_hermes ;;
           oc)         setup_oc ;;
         esac
       done
@@ -1198,7 +1119,6 @@ main() {
           redis)      teardown_redis ;;
           server)     teardown_server ;;
           cli)        teardown_cli ;;
-          hermes)     teardown_hermes ;;
           oc)         teardown_oc ;;
         esac
       done

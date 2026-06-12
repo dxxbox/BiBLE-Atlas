@@ -39,10 +39,6 @@ BiBLE Atlas 是一个专为 AI Agent 打造的语义检索引擎。它跨三个�
   │ OC       │─── HTTP ──▶
   │ Plugin   │
   └──────────┘
-  ┌──────────┐
-  │ Hermes   │─── HTTP ──▶
-  │ Plugin   │
-  └──────────┘
 ```
 
 ### Three-Domain Model / 三域模型
@@ -211,8 +207,6 @@ BiBLE-Atlas/
 ├── bible-oc-plugin/             # OpenClaw Plugin / OpenClaw 插件
 │   └── src/                     #   TypeScript: context engine + agent tools
 │
-├── bible-hermes-plugin/         # Hermes Plugin / Hermes 插件
-│   └── bible_hermes_plugin/     #   Python: hooks + agent tools + CLI
 │
 ├── tests/                       # Python server tests / 服务端测试
 ├── docs/                        # Design docs & user manuals / 设计文档与用户手册
@@ -354,20 +348,8 @@ npm run typecheck && npm run build && npm test
 
 ### Hermes Plugin (`bible-hermes-plugin/`)
 
-A hook-based plugin for Hermes Agent with the same feature set as the OC plugin:
-
-- **Auto-recall** — Injects `<relevant-memories>` via the `pre_llm_call` hook
-- **Session capture** — Commits buffered turns via `post_llm_call`
-- **7 agent tools** — Same memory/knowledge/skill tool surface
-- **CLI** — `hermes bible setup` and `hermes bible status`
-
-```bash
-cd bible-hermes-plugin
-make check       # ruff + basedpyright
-make test        # pytest with coverage
-```
-
-See [bible-hermes-plugin/README.md](bible-hermes-plugin/README.md) for full documentation.
+> **This plugin has been split into its own repository.**
+> See [bible-hermes-plugin](https://github.com/dxxbox/bible-hermes-plugin) for installation, usage, and development guide.
 
 ### Plugin Architecture / 插件架构
 
@@ -407,14 +389,14 @@ Server configuration lives in `bible-atlas.yaml` with hot-reload support (no res
 
 Plugins resolve config from env vars → host config file:
 
-| Env Variable | Hermes (`config.yaml`) | OC (`openclaw.json`) | Default |
+| Env Variable | OC (`openclaw.json`) | Default |
 |---|---|---|---|
-| `BIBLE_ATLAS_BASE_URL` | `bible.base_url` | `baseUrl` | *(required)* |
-| `BIBLE_ATLAS_TOKEN` | `bible.token` | `token` | — |
-| — | `bible.enable_memory_recall` | `enableMemoryRecall` | `true` |
-| — | `bible.recall_top_k` | `recallTopK` | `8` |
-| — | `bible.recall_min_score` | `recallMinScore` | `0.35` |
-| — | `bible.injection_token_budget` | `injectionTokenBudget` | `1200` |
+| `BIBLE_ATLAS_BASE_URL` `baseUrl` | *(required)* |
+| `BIBLE_ATLAS_TOKEN` | `token` | — |
+| — | `enableMemoryRecall` | `true` |
+| — | `recallTopK` | `8` |
+| — | `recallMinScore` | `0.35` |
+| — | `injectionTokenBudget` | `1200` |
 
 ---
 
@@ -445,8 +427,6 @@ cd bible_cli_go && go vet ./... && go test ./... -race
 cd bible_vscode && npx tsc --noEmit
 cd bible-oc-plugin && npm run typecheck
 
-# Hermes plugin
-cd bible-hermes-plugin && make check
 ```
 
 ### CI / 持续集成

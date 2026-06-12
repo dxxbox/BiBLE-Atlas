@@ -14,7 +14,6 @@
    - [3.2 部署 Redis + Celery Worker](#32-部署-redis--celery-worker)
    - [3.3 部署 Bible Server](#33-部署-bible-server)
 4. [Bible CLI Go（命令行）](#4-bible-cli-go命令行)
-5. [Bible Hermes Plugin（Hermes 插件）](#5-bible-hermes-pluginhermes-插件)
 6. [Bible OC Plugin（OpenClaw 插件）](#6-bible-oc-pluginopenclaw-插件)
 7. [全组件联合测试](#7-全组件联合测试)
 8. [环境清理](#8-环境清理)
@@ -28,7 +27,7 @@
 `scripts/env-prepare.sh` 是本指南的终极武器——一条命令完成全部搭建或清理。
 
 ```bash
-# 一键搭建（完整后端 + Go CLI + Hermes + OC 插件）
+# 一键搭建（完整后端 + Go CLI + OC 插件）
 ./scripts/env-prepare.sh setup
 
 # 一键清理
@@ -44,7 +43,7 @@
 ./scripts/env-prepare.sh setup --test-mode               # Test Mode（轻量，无需 Docker）
 ./scripts/env-prepare.sh setup cli                       # 只搭 Go CLI
 ./scripts/env-prepare.sh setup --full opensearch redis   # 只搭基础设施
-./scripts/env-prepare.sh teardown hermes oc              # 只清理插件
+./scripts/env-prepare.sh teardown oc              # 只清理插件
 ./scripts/env-prepare.sh status --json                   # JSON 输出
 ```
 
@@ -80,7 +79,7 @@ BIBLE_OPENSEARCH_MEMORY_GB=6 \
 ./scripts/env-prepare.sh setup --full opensearch --force
 ```
 
-脚本内部按正确顺序调用 [第 9 节](#9-部署脚本速查) 中的所有子脚本，处理端口冲突复用、健康检查等待、优雅降级（如 Hermes/OpenClaw 未安装则跳过对应组件）。
+脚本内部按正确顺序调用 [第 9 节](#9-部署脚本速查) 中的所有子脚本，处理端口冲突复用、健康检查等待、优雅降级（如 OpenClaw 未安装则跳过对应组件）。
 
 后续各节是每种搭建方式的详细分步说明，供需要了解内部原理或手动排障时参考。
 
@@ -92,7 +91,6 @@ BIBLE_OPENSEARCH_MEMORY_GB=6 \
 |---|---|---|---|
 | Bible Server | Python (FastAPI) | HTTP API 服务端 | `http://localhost:5555` |
 | Bible CLI Go | Go | 命令行客户端 | 通过 `BIBLE_CLI_BASE_URL` 连接服务端 |
-| Bible Hermes Plugin | Python | Hermes Agent 插件 | 安装到 `~/.hermes/plugins/` |
 | Bible OC Plugin | TypeScript | OpenClaw 插件 | 安装到 `~/.openclaw/extensions/` |
 
 ### 项目部署脚本总览
@@ -102,7 +100,6 @@ BIBLE_OPENSEARCH_MEMORY_GB=6 \
 | `scripts/opensearch_deploy/` | OpenSearch 多实例部署管理 | `deploy.sh`、`quickstart.sh`、`docker-compose.template.yml` |
 | `scripts/redis_celery_deploy/` | Redis + Celery Worker 部署管理 | `deploy.sh`、`quickstart.sh`、`redis.conf.template` |
 | `scripts/server_deploy/` | Bible Server 进程管理 | `deploy.sh`、`quickstart.sh` |
-| `bible-hermes-plugin/deploy.sh` | Hermes 插件一键部署 | 同步 + pip install + enable |
 | `bible-oc-plugin/scripts/install-local.mjs` | OC 插件本地安装 | 写入 `~/.openclaw/openclaw.json` |
 
 ### 测试拓扑
@@ -121,8 +118,6 @@ BIBLE_OPENSEARCH_MEMORY_GB=6 \
 └──────┬──────────────┬──────────────┬─────────────────────────┘
        │              │              │
   ┌────▼────┐   ┌─────▼─────┐  ┌────▼─────────┐
-  │ Go CLI  │   │  Hermes   │  │    OC Plugin │
-  │ (终端)   │   │  Plugin   │  │              │
   └─────────┘   └───────────┘  └──────────────┘
 ```
 
@@ -489,123 +484,11 @@ rm -f ~/.bible/config.json         # 用户配置（可选）
 
 ---
 
+
 ## 5. Bible Hermes Plugin（Hermes 插件）
 
-#### 5.1 前置条件
-
-| 依赖 | 说明 |
-|---|---|
-| Hermes Agent | 已安装于 `~/.hermes` |
-| uv | Python 包管理器 |
-| Bible Server | 已启动（推荐 Test Mode `127.0.0.1:5555`） |
-
-#### 5.2 安装
-
-**方式一：一键部署脚本（推荐）**
-
-```bash
-cd BiBLE-Atlas/bible-hermes-plugin
-
-# 部署（不重启 Hermes）
-./deploy.sh
-
-# 部署 + 自动重启 Hermes
-./deploy.sh --restart
-
-# 部署 + 监控日志
-./deploy.sh --watch
-```
-
-**方式二：手动安装**
-
-```bash
-# 1. 同步文件到 Hermes plugins 目录
-rsync -av --delete \
-  --exclude '__pycache__/' --exclude '.venv/' --exclude '.pytest_cache/' \
-  --exclude 'deploy.sh' --exclude '.git/' \
-  ./ ~/.hermes/plugins/bible-hermes-plugin/
-
-# 2. 安装到 Hermes Agent 的 venv（⚠️ 不是插件自己的 .venv）
-uv pip install --python ~/.hermes/hermes-agent/venv/bin/python \
-  ~/.hermes/plugins/bible-hermes-plugin/
-
-# 3. 启用插件
-hermes plugins enable bible-hermes-plugin
-```
-
-> **关键**：插件必须安装到 `~/.hermes/hermes-agent/venv/`（Hermes 运行时 Python），而非插件目录下的 `.venv`。
-
-#### 5.3 配置
-
-两种方式（环境变量优先）：
-
-**环境变量：**
-
-```bash
-export BIBLE_ATLAS_BASE_URL=http://127.0.0.1:5555
-```
-
-**配置文件 `~/.hermes/config.yaml`：**
-
-```yaml
-bible:
-  base_url: "http://127.0.0.1:5555"
-  enable_memory_recall: true
-  enable_skill_recall: true
-  recall_top_k: 8
-  recall_min_score: 0.35
-  injection_token_budget: 1200
-  capture_enabled: true
-  bypass_session_patterns:
-    - "^scratch:"
-    - "^test-"
-```
-
-完整配置项见 `bible-hermes-plugin/plugin.yaml` 中的 `config_schema`。
-
-#### 5.4 验证
-
-```bash
-hermes plugins list | grep bible
-hermes bible --help
-
-# Dry-run setup
-hermes bible setup --base-url http://127.0.0.1:5555
-
-# 写入配置
-hermes bible setup --base-url http://127.0.0.1:5555 --write
-
-# 查看状态
-hermes bible status
-```
-
-确认：`enabled: yes`、`health: ok`、`tools: 7 registered`。
-
-#### 5.5 功能验证
-
-1. 重启 Hermes（`/reset` 或 `hermes server restart`）
-2. 会话中发送与已保存 memory 相关的问题
-3. 确认日志出现 `recall.pipeline start`、`runtime.searchMemory`
-4. 输入 `/bible status` 验证 slash command
-5. 逐一调用 7 个 agent tools 确认返回结构
-6. 创建 session ID 匹配 `bypass_session_patterns` 的会话，确认不触发 recall
-
-#### 5.6 运行测试
-
-```bash
-cd bible-hermes-plugin
-uv sync && uv run pytest tests/ -v
-```
-
-#### 5.7 清理
-
-```bash
-hermes plugins disable bible-hermes-plugin
-rm -rf ~/.hermes/plugins/bible-hermes-plugin
-# 或使用总控脚本：./scripts/env-prepare.sh teardown hermes --uninstall-plugins
-```
-
----
+> **This plugin has been split into its own repository.**
+> See [bible-hermes-plugin](https://github.com/dxxbox/bible-hermes-plugin) for installation, usage, and development guide.
 
 ## 6. Bible OC Plugin（OpenClaw 插件）
 
@@ -770,17 +653,6 @@ go run ./cmd/bible-cli knowledge list
 go run ./cmd/bible-cli search --query "test" --top-k 5
 ```
 
-### 7.3 Hermes Plugin
-
-```bash
-cd BiBLE-Atlas/bible-hermes-plugin
-./deploy.sh --restart
-
-export BIBLE_ATLAS_BASE_URL=http://127.0.0.1:5555
-hermes bible setup --base-url http://127.0.0.1:5555 --write
-hermes bible status
-```
-
 ### 7.4 OC Plugin
 
 ```bash
@@ -802,8 +674,6 @@ cd BiBLE-Atlas && uv run pytest tests/ -v
 # Go CLI
 cd bible_cli_go && go test ./... -race
 
-# Hermes 插件
-cd bible-hermes-plugin && uv run pytest tests/ -v
 
 # OC 插件
 cd bible-oc-plugin && npm test
@@ -857,9 +727,6 @@ pkill -f "bible-mock-server" 2>/dev/null || true
 ### 8.5 卸载插件
 
 ```bash
-# Hermes 插件
-hermes plugins disable bible-hermes-plugin 2>/dev/null || true
-rm -rf ~/.hermes/plugins/bible-hermes-plugin
 
 # OC 插件
 openclaw plugins uninstall bible-oc-plugin 2>/dev/null || true
@@ -868,7 +735,7 @@ openclaw plugins uninstall bible-oc-plugin 2>/dev/null || true
 ### 8.6 清理配置
 
 ```bash
-./scripts/env-prepare.sh teardown cli hermes oc --purge-config --uninstall-plugins
+./scripts/env-prepare.sh teardown cli oc --purge-config --uninstall-plugins
 ```
 
 ### 8.7 清理运行时数据
@@ -878,7 +745,6 @@ cd BiBLE-Atlas
 rm -rf ./workspace ./release ./dist
 rm -rf bible_cli_go/target
 rm -rf bible-oc-plugin/dist bible-oc-plugin/node_modules
-rm -rf bible-hermes-plugin/.venv bible-hermes-plugin/__pycache__
 ```
 
 ### 8.8 一键清理
@@ -913,7 +779,7 @@ rm -rf bible-hermes-plugin/.venv bible-hermes-plugin/__pycache__
 |---|---|
 | `--purge-workspace` | 删除项目 `workspace/` 运行时数据 |
 | `--purge-config` | 删除用户级 BiBLE 配置，如 `~/.bible/config.json` |
-| `--uninstall-plugins` | 卸载/移除 Hermes 与 OpenClaw 用户级插件配置 |
+| `--uninstall-plugins` | 卸载/移除 OpenClaw 用户级插件配置 |
 
 | 环境变量 | 说明 | 默认行为 |
 |---|---|---|
@@ -981,11 +847,7 @@ rm -rf bible-hermes-plugin/.venv bible-hermes-plugin/__pycache__
 
 ### 9.4 Hermes Plugin（`bible-hermes-plugin/deploy.sh`）
 
-| 命令 | 说明 |
-|---|---|
-| `./deploy.sh` | 仅同步 + 安装，不重启 |
-| `./deploy.sh --restart` | 部署后重启 Hermes Server |
-| `./deploy.sh --watch` | 部署后 tail -f 插件日志 |
+> **Split into standalone repo.** See [bible-hermes-plugin](https://github.com/dxxbox/bible-hermes-plugin).
 
 ### 9.5 OC Plugin（`bible-oc-plugin/scripts/install-local.mjs`）
 
@@ -1005,7 +867,6 @@ rm -rf bible-hermes-plugin/.venv bible-hermes-plugin/__pycache__
 | Test Mode 业务路由返回 `NOT_FOUND` | fixture 未命中 | 检查请求参数，或 `--fixture` 添加自定义 fixture |
 | 响应头没有 `X-Bible-Test-Mode` | 请求打到了生产服务 | 确认 base URL 指向 Test Mode |
 | Go CLI 返回 `CLI_NOT_IMPLEMENTED` | 命令尚未实现 | 预期行为，参考 `go-cli-user-guide.md` |
-| `No module named 'bible_hermes_plugin'` | 插件未安装到 Hermes venv | `uv pip install --python ~/.hermes/hermes-agent/venv/bin/python ~/.hermes/plugins/bible-hermes-plugin/` |
 | `openclaw bible` unknown command | 插件未安装或 gateway 未重启 | `openclaw plugins install . --force && openclaw gateway restart` |
 | `setup --write` 失败 | Bible Server 不可达 | `curl http://127.0.0.1:5555/health` |
 | `status` 显示 slot 不正确 | contextEngine slot 未设置 | 设置 `plugins.slots.contextEngine` 为 `bible-oc-plugin` |
@@ -1030,7 +891,6 @@ rm -rf bible-hermes-plugin/.venv bible-hermes-plugin/__pycache__
 | Redis+Celery 部署示例 | `scripts/redis_celery_deploy/EXAMPLES.md` |
 | Server 部署 README | `scripts/server_deploy/README.md` |
 | OC Plugin 测试指南 | `bible-oc-plugin/TESTING_GUIDE.md` |
-| Hermes Plugin README | `bible-hermes-plugin/README.md` |
 | 项目架构 | `CLAUDE_local.md` |
 | 服务端配置 | `bible-atlas.yaml` |
 
