@@ -42,16 +42,10 @@ chmod +x "$TMP_DIR/bin/pkill" "$TMP_DIR/bin/bash" "$TMP_DIR/bin/openclaw"
 CALL_LOG="$TMP_DIR/calls.log"
 touch "$CALL_LOG"
 PATH="$TMP_DIR/bin:$PATH" HOME="$TMP_DIR/home" CALL_LOG="$CALL_LOG" \
-  /bin/bash "$TEST_ROOT/scripts/env-prepare.sh" teardown cli oc --force >/dev/null
+  /bin/bash "$TEST_ROOT/scripts/env-prepare.sh" teardown cli --force >/dev/null
 
 if [ ! -f "$TMP_DIR/home/.bible/config.json" ]; then
   echo "expected CLI user config to be preserved without --purge-config" >&2
-  exit 1
-fi
-
-if grep -q '^openclaw plugins uninstall\|^openclaw config remove\|^openclaw gateway restart' "$CALL_LOG"; then
-  echo "expected OpenClaw global plugin changes to require --uninstall-plugins" >&2
-  cat "$CALL_LOG" >&2
   exit 1
 fi
 
@@ -69,28 +63,10 @@ rm -f "$TEST_ROOT/workspace/DO_NOT_DELETE_TEST"
 rmdir "$TEST_ROOT/workspace" 2>/dev/null || true
 
 PATH="$TMP_DIR/bin:$PATH" HOME="$TMP_DIR/home" CALL_LOG="$CALL_LOG" \
-  /bin/bash "$TEST_ROOT/scripts/env-prepare.sh" teardown cli oc \
-    --purge-config --uninstall-plugins --force >/dev/null
+  /bin/bash "$TEST_ROOT/scripts/env-prepare.sh" teardown cli \
+    --purge-config --force >/dev/null
 
 if [ -f "$TMP_DIR/home/.bible/config.json" ]; then
   echo "expected --purge-config to remove CLI user config" >&2
-  exit 1
-fi
-
-if ! grep -q '^theme: dark' "$TMP_DIR/home/.hermes/config.yaml" || ! grep -q '^other:' "$TMP_DIR/home/.hermes/config.yaml"; then
-  echo "expected --uninstall-plugins to preserve unrelated Hermes config" >&2
-  cat "$TMP_DIR/home/.hermes/config.yaml" >&2
-  exit 1
-fi
-
-if ! grep -q '^openclaw plugins uninstall bible-oc-plugin' "$CALL_LOG"; then
-  echo "expected --uninstall-plugins to uninstall OpenClaw plugin" >&2
-  cat "$CALL_LOG" >&2
-  exit 1
-fi
-
-if ! grep -q '^openclaw config remove plugins.slots.contextEngine' "$CALL_LOG"; then
-  echo "expected --uninstall-plugins to remove OpenClaw contextEngine slot when owned by bible-oc-plugin" >&2
-  cat "$CALL_LOG" >&2
   exit 1
 fi

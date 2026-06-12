@@ -24,7 +24,6 @@ SERVER_DEPLOY="$SCRIPT_DIR/server_deploy/deploy.sh"
 MODEL_PULLER="$REPO_ROOT/tools/model_puller/main.py"
 
 CLI_DIR="$REPO_ROOT/bible_cli_go"
-OC_DIR="$REPO_ROOT/bible-oc-plugin"
 
 # ── 默认值 ────────────────────────────────────────────────────────────────────
 MODE="full"              # test | full
@@ -373,7 +372,6 @@ ${BOLD}组件（可多个，默认 all）:${NC}
   redis          Redis 容器 + Celery Worker
   server         Bible Server
   cli            Go CLI 构建
-  oc             OpenClaw 插件构建 + 安装
   all            全部组件（默认值）
 
 ${BOLD}选项:${NC}
@@ -415,7 +413,7 @@ ${BOLD}常用示例:${NC}
   BIBLE_DOCKER_REGISTRY_PREFIX=docker.m.daocloud.io/ $0 setup --full
 
   # 已有服务端，只搭客户端
-  $0 setup cli oc
+  $0 setup cli
 
   # 只搭 OpenSearch + Redis，指定实例名
   $0 setup --full opensearch redis -n mytest
@@ -425,9 +423,6 @@ ${BOLD}常用示例:${NC}
 
   # 完整清理（含 Docker 容器删除）
   $0 teardown --full --force
-
-  # 只清理插件
-  $0 teardown oc
 
   # 查看状态
   $0 status
@@ -498,9 +493,9 @@ parse_args() {
   for c in "${COMPONENTS[@]}"; do
     if [ "$c" = "all" ]; then
       if [ "$MODE" = "full" ]; then
-        expanded+=(opensearch redis server cli oc)
+        expanded+=(opensearch redis server cli)
       else
-        expanded+=(server cli oc)
+        expanded+=(server cli)
       fi
     else
       expanded+=("$c")
@@ -518,8 +513,8 @@ parse_args() {
   # 校验组件名
   for c in "${COMPONENTS[@]}"; do
     case "$c" in
-      opensearch|redis|server|cli|oc) ;;
-      *) die "未知组件: $c（有效值: opensearch, redis, server, cli, oc, all）" ;;
+      opensearch|redis|server|cli) ;;
+      *) die "未知组件: $c（有效值: opensearch, redis, server, cli, all）" ;;
     esac
   done
 }
@@ -542,7 +537,6 @@ preflight_setup() {
       opensearch)       need_docker=true; need_opensearch=true ;;
       redis)            need_docker=true; need_redis=true ;;
       cli)              need_go=true ;;
-      oc)               need_node=true ;;
     esac
   done
 
@@ -827,51 +821,6 @@ setup_cli() {
 }
 
 
-setup_oc() {
-  step "OpenClaw Plugin — 构建与安装"
-  require_cmd node "安装: https://nodejs.org/"
-
-  if ! check_cmd openclaw; then
-    warn "openclaw CLI 不可用，跳过 OC 插件部署"
-    detail "请先安装 OpenClaw"
-    return 0
-  fi
-
-  cd "$OC_DIR"
-
-  info "npm install ..."
-  npm install --no-audit --no-fund --silent || die "npm install 失败"
-
-  info "typecheck ..."
-  npm run typecheck || die "typecheck 失败，请修复类型错误后重试"
-
-  if ! $SKIP_TEST; then
-    info "vitest ..."
-    npm test || warn "测试有失败（不影响搭建）"
-  fi
-
-  info "npm run build ..."
-  npm run build || die "build 失败"
-  ok "dist/ 就绪"
-
-  info "openclaw plugins install ..."
-  openclaw plugins install . --force 2>/dev/null && ok "插件已安装" || warn "安装失败"
-
-  export BIBLE_ATLAS_BASE_URL="${BASE_URL}"
-  info "执行 setup --write ..."
-  if openclaw bible setup --base-url "${BASE_URL}" --write 2>/dev/null; then
-    ok "setup --write 完成"
-  else
-    warn "setup 失败（可能已配置或 gateway 未运行）"
-  fi
-
-  info "重启 gateway ..."
-  openclaw gateway restart 2>/dev/null && ok "gateway 已重启" || warn "请手动重启"
-
-  # 验证
-  openclaw bible status 2>/dev/null || warn "无法获取状态（gateway 可能未运行）"
-}
-
 # ══════════════════════════════════════════════════════════════════════════════
 # TEARDOWN 各组件
 # ══════════════════════════════════════════════════════════════════════════════
@@ -958,23 +907,6 @@ teardown_cli() {
 }
 
 
-teardown_oc() {
-  step "OpenClaw Plugin — 清理"
-  if $UNINSTALL_PLUGINS; then
-    openclaw plugins uninstall bible-oc-plugin 2>/dev/null && ok "插件已卸载" || true
-    openclaw config remove plugins.entries.bible-oc-plugin 2>/dev/null && ok "配置已移除" || true
-    if [ "$(openclaw config get plugins.slots.contextEngine 2>/dev/null || true)" = "bible-oc-plugin" ]; then
-      openclaw config remove plugins.slots.contextEngine 2>/dev/null && ok "contextEngine 插槽已移除" || true
-    fi
-    openclaw gateway restart 2>/dev/null && ok "gateway 已重启" || true
-  else
-    skip "OpenClaw 用户级插件配置保留（使用 --uninstall-plugins 卸载）"
-  fi
-  rm -rf "$OC_DIR/dist"
-  rm -rf "$OC_DIR/node_modules"
-  ok "构建产物已清理"
-}
-
 # ══════════════════════════════════════════════════════════════════════════════
 # STATUS
 # ══════════════════════════════════════════════════════════════════════════════
@@ -997,10 +929,6 @@ cli_built() {
 }
 
 
-oc_installed() {
-  [ -d "$HOME/.openclaw/extensions/bible-oc-plugin" ]
-}
-
 status_all() {
   if ${JSON_OUT:-false}; then
     cat <<JSONEOF
@@ -1008,8 +936,7 @@ status_all() {
   "server":    { "status": "$(server_running && echo running || echo down)", "url": "${BASE_URL}" },
   "opensearch": { "status": "$(os_running && echo running || echo down)", "port": ${OS_HTTP_PORT} },
   "redis":     { "status": "$(redis_running && echo running || echo down)", "port": ${REDIS_PORT} },
-  "cli":       { "status": "$(cli_built && echo built || echo not_built)" },
-  "oc":        { "status": "$(oc_installed && echo installed || echo not_installed)" }
+  "cli":       { "status": "$(cli_built && echo built || echo not_built)" }
 }
 JSONEOF
     return 0
@@ -1046,12 +973,6 @@ JSONEOF
     echo "  Go CLI:      ${DIM}○${NC} 未构建"
   fi
 
-
-  if oc_installed; then
-    echo "  OC Plugin:   ${GREEN}●${NC} 已安装    — ~/.openclaw/extensions/bible-oc-plugin"
-  else
-    echo "  OC Plugin:   ${DIM}○${NC} 未安装"
-  fi
 
   echo ""
   echo "${DIM}──────────────────────────────────────────────────────────${NC}"
@@ -1090,7 +1011,6 @@ main() {
           redis)      setup_redis ;;
           server)     setup_server ;;
           cli)        setup_cli ;;
-          oc)         setup_oc ;;
         esac
       done
 
@@ -1119,7 +1039,6 @@ main() {
           redis)      teardown_redis ;;
           server)     teardown_server ;;
           cli)        teardown_cli ;;
-          oc)         teardown_oc ;;
         esac
       done
 
