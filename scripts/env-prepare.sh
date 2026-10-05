@@ -5,12 +5,12 @@
 # 用法:
 #   ./scripts/env-prepare.sh setup                     # 一键搭建（完整后端 + 全部客户端）
 #   ./scripts/env-prepare.sh setup --test-mode         # Test Mode（轻量，无需 Docker）
-#   ./scripts/env-prepare.sh setup cli oc          # 只搭建指定组件
+#   ./scripts/env-prepare.sh setup cli                 # 只搭建指定组件
 #   ./scripts/env-prepare.sh teardown                  # 一键清理
 #   ./scripts/env-prepare.sh teardown --full           # 清理含 Docker 容器删除
 #   ./scripts/env-prepare.sh status                    # 查看所有组件状态
 #
-# 组件: opensearch | redis | server | cli | oc | all
+# 组件: opensearch | redis | server | cli | all
 # =============================================================================
 set -euo pipefail
 

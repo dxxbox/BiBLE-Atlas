@@ -213,7 +213,6 @@ BiBLE-Atlas/
 ├── scripts/                     # Deployment & ops scripts / 部署运维脚本
 ├── bible-atlas.yaml             # Server configuration (hot-reload) / 服务端配置
 ├── pyproject.toml               # Python project metadata & tool config
-├── build_all.sh                 # One-click build: all modules → release/
 └── CLAUDE.md                    # AI coding agent guidance / AI 编码指南
 ```
 
@@ -402,15 +401,10 @@ Plugins resolve config from env vars → host config file:
 
 ## Development / 开发
 
-### One-Click Build / 一键编译
+### Build / 编译
 
-```bash
-./build_all.sh              # Full: lint, build, test → release/
-./build_all.sh --skip-test  # Skip tests
-```
-
-Artifacts are written to `release/` (gitignored). A `BUILD_INFO.md` is auto-generated.
-产物输出到 `release/`（已 gitignore），自动生成 `BUILD_INFO.md`。
+Each module has its own build script under `scripts/`. See the module's CLAUDE.md for build commands.
+各模块有独立的构建脚本，位于 `scripts/` 目录下。详见各模块的 CLAUDE.md。
 
 ### Lint & Type Check / 代码检查
 
